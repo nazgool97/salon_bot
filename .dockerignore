@@ -1,0 +1,29 @@
+# Exclusions to shrink Docker build context
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pytest_cache
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.cache
+.devcontainer
+.vscode
+.idea
+
+# Local env & build artifacts
+.venv
+build
+dist
+archive
+backups
+
+# Tests & development scripts (omit from runtime image)
+tests
+migrations
+
+docs
+README.md
+DEPLOYMENT_CHECKLIST.md

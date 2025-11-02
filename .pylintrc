@@ -1,0 +1,8 @@
+[MASTER]
+ignore=migrations,.venv,build,dist
+
+[MESSAGES CONTROL]
+disable=C0114,C0115,C0116,W0511,R0903
+
+[FORMAT]
+max-line-length=100

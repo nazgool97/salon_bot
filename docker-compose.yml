@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:15
+    container_name: salon_bot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-app_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me}
+      POSTGRES_DB: ${DB_NAME:-booking_app}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salon_bot-migrations
+    depends_on:
+      - db
+    env_file:
+      - .env
+    command: >
+      sh -c "
+      until pg_isready -h db -p 5432 -U ${DB_USER:-app_user}; do
+        echo 'Waiting for db...';
+        sleep 2;
+      done;
+      alembic upgrade head
+      "
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salon_bot-bot
+    depends_on:
+      - migrations
+    env_file:
+      - .env
+    command: python -m bot.app.run_bot
+    restart: unless-stopped
+
+volumes:
+  pgdata:

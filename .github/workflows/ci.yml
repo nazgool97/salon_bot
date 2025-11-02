@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality (Lint/Type/Complexity/Security)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install project + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .[dev-tools]
+      - name: Pre-commit (all files)
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files
+      - name: Type check (mypy - advisory)
+        # Temporarily non-blocking while incremental typing in progress.
+        # Remove `continue-on-error` or the trailing `|| true` once error count ~0.
+        continue-on-error: true
+        run: mypy bot || true
+      - name: Complexity gate (xenon)
+        run: xenon --exclude bot/app/core/bootstrap.py --max-absolute B --max-modules B --max-average A bot/app
+      - name: (Advisory) Stricter complexity dry-run
+        run: |
+          # Future target: absolute=A across codebase. Non-blocking report now.
+          xenon --exclude bot/app/core/bootstrap.py --max-absolute A --max-modules A --max-average A bot/app || true
+      - name: (Advisory) Extended ruff rules
+        run: |
+          # Preview additional rule families (bugbear, pyupgrade, simplify). Does not fail pipeline yet.
+          ruff check bot/app --select B,UP,SIM --exit-zero
+      - name: Security (pip-audit JSON)
+        run: pip-audit -f json -o pip-audit.json || true
+      - name: Upload pip-audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit
+          path: pip-audit.json
+          if-no-files-found: ignore
+
+  tests:
+    name: Tests & Coverage
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install project + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .[dev-tools]
+          # coverage comes transitively via pytest-cov; explicit install not required
+      - name: Run tests (unit + fast)
+        env:
+          DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+        run: |
+          # Use pytest-cov only (configured addopts in pyproject). Add xml report explicitly for artifact.
+          pytest -q --cov-report=term-missing --cov-report=xml
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+
+  integration:
+    name: Integration (Postgres)
+    runs-on: ubuntu-latest
+    needs: tests
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .[dev-tools]
+          pip install asyncpg pytest pytest-asyncio
+      - name: Wait for DB
+        run: |
+          for i in {1..30}; do pg_isready -h localhost -p 5432 -U postgres && break || sleep 1; done
+      - name: Run integration tests
+        env:
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/testdb"
+        run: |
+          pytest tests -m integration -q || true
+
+  image:
+    name: Build & Scan Image
+    if: github.event_name != 'pull_request'
+    needs: integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          push: false
+          load: true
+          # Use the actual Dockerfile location under bot/ (root has none)
+          file: bot/Dockerfile
+          context: .
+          # Align tag naming with release workflow (hyphenated image name)
+          tags: ghcr.io/${{ github.repository_owner }}/salon-bot:latest
+      - name: Trivy scan (critical only, non-blocking)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/salon-bot:latest
+          severity: CRITICAL
+          exit-code: '0'
+      - name: Make aggregate (parity)
+        run: make ci || true

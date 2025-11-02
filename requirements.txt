@@ -1,0 +1,9 @@
+aiogram>=3.0.0b9,<4.0
+SQLAlchemy[asyncio]>=2.0
+aiosqlite>=0.19
+alembic>=1.13
+pytest>=8.3
+pytest-asyncio>=0.23
+pytest-cov>=5.0
+asyncpg>=0.28
+python-dotenv

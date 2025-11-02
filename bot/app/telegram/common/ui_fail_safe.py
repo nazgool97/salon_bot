@@ -1,0 +1,255 @@
+from __future__ import annotations
+import logging
+import inspect
+from typing import Any, Callable, Optional, TypeVar
+from aiogram.types import Message, CallbackQuery
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["safe_text", "safe_edit", "try_or_fallback"]
+
+
+async def handle_callback_error(target: Message | CallbackQuery | Any, lang: str, e: Exception, *, fallback_text: str | None = None) -> None:
+    """Unified error handling for handlers.
+
+    Logs the exception and notifies the user using the safest available channel
+    (edit current message where possible, otherwise answer the callback/message).
+
+    Args:
+        target: CallbackQuery or Message (or wrapper) that originated the error.
+        lang: locale code for translation lookup.
+        e: the exception instance.
+        fallback_text: optional explicit text to show instead of the generic error key.
+    """
+    try:
+        logger.exception("Handler exception: %s", e)
+    except Exception:
+        # ensure logging doesn't raise
+        pass
+
+    try:
+        from bot.app.translations import t
+        text = fallback_text or t("error", lang)
+    except Exception:
+        text = fallback_text or "Ошибка"
+
+    # Try safe_edit which prefers editing the existing message or sending a reply
+    try:
+        await safe_edit(target, text)
+        return
+    except Exception:
+        # safe_edit already logs; fallthrough to direct answers
+        pass
+
+    try:
+        # If target is a CallbackQuery, try to answer it (toast/alert)
+        if isinstance(target, CallbackQuery):
+            await target.answer(text, show_alert=True)
+            return
+        # If it's a Message, reply to it
+        if isinstance(target, Message):
+            await target.reply(text)
+            return
+        # Generic fallback: call answer() if available
+        if hasattr(target, "answer"):
+            res = target.answer(text)
+            if inspect.isawaitable(res):
+                await res  # type: ignore
+            return
+    except Exception:
+        logger.error("Failed to notify user about error", exc_info=True)
+    # Nothing else to do
+    return
+
+
+def normalize_msg(obj: Message | CallbackQuery | Any) -> Message | CallbackQuery:
+    """Normalize various aiogram message-like objects to either Message or CallbackQuery.
+
+    - If a CallbackQuery is provided and it contains an accessible Message, return that Message.
+    - If a CallbackQuery is provided but its .message is inaccessible or missing, return the CallbackQuery itself.
+    - If a Message is provided, return it.
+    - For other objects, prefer returning their `.message` if it's a Message, otherwise return the object as-is.
+
+    The goal is to produce a value that static checkers will accept where
+    `Message | CallbackQuery` is required while preserving runtime safety.
+    """
+    try:
+        # Avoid top-level import ambiguity in type checkers
+        from aiogram.types import Message as AiMessage, CallbackQuery as AiCallback
+
+        if isinstance(obj, AiCallback):
+            # Prefer the embedded Message when it's a real Message instance
+            msg = getattr(obj, "message", None)
+            if isinstance(msg, AiMessage):
+                return msg
+            return obj
+        if isinstance(obj, AiMessage):
+            return obj
+        # Fallback: maybe it's a wrapper with .message attribute
+        msg = getattr(obj, "message", None)
+        if isinstance(msg, AiMessage):
+            return msg
+    except Exception:
+        # liberal fallback — return whatever was passed
+        pass
+    return obj
+
+T = TypeVar("T")
+
+
+def safe_text(txt: str) -> str:
+    """Обрезает текст до безопасной длины для Telegram.
+
+    Args:
+        txt: Входной текст.
+
+    Returns:
+        Обрезанный текст (максимум 4096 символов).
+    """
+    max_length = 4096
+    if len(txt) > max_length:
+        logger.warning("Текст обрезан до %d символов: %s...", max_length, txt[:50])
+        return txt[:max_length]
+    return txt
+
+
+async def safe_edit(
+    message: Message | CallbackQuery | Any,
+    text: str,
+    *,
+    fallback_text: Optional[str] = None,
+    **kwargs: Any,
+) -> bool:
+    """Безопасно редактирует или отправляет сообщение в Telegram.
+
+    Args:
+        message: Объект сообщения Telegram.
+        text: Текст для отправки/редактирования.
+        fallback_text: Резервный текст, если редактирование и отправка не удались.
+        **kwargs: Дополнительные параметры для edit_text или answer.
+
+    Returns:
+        True, если операция успешна, иначе False.
+    """
+    try:
+        caller = inspect.stack()[1]
+        logger.debug("safe_edit called from %s:%d %s", caller.filename, caller.lineno, caller.function)
+    except Exception:
+        pass
+
+    text = safe_text(text)
+    fallback_text = safe_text(fallback_text) if fallback_text else None
+
+    # Normalize the incoming object so static checkers see a narrow union
+    norm = normalize_msg(message)
+
+    # Try to edit the target message. If editing is not possible or fails
+    # (except for the special 'message is not modified' case), we'll try to
+    # send a new message as a fallback below.
+    try:
+        if isinstance(norm, CallbackQuery):
+            target_msg = getattr(norm, "message", None)
+        else:
+            target_msg = norm
+
+        if isinstance(target_msg, Message) and hasattr(target_msg, "edit_text"):
+            await target_msg.edit_text(text, **kwargs)
+            logger.debug("Сообщение успешно отредактировано: %s", text[:50])
+            return True
+    except Exception as e:
+        serr = str(e).lower()
+        # Telegram raises a BadRequest when the new message is identical to the
+        # current one. This is not an actionable error for our flows — treat it
+        # as a no-op and return success so callers don't try redundant fallbacks.
+        if "message is not modified" in serr:
+            logger.debug("Ignored 'message is not modified' while editing message")
+            return True
+        logger.debug("Ошибка редактирования сообщения: %s", e)
+
+    # If we reached here, editing was not performed or failed. Try sending as
+    # a new message. Prefer calling answer() on the underlying Message
+    # (for CallbackQuery) or on Message itself.
+    try:
+        if isinstance(norm, CallbackQuery):
+            msg_obj = getattr(norm, "message", None)
+            if msg_obj is not None and hasattr(msg_obj, "answer"):
+                res = msg_obj.answer(text, **kwargs)
+                if inspect.isawaitable(res):
+                    await res  # type: ignore
+            else:
+                # As a last resort, answer the callback (toast/alert)
+                res = norm.answer(text, **kwargs)
+                if inspect.isawaitable(res):
+                    await res  # type: ignore
+        elif isinstance(norm, Message):
+            res = norm.answer(text, **kwargs)
+            if inspect.isawaitable(res):
+                await res  # type: ignore
+        else:
+            # Fallback for other types that may implement answer()
+            if hasattr(norm, "answer"):
+                res = norm.answer(text, **kwargs)
+                if inspect.isawaitable(res):
+                    await res  # type: ignore
+            else:
+                raise RuntimeError("No suitable answer method on message object")
+        logger.debug("Сообщение успешно отправлено: %s", text[:50])
+        return True
+    except Exception as e:
+        logger.debug("Ошибка отправки сообщения: %s", e)
+        if fallback_text and fallback_text != text:
+            try:
+                if isinstance(norm, CallbackQuery):
+                    msg_obj = getattr(norm, "message", None)
+                    if msg_obj is not None and hasattr(msg_obj, "answer"):
+                        res = msg_obj.answer(fallback_text, **kwargs)
+                        if inspect.isawaitable(res):
+                            await res  # type: ignore
+                    else:
+                        res = norm.answer(fallback_text, **kwargs)
+                        if inspect.isawaitable(res):
+                            await res  # type: ignore
+                elif isinstance(norm, Message):
+                    res = norm.answer(fallback_text, **kwargs)
+                    if inspect.isawaitable(res):
+                        await res  # type: ignore
+                elif hasattr(norm, "answer"):
+                    res = norm.answer(fallback_text, **kwargs)
+                    if inspect.isawaitable(res):
+                        await res  # type: ignore
+                else:
+                    raise
+                logger.debug("Резервное сообщение отправлено: %s", fallback_text[:50])
+                return True
+            except Exception as e:
+                logger.error("Ошибка отправки резервного сообщения: %s", e)
+    logger.error("Не удалось отредактировать или отправить сообщение: %s", text[:50])
+    return False
+
+
+async def try_or_fallback(
+    func: Callable[..., T], fallback: Callable[..., T], *args: Any, **kwargs: Any
+) -> T | None:
+    """Выполняет (в том числе асинхронную) функцию с резервным вариантом при ошибке.
+
+    Поддерживает как синхронные, так и асинхронные функции — если результат
+    выполнения является awaitable, он будет ожидаться.
+    """
+    try:
+        result = func(*args, **kwargs)
+        # Если func возвращает awaitable — дождёмся результата
+        if inspect.isawaitable(result):
+            result = await result
+        logger.debug("Функция %s успешно выполнена", getattr(func, "__name__", str(func)))
+        return result
+    except Exception as e:
+        logger.debug("Ошибка выполнения функции %s: %s", getattr(func, "__name__", str(func)), e)
+        try:
+            fb_res = fallback()
+            if inspect.isawaitable(fb_res):
+                fb_res = await fb_res
+            logger.debug("Резервная функция %s выполнена", getattr(fallback, "__name__", str(fallback)))
+            return fb_res
+        except Exception as e:
+            logger.error("Ошибка выполнения резервной функции %s: %s", getattr(fallback, "__name__", str(fallback)), e)
+            return None

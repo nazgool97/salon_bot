@@ -1,0 +1,58 @@
+[project]
+name = "salon-bot"
+version = "0.0.0"
+description = "Async Telegram salon bot"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    { name = "cyclonedx-python-lib", version = ">=5,<10", python = ">=3.12,<4.0" }
+]
+
+[project.optional-dependencies]
+dev-tools = [
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "xenon>=0.9",
+    "pip-audit>=2.7"
+]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+strict_optional = false
+packages = ["bot"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = "bot.app.core.*"
+strict = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "UP", "SIM"]
+ignore = ["E501", "E402"]
+
+[tool.ruff.lint.per-file-ignores]
+"bot/app/tests/**/*.py" = ["E402", "F841", "F823"]
+"bot/app/services/client/history_service.py" = ["F405"]
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=bot.app --cov-report=xml --cov-report=term"
+testpaths = ["bot/app/tests_new"]
+
+[tool.coverage.run]
+branch = true
+source = ["bot/app"]
+omit = [
+    "bot/app/tests*/*",
+    "bot/app/__init__.py"
+]
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = true
+fail_under = 70

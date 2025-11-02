@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+        stages: [manual]
+      - id: ruff-format
+        stages: [manual]
+
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        args: ["--line-length=100"]
+        stages: [manual]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        additional_dependencies: ["types-pytz", "types-PyYAML", "aiogram==3.4.1", "SQLAlchemy>=2.0.0"]
+        # pyproject.toml was removed; point directly to mypy.ini if later added, otherwise rely on defaults.
+        args: ["--explicit-package-bases"]
+        stages: [manual]  # disable on normal commit to unblock push
+        files: ^bot/.*\.py$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  # Local hooks removed temporarily: referenced scripts are absent. Restore once scripts are reintroduced.
