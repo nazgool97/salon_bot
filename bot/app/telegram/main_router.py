@@ -20,6 +20,19 @@ def build_main_router() -> Router:
     # and fallback message handlers are evaluated before role-protected
     # routers. This prevents router-level filters (Admin/Master) from
     # unintentionally intercepting or affecting public commands.
+    # Include public/client router first so general commands (like /start)
+    # and fallback message handlers are evaluated before role-protected
+    # routers. This prevents router-level filters (Admin/Master) from
+    # unintentionally intercepting or affecting public commands.
+    try:
+        from .client.client_handlers import client_router
+        router.include_router(client_router)
+        logger.info("Client router included")
+    except Exception as e:
+        logger.error("Failed to include client_router: %s", e)
+
+    # Then include admin and master routers which are protected by
+    # role filters and should be evaluated after public handlers.
     try:
         from .admin.admin_handlers import admin_router
         router.include_router(admin_router)
@@ -33,13 +46,6 @@ def build_main_router() -> Router:
         logger.info("Master router included")
     except Exception as e:
         logger.error("Failed to include master_router: %s", e)
-
-    try:
-        from .client.client_handlers import client_router
-        router.include_router(client_router)
-        logger.info("Client router included")
-    except Exception as e:
-        logger.error("Failed to include client_router: %s", e)
     # Register global navigation handler after feature routers so it doesn't
     # intercept typed callback_data handlers defined in feature routers.
     @router.callback_query(NavCB.filter())
@@ -63,22 +69,4 @@ def build_main_router() -> Router:
                 pass
 
     logger.info("Main router assembled")
-    # Debug handlers: log unhandled messages/callbacks to help diagnose routing issues.
-    # These are registered last so they only run when no other handler matched.
-    @router.message()
-    async def _debug_unhandled_message(message):
-        try:
-            import json, logging as _logging
-            _logging.getLogger("bot.debug").info("Unhandled message: %s %s", getattr(message.from_user, 'id', None), getattr(message, 'text', repr(message)))
-        except Exception:
-            pass
-
-    @router.callback_query()
-    async def _debug_unhandled_callback(cb):
-        try:
-            import logging as _logging
-            _logging.getLogger("bot.debug").info("Unhandled callback: from=%s data=%s", getattr(cb.from_user, 'id', None), getattr(cb, 'data', None))
-            await cb.answer()  # acknowledge to avoid client 'loading' state
-        except Exception:
-            pass
     return router

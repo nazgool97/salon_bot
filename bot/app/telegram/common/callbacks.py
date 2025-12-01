@@ -6,10 +6,17 @@ from aiogram.filters.callback_data import CallbackData
 __all__ = [
     "create_callback_data",
     "pack_cb",
+    "AdminEditSettingCB",
     "MasterMenuCB",
+    "MasterBookingsCB",
+    "ClientInfoCB",
+    "MasterClientNoteCB",
     "ServiceSelectCB",
     "MasterSelectCB",
-    "MasterProfileCB",  # Новый callback
+    "MasterProfileCB",  
+    "MasterServicesCB",
+    "MastersListCB",
+    "GenericConfirmCB",
     "CalendarCB",
     "DateCB",
     "TimeCB",
@@ -74,14 +81,19 @@ def pack_cb(cb_cls: type[CallbackData], **kwargs: Any) -> str:
     This centralizes the cast and makes intent clearer to future readers.
     """
     # Use typing.cast to quiet static analyzers about the runtime-created class
-    return cast(Any, cb_cls)(**kwargs).pack()
+    # The runtime-created CallbackData subclass's .pack() returns str at runtime,
+    # but static analyzers treat it as Any; cast to str for clarity.
+    return cast(str, cast(Any, cb_cls)(**kwargs).pack())
 
 # --- Определения callback'ов через фабрику ---
 
-MasterMenuCB = create_callback_data("mm", act=str)
+MasterMenuCB = create_callback_data("mm", act=str, page=int | None)
+ClientInfoCB = create_callback_data("cinfo", user_id=int)
 ServiceSelectCB = create_callback_data("svc", service_id=str)
 MasterSelectCB = create_callback_data("ms", service_id=str, master_id=int)
 MasterProfileCB = create_callback_data("mp", service_id=str, master_id=int)  # Новый callback для профиля
+MasterServicesCB = create_callback_data("msvc", master_id=int)  # Список услуг мастера для клиентского флоу
+MastersListCB = create_callback_data("mlist", page=int)
 ServiceToggleCB = create_callback_data("svc_toggle", service_id=str)
 MasterMultiCB = create_callback_data("master_multi", master_id=int)
 MasterInfoCB = create_callback_data("master_info", master_id=int)
@@ -115,6 +127,8 @@ MasterScheduleCB = create_callback_data("msch", action=str, day=int | None, time
 # - act="role_root"  -> return to role-specific root (admin/master/client)
 NavCB = create_callback_data("nav", act=str)
 
+MasterClientNoteCB = create_callback_data("mcn", action=str, user_id=int)
+
 # Generic client menu actions (replaces literal string callback_data like "booking_service")
 ClientMenuCB = create_callback_data("cmenu", act=str)
 
@@ -131,9 +145,17 @@ DelMasterPageCB = create_callback_data("del_master_page", page=int)
 ConfirmDelMasterCB = create_callback_data("confirm_del_master", master_id=int)
 ExecDelMasterCB = create_callback_data("exec_del_master", master_id=int)
 DelServicePageCB = create_callback_data("del_service_page", page=int)
+ConfirmCancelAllMasterCB = create_callback_data("confirm_cancel_all_master", master_id=int)
+ExecCancelAllMasterCB = create_callback_data("exec_cancel_all_master", master_id=int)
+MasterCancelReasonCB = create_callback_data("master_cancel_reason", booking_id=int, code=str)
+MasterSetServiceDurationCB = create_callback_data("msdur_set", service_id=str, minutes=int)
 
 # Admin bookings filter (used by admin bookings keyboard)
-AdminBookingsCB = create_callback_data("admin_bookings", mode=str)
+# Include optional `page` so pagination buttons can use the same callback class.
+AdminBookingsCB = create_callback_data("admin_bookings", mode=str, page=int | None)
+# Master bookings filter (mode: upcoming|done|no_show|all)
+# Include optional `page` so pagination buttons can use the same callback class.
+MasterBookingsCB = create_callback_data("master_bookings", mode=str, page=int | None)
 # Client 'my bookings' callback (mode: upcoming|completed|all)
 # Include `page` so pagination buttons carry the target page number.
 MyBookingsCB = create_callback_data("my_bookings", mode=str | None, page=int | None)
@@ -141,17 +163,48 @@ MyBookingsCB = create_callback_data("my_bookings", mode=str | None, page=int | N
 # Admin top-level menu navigation
 AdminMenuCB = create_callback_data("admin_menu", act=str)
 
+# Admin master card callback: used when admin selects a specific master to manage
+AdminMasterCardCB = create_callback_data("admin_master_card", master_id=int)
+
+# Unified callback for editing atomic settings values via shared handler
+AdminEditSettingCB = create_callback_data("admin_edit_setting", setting_key=str)
+
 # Selection callbacks for linking/unlinking
 SelectLinkMasterCB = create_callback_data("select_link_master", master_id=int)
 SelectLinkServiceCB = create_callback_data("select_link_service", service_id=str)
 SelectUnlinkMasterCB = create_callback_data("select_unlink_master", master_id=int)
 SelectUnlinkServiceCB = create_callback_data("select_unlink_service", service_id=str)
 
+# View links callbacks (admin): select master/service to view linked counterparts
+SelectViewMasterCB = create_callback_data("select_view_master", master_id=int)
+SelectViewServiceCB = create_callback_data("select_view_service", service_id=str)
+
+# Admin management callbacks
+ConfirmDelAdminCB = create_callback_data("confirm_del_admin", admin_id=int)
+ExecDelAdminCB = create_callback_data("exec_del_admin", admin_id=int)
+
 # Admin set options
 AdminSetHoldCB = create_callback_data("admin_set_hold", minutes=int)
 AdminSetCancelCB = create_callback_data("admin_set_cancel", hours=int)
 # Admin expiration check frequency (seconds)
 AdminSetExpireCB = create_callback_data("admin_set_expire", seconds=int)
+
+# Admin reminder lead-time (minutes)
+AdminSetReminderCB = create_callback_data("admin_set_reminder", minutes=int)
+
+# Global currency setter (admin) — pick from a fixed whitelist
+AdminSetGlobalCurrencyCB = create_callback_data("admin_set_currency_global", code=str)
+
+# Working hours pickers: start hour, then end hour
+AdminSetWorkStartCB = create_callback_data("admin_set_work_start", hour=int)
+AdminSetWorkEndCB = create_callback_data("admin_set_work_end", start=int, hour=int)
+AdminWorkHoursDayCB = create_callback_data("admin_work_hours_day", day=int)
+AdminWorkHoursStartCB = create_callback_data("admin_work_hours_start", day=int, hour=int)
+AdminWorkHoursEndCB = create_callback_data("admin_work_hours_end", day=int, start=int, hour=int)
+AdminWorkHoursClosedCB = create_callback_data("admin_work_hours_closed", day=int)
+
+# Service-level currency set (picker buttons)
+AdminSetServiceCurrencyCB = create_callback_data("admin_set_service_currency", service_id=str, code=str)
 
 # Алиас для обратной совместимости
 PaymentCB = PayCB
@@ -161,3 +214,13 @@ PaymentCB = PayCB
 # scattering magic strings across the codebase.
 PaymentActionCB = PayCB  # alias
 RescheduleActionCB = RescheduleCB  # alias
+
+# Generic confirm callback for lightweight universal confirmation dialogs
+GenericConfirmCB = create_callback_data("generic_confirm", model_type=str, model_id=str)
+
+# Forwarded user quick-actions (admin forwards a user's message).
+# Replaces legacy string callbacks like "__fast__:make_admin:123".
+# Fields:
+#   action: make_admin | make_master | view_master | view_client
+#   user_id: telegram user id target
+AdminLookupUserCB = create_callback_data("admin_lookup_user", action=str, user_id=int)

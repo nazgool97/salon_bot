@@ -1,211 +1,325 @@
-# Salon Bot — Ready-to-Sell SaaS Telegram Template for Appointments
+💇‍♀️ SalonBookingBot — Профессиональная система записи для Telegram
 
-Salon Bot is a production-ready Telegram bot template designed for salons, clinics, studios, and any service business that takes appointments. It includes separate UIs for Clients, Masters (staff), and Admins, plus analytics, payments, notifications, and robust scheduling out of the box.
+SalonBookingBot — это высокопроизводительное, асинхронное решение для автоматизации записи клиентов. Идеально подходит для салонов красоты, барбершопов, тату-студий и частных мастеров.
 
-This repository ships with Dockerized deployment, database migrations, demo bootstrap, and a minimal i18n layer (uk/ru/en). Configure it in minutes and start selling it to your customers or running it for your own business.
+Бот превращает Telegram в полноценную CRM-систему: управляет расписанием, финансами, клиентской базой и уведомлениями, исключая человеческий фактор и ошибки при записи.
 
-## What buyers get
+🌟 Почему стоит выбрать это решение?
 
-- A full, self-hostable Telegram bot with a clear appointment lifecycle and background workers (holds/expirations)
-- Three roles with tailored UX: Client, Master, Admin
-- Built-in payments (Telegram Payments) and cash workflow
-- Analytics for revenue, retention, no-shows, LTV, and status breakdowns
-- Master schedule editor and real-time availability with calendar and time slots
-- Localization (uk/ru/en), default language via env or per-user
-- Docker + Compose deployment with health check, migrations, and optional bootstrap data
-- Clean architecture, typed Python (3.12), SQLAlchemy 2.x, Alembic, Aiogram 3.x
+💎 Для Владельца (Администратора)
 
----
+Полный контроль бизнеса: Управление всеми аспектами салона прямо из Telegram.
 
-## Features at a glance
+Гибкая настройка услуг: Категории, цены, длительность, привязка к конкретным мастерам.
 
-### Client experience
-- Browse services and prices (with service categories)
-- Pick a master and a date/time from only valid, available slots
-- Book in a few taps; confirm payment either online or at visit (cash)
-- See “My bookings” with filters: Upcoming and Completed
-- Reschedule with a configurable lock window (e.g., 3 hours before start)
-- Cancel with confirmation; immediate updates to master/admins
-- Rate the visit after completion (star rating UI)
-- All messages localized to the user’s language when available
+Бизнес-аналитика 360°:
 
-### Master experience
-- Inline schedule editor (working days/time windows)
-- Calendar and list views; “today” and “next 7 days” screens
-- Only shows relevant, paid/confirmed upcoming bookings
-- Booking details with actions: mark done, no-show, reschedule, cancel
-- Client history and notes per client
-- Personal stats summary (last 30 days, next booking)
+📊 Выручка и количество записей (день/неделя/месяц).
 
-### Admin experience
-- Service catalog management with prices and currency (now includes Service.category)
-- Price quick-edit steppers (+/- 5/20/50)
-- Masters management and linking to services
-- Business analytics (revenue, retention, no-show rate, LTV)
-- Monthly range shortcuts (This Month, Last Month) for quick filtering
-- Settings: hold duration, cash/online payment toggle, provider token
-- CSV export for bookings (XLSX optional as an add-on)
+📉 Анализ Retention (возвращаемости) и No-Show (неявок).
 
-### Booking lifecycle and availability
-- Hold-based reservations with auto-expiration in background worker
-- Unified statuses: RESERVED, PENDING_PAYMENT, CONFIRMED, PAID, DONE, CANCELLED, NO_SHOW, EXPIRED
-- Availability ignores expired reservations
-- Reschedule lock window to prevent last-minute changes
+🏆 Рейтинг популярности услуг и эффективности мастеров.
 
-### Payments
-- Telegram Payments integration (provider token from env)
-- Cash confirmation flow for offline payments
-- Admin toggle to enable/disable online payments at runtime
+📂 Выгрузка отчетов в CSV/Excel.
 
-### Localization (i18n)
-- Minimal dictionary-based i18n in `bot/app/translations.py`
-- Languages included: Ukrainian (uk), Russian (ru), English (en)
-- Default language via env `BOT_LANGUAGE`
-- Per-user locale from DB (if present)
+Управление командой: Добавление мастеров, настройка их профилей и прав доступа.
 
----
+✂️ Для Мастеров
 
-## Tech stack
+Личный кабинет: Доступ к расписанию и записям в режиме реального времени.
 
-- Python 3.12, Aiogram 3.x (Telegram bot)
-- Postgres, SQLAlchemy 2.x, Alembic
-- Docker, Docker Compose
-- Pytest (tests), background worker for expirations
+Smart-расписание: Гибкая настройка рабочих слотов, перерывов и выходных дней.
 
----
+CRM клиента: Просмотр истории посещений, среднего чека и личных заметок о клиенте (аллергии, предпочтения).
 
-## Project structure (high-level)
+Уведомления: Мгновенные оповещения о новых записях или отменах.
 
-```
-salon_bot/
-├── bot/
-│   ├── app/
-│   │   ├── core/          # config, DB, startup
-│   │   ├── domain/        # SQLAlchemy models, enums
-│   │   ├── services/      # business logic (client/master/admin/shared)
-│   │   └── telegram/      # routers, keyboards, callbacks, navigation
-│   └── ...
-├── docker-compose.yml
-├── Dockerfile
-└── migrations/
-```
+📱 Для Клиентов
 
----
+Запись за 15 секунд: Интуитивный интерфейс выбора услуги, мастера и времени.
 
-## Quick start
+Забота: Автоматические напоминания о визите (снижает риск забыть о записи).
 
-Prerequisites:
-- Docker & Docker Compose
+Личный кабинет: История визитов, управление текущими бронированиями.
 
-1) Clone the repo
-```bash
-git clone https://github.com/nazgool97/salon_bot.git
+Система отзывов: Возможность оценить качество услуг после визита.
+
+🛠 Технический стек
+
+Архитектура проекта построена на принципах Clean Architecture и SOLID, что обеспечивает легкость поддержки и масштабирования.
+
+Core: Python 3.11+
+
+Framework: Aiogram 3.x (полная асинхронность).
+
+Database: PostgreSQL 15+.
+
+ORM: SQLAlchemy 2.0 (Async) — строгая типизация и высокая скорость.
+
+Migrations: Alembic — версионирование схемы БД.
+
+Infrastructure: Docker & Docker Compose.
+
+Logging: Структурированное логирование для легкой отладки.
+
+🚀 Установка и Запуск
+
+Вариант A: Docker (Рекомендуемый для разработчиков)
+
+Самый быстрый способ развернуть бота, если у вас есть исходный код.
+
+Клонируйте репозиторий:
+
+git clone [https://github.com/yourusername/salon_bot.git](https://github.com/yourusername/salon_bot.git)
 cd salon_bot
-```
 
-2) Copy env and configure
-```bash
-cp .env.example .env
-# edit .env and set at least:
-# BOT_TOKEN, DATABASE_URL, ADMIN_IDS
-```
 
-Important variables:
-- BOT_TOKEN — Telegram bot token from BotFather
-- DATABASE_URL — Postgres URL (e.g., postgres://user:pass@db:5432/salon)
-- ADMIN_IDS — comma-separated Telegram IDs with admin rights
-- TELEGRAM_PAYMENT_PROVIDER_TOKEN — provider token for online payments (optional)
-- BOT_LANGUAGE — default language: uk | ru | en
-- CONTACT_* — contact info shown in the “Contacts” screen
-- RESERVATION_HOLD_MINUTES — reservation hold duration
-- CLIENT_RESCHEDULE_LOCK_HOURS — min hours before start when reschedule is blocked
 
-3) Optional: preload demo data on first run
-```bash
-export RUN_BOOTSTRAP=1
-```
+Настройте окружение:
+Создайте файл .env на основе примера cp .env.example .env и отредактируйте его.
 
-4) Build & run
-```bash
-docker compose up --build
-```
+Запустите контейнеры:
 
-Compose will launch Postgres, run migrations, (optionally) bootstrap demo data, and start the bot with a health check.
+docker-compose up -d --build
 
----
 
-## Non‑technical setup
 
-If you’re not a developer, follow the step‑by‑step guide with screenshots:
+Вариант B: Локальный запуск (Для разработки)
 
-- docs/NonTechnical-Setup-Guide.md — Bot token, Supabase DB, .env, and Docker run
-- docs/FAQ.md — Payments/integrations/licensing
-- docs/Customization.md — Add a language, payment provider, or change terminology
+Если вы хотите дорабатывать код без Docker.
 
----
+Создайте виртуальное окружение:
 
-## Configuration & branding
+python3 -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# .venv\Scripts\activate   # Windows
 
-- Default language via `.env` `BOT_LANGUAGE`; per-user locale from DB when available
-- Update `CONTACT_*` and (optionally) `COMPANY_NAME` in `.env` to brand the bot
-- Translations live in `bot/app/translations.py`; add or override keys as needed
-- Payment toggle and provider token are configurable without restart
 
----
 
-## Analytics & exports
+Установите зависимости: pip install -r requirements.txt
 
-- Admin analytics include revenue, retention, no-shows, and LTV
-- Month range buttons: “This Month”, “Last Month”
-- CSV export out-of-the-box; XLSX export can be enabled as an optional add-on
+Поднимите базу данных: docker-compose up -d db
 
----
+Примените миграции: alembic upgrade head
 
-## Quality & maintainability
+Запустите бота: python -m bot.app.run_bot
 
-- Clear separation between domain models, services, and telegram layers
-- Background worker handles expirations reliably
-- Type hints throughout; SQLAlchemy 2.x patterns
-- Optional pre-commit hooks for formatting/linting (Black, Ruff, isort)
+Вариант C: Запуск готового образа (Docker + GHCR)
 
-Install hooks locally:
-```bash
-pip install pre-commit
-pre-commit install
-```
+Этот вариант подходит для клиентов, у которых нет доступа к исходному коду. Бот запускается как изолированный контейнер из реестра GitHub.
 
----
+1. Требования
 
-## Support & licensing
+Установленный Docker и docker-compose
 
-- License: choose MIT/Apache-2.0 or provide your own commercial EULA — the template is structured for resale
-- Optional support plan: add your contact or Telegram group/link for buyers
+Аккаунт на GitHub
 
----
+Персональный токен доступа (Personal Access Token) с правами read:packages
 
-## Roadmap (optional add-ons)
+2. Создание токена
 
-- XLSX export via openpyxl with basic formatting
-- Global quick search by client/master name
-- Expanded i18n coverage for all admin/master screens (already partially implemented)
+Зайдите в GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
 
----
+Нажмите Generate new token
 
-## FAQ
+Установите срок действия (например, 90 дней)
 
-Q: Can I disable online payments?
-A: Yes, there’s a runtime toggle in Admin settings. You can also omit the provider token.
+Выберите права: read:packages
 
-Q: Can I add a new language?
-A: Add keys to `bot/app/translations.py` and set `BOT_LANGUAGE` to your new code; users with a stored locale will see their own language.
+Скопируйте токен и сохраните его.
 
-Q: How do I seed demo services and a master?
-A: Set `RUN_BOOTSTRAP=1` in `.env` for the first run.
+3. Авторизация в GHCR
 
-Q: Is the calendar restricted to the master’s working hours?
-A: Yes, availability strictly follows the master’s schedule windows and ignores expired holds.
+Выполните команду на сервере (замените YOUR_TOKEN на ваш токен и YOUR_USERNAME на ваш никнейм на GitHub):
 
----
+echo YOUR_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 
-Happy shipping! If you need a white-label build or custom features, feel free to reach out.
 
+4. Настройка файлов
+
+Создайте пустую папку для бота и в ней создайте два файла.
+
+Файл docker-compose.yml:
+
+version: '3.8'
+
+services:
+  bot:
+    image: ghcr.io/nazgool97/salon_bot:latest
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - db
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-salon_bot}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:
+
+
+Файл .env (настройки):
+
+BOT_TOKEN=ваш_токен_бота
+ADMIN_IDS=12345678
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=salon_bot
+
+
+5. Запуск
+
+docker-compose up -d
+
+
+🔄 Обновление до новой версии
+
+Когда выходит новая версия бота, выполните:
+
+docker-compose pull && docker-compose up -d
+
+
+Все данные сохраняются в базе (volume db_data), поэтому при обновлении они не теряются.
+
+⚙️ Конфигурация (.env)
+
+Переменная
+
+Описание
+
+Пример
+
+BOT_TOKEN
+
+Токен от @BotFather
+
+123456:ABC...
+
+ADMIN_IDS
+
+ID администраторов (через запятую)
+
+12345678,87654321
+
+DB_HOST
+
+Хост базы данных
+
+db (для Docker) или localhost
+
+DB_PORT
+
+Порт базы данных
+
+5432
+
+DB_USER
+
+Пользователь БД
+
+postgres
+
+DB_PASS
+
+Пароль БД
+
+postgres
+
+DB_NAME
+
+Имя базы данных
+
+salon_bot
+
+TELEGRAM_PAYMENTS_ENABLED
+
+Включить платежи (1/0)
+
+1
+
+TELEGRAM_PAYMENT_PROVIDER_TOKEN
+
+Токен провайдера (если платежи вкл.)
+
+1234:TEST:...
+
+📂 Структура проекта
+
+.
+├── bot/
+│   ├── __init__.py
+│   ├── app/
+│   │   ├── core/           # Конфигурация, логгер, подключение к БД
+│   │   ├── domain/         # SQLAlchemy модели (Booking, User, Master...)
+│   │   ├── services/       # Бизнес-логика (разделена по ролям)
+│   │   │   ├── admin_services.py
+│   │   │   ├── client_services.py
+│   │   │   ├── master_services.py
+│   │   │   └── shared_services.py
+│   │   ├── telegram/       # Слой представления (UI)
+│   │   │   ├── admin/      # Хендлеры и клавиатуры Админа
+│   │   │   ├── client/     # Хендлеры и клавиатуры Клиента
+│   │   │   ├── master/     # Хендлеры и клавиатуры Мастера
+│   │   │   └── common/     # Общие миддлвари, фильтры, навигация
+│   │   └── translations.py # Система локализации (i18n)
+│   ├── migrations/         # Файлы миграций Alembic
+│   └── main.py             # Точка входа (устарела, используйте run_bot.py)
+├── docker/                 # SQL скрипты инициализации
+├── docker-compose.yml      # Оркестрация
+└── requirements.txt        # Зависимости
+
+
+
+🔄 Работа с базой данных (Alembic)
+
+Проект использует Alembic для управления структурой базы данных.
+
+Создание новой миграции (после изменения моделей в domain/models.py):
+
+alembic revision --autogenerate -m "описание изменений"
+
+
+
+Применение миграций:
+
+alembic upgrade head
+
+
+
+Откат последней миграции:
+
+alembic downgrade -1
+
+
+
+💼 Коммерческое использование
+
+Бот полностью готов к продаже как SaaS-решение или коробочный продукт.
+
+White Label Ready: Легко заменяются тексты, логотипы и цветовая схема ответов.
+
+Масштабируемость: База данных PostgreSQL выдерживает тысячи записей.
+
+Безопасность: Данные пользователей изолированы, SQL-инъекции исключены благодаря ORM.
+
+📞 Поддержка и Разработка
+
+Если вам требуется кастомизация под специфические бизнес-процессы или техническая поддержка:
+
+Telegram: 
+
+$$@ваш\_юзернейм$$
+
+Email: 
+
+$$ваш@email.com$$
+
+Developed with ❤️ using Python & Aiogram

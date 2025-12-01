@@ -2,41 +2,52 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from bot.app.telegram.client.client_keyboards import get_simple_kb
 from bot.app.telegram.common.callbacks import pack_cb, MasterMenuCB, MasterScheduleCB, NavCB
 from bot.app.translations import t, tr
 from typing import Any, cast
 import logging
 
 logger = logging.getLogger(__name__)
+from bot.app.services.master_services import format_master_profile_text, build_time_slot_list
 
 
-def get_master_main_menu() -> InlineKeyboardMarkup:
-	"""Main menu for master: Schedule, My bookings, Statistics, Back/Exit."""
-	logger.debug("Building master main menu keyboard")
+
+
+def get_master_main_menu(lang: str = "uk") -> InlineKeyboardMarkup:
+	"""Main menu for master: Schedule, My bookings, Statistics, Back/Exit.
+
+	Accepts explicit `lang` so callers can localize keyboard labels.
+	"""
+	logger.debug("Building master main menu keyboard (lang=%s)", lang)
 	builder = InlineKeyboardBuilder()
-	builder.button(text=t("master_schedule_button"), callback_data=pack_cb(MasterMenuCB, act="schedule"))
-	builder.button(text=t("my_bookings_button"), callback_data=pack_cb(MasterMenuCB, act="bookings"))
-	builder.button(text=t("master_stats_button"), callback_data=pack_cb(MasterMenuCB, act="stats"))
-	# Use role-root back callback so role-specific root (master) is shown via NavCB
-	builder.button(text=t("back"), callback_data=pack_cb(NavCB, act="role_root"))
-	builder.adjust(2)
+	builder.button(text=t("master_schedule_button", lang), callback_data=pack_cb(MasterMenuCB, act="schedule"))
+	builder.button(text=t("my_bookings_button", lang), callback_data=pack_cb(MasterMenuCB, act="bookings"))
+	builder.button(text=t("master_my_clients_button", lang), callback_data=pack_cb(MasterMenuCB, act="my_clients"))
+	builder.button(text=t("master_stats_button", lang), callback_data=pack_cb(MasterMenuCB, act="stats"))
+	# New: edit per-service durations
+	builder.button(text=t("master_service_durations_button", lang) if t("master_service_durations_button", lang) != "master_service_durations_button" else "⏱ Длительности", callback_data=pack_cb(MasterMenuCB, act="service_durations"))
+	# Back from master main menu should return to role_root (client/main)
+	# Use NavCB(role_root) so nav_role_root can decide the proper target.
+	builder.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
+	builder.adjust(2, 2, 1)
 	return builder.as_markup()
 
 
-def get_weekly_schedule_kb(include_edit: bool = True) -> InlineKeyboardMarkup:
+def get_weekly_schedule_kb(include_edit: bool = True, lang: str = "uk") -> InlineKeyboardMarkup:
 	"""Keyboard for the weekly schedule view with optional 'Edit schedule' button."""
 	# Single builder: weekday buttons + big actions. include_edit adds the
 	# "Edit schedule" action which triggers the `edit_schedule_flow` handler.
 	builder = InlineKeyboardBuilder()
-	weekdays = tr("weekday_short") or ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+	weekdays = tr("weekday_short", lang=lang) or ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 	# weekday buttons: Mon..Sun
 	for idx, wd in enumerate(weekdays):
 		builder.button(text=wd, callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=idx))
 	# Action buttons: Refresh, Clear all, Back
-	builder.button(text=t("master_refresh_button"), callback_data=pack_cb(MasterScheduleCB, action="refresh"))
-	builder.button(text=t("master_clear_all_button"), callback_data=pack_cb(MasterMenuCB, act="clear_all"))
-	# Back from the weekly schedule should return to the master role root
-	builder.button(text=t("back"), callback_data=pack_cb(NavCB, act="role_root"))
+	builder.button(text=t("master_refresh_button", lang), callback_data=pack_cb(MasterScheduleCB, action="refresh"))
+	builder.button(text=t("master_clear_all_button", lang), callback_data=pack_cb(MasterMenuCB, act="clear_all"))
+	# Back from the weekly schedule should explicitly return to the master menu
+	builder.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
 
 	# Arrange rows: 4,3,1,1,1,1 to match the screenshot (weekday rows + actions)
 	builder.adjust(4, 3, 1, 1, 1, 1)
@@ -44,11 +55,11 @@ def get_weekly_schedule_kb(include_edit: bool = True) -> InlineKeyboardMarkup:
 
 
 
-def get_schedule_day_preview_kb(day: int, windows: list | None) -> InlineKeyboardMarkup:
+def get_schedule_day_preview_kb(day: int, windows: list | None, lang: str = "uk") -> InlineKeyboardMarkup:
 	"""Return a keyboard that previews existing windows and allows removing a specific window.
 
-	Each existing window is shown as a button that triggers MasterScheduleCB(action="remove_window", day=..., idx=<i>). 
-	There's also an 'Add window' button and a Back button.
+	Safety: removal is value-based, not index-based, to avoid race conditions. Buttons carry
+	a packed time token HHMM-HHMM and the handler matches on values.
 	"""
 	logger.debug("Building schedule day preview kb for day=%s windows=%s", day, windows)
 	builder = InlineKeyboardBuilder()
@@ -58,19 +69,34 @@ def get_schedule_day_preview_kb(day: int, windows: list | None) -> InlineKeyboar
 			try:
 				if isinstance(w, (list, tuple)) and len(w) >= 2:
 					label = f"{w[0]}-{w[1]}"
+					# Provide both index and value tokens so removal can be value-based (safer under concurrency)
+					start_token = str(w[0])
+					end_token = str(w[1])
+					packed_time = f"{start_token.replace(':','')}-{end_token.replace(':','')}"
 				else:
 					label = str(w)
+					start_token = None
+					end_token = None
+					packed_time = None
 			except Exception:
 				label = str(w)
+				start_token = None
+				end_token = None
+				packed_time = None
 			# prefix with trash emoji to indicate removal
-			builder.button(text=f"🗑 {label}", callback_data=pack_cb(MasterScheduleCB, action="remove_window", day=day, idx=idx))
+			if packed_time:
+				# Value-based removal: only pass the time token; ignore indices.
+				builder.button(text=f"🗑 {label}", callback_data=pack_cb(MasterScheduleCB, action="remove_window", day=day, time=packed_time))
+			else:
+				# Fallback: include only day; handler will show a refresh hint if value token is missing.
+				builder.button(text=f"🗑 {label}", callback_data=pack_cb(MasterScheduleCB, action="remove_window", day=day))
 	else:
-		builder.button(text=t("master_no_windows"), callback_data=pack_cb(MasterScheduleCB, action="noop", day=day))
+		builder.button(text=t("master_no_windows", lang), callback_data=pack_cb(MasterScheduleCB, action="noop", day=day))
 
 	# Add / actions row
-	builder.button(text=t("master_add_window_button"), callback_data=pack_cb(MasterScheduleCB, action="add_time", day=day))
+	builder.button(text=t("master_add_window_button", lang), callback_data=pack_cb(MasterScheduleCB, action="add_time", day=day))
 	# Back to weekly schedule overview (use role-root NavCB for unified behaviour)
-	builder.button(text=t("back"), callback_data=pack_cb(NavCB, act="back"))
+	builder.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
 	# Layout: each window its own row, then actions row
 	# numbers: len(windows) rows + 1 actions row (or 2 if no windows)
 	sizes = []
@@ -83,24 +109,24 @@ def get_schedule_day_preview_kb(day: int, windows: list | None) -> InlineKeyboar
 	return builder.as_markup()
 
 
-def get_bookings_menu_kb() -> InlineKeyboardMarkup:
-	builder = InlineKeyboardBuilder()
-	builder.button(text=t("master_today_button"), callback_data=pack_cb(MasterMenuCB, act="bookings_today"))
-	builder.button(text=t("tomorrow"), callback_data=pack_cb(MasterMenuCB, act="bookings_tomorrow"))
-	builder.button(text=t("this_week"), callback_data=pack_cb(MasterMenuCB, act="bookings_week"))
-	builder.button(text=t("master_all_bookings_button"), callback_data=pack_cb(MasterMenuCB, act="bookings_all"))
-	builder.button(text=t("back"), callback_data=pack_cb(NavCB, act="role_root"))
-	builder.adjust(2)
-	return builder.as_markup()
+def get_bookings_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
+	items = [
+		(t("master_today_button", lang), pack_cb(MasterMenuCB, act="bookings_today")),
+		(t("tomorrow", lang), pack_cb(MasterMenuCB, act="bookings_tomorrow")),
+		(t("this_week", lang), pack_cb(MasterMenuCB, act="bookings_week")),
+		(t("master_all_bookings_button", lang), pack_cb(MasterMenuCB, act="bookings_all")),
+		(t("back", lang), pack_cb(MasterMenuCB, act="menu")),
+	]
+	return get_simple_kb(items, cols=2)
 
 
-def get_stats_kb() -> InlineKeyboardMarkup:
-	builder = InlineKeyboardBuilder()
-	builder.button(text=t("stats_week"), callback_data=pack_cb(MasterMenuCB, act="stats_week"))
-	builder.button(text=t("stats_month"), callback_data=pack_cb(MasterMenuCB, act="stats_month"))
-	builder.button(text=t("back"), callback_data=pack_cb(NavCB, act="role_root"))
-	builder.adjust(2)
-	return builder.as_markup()
+def get_stats_kb(lang: str = "uk") -> InlineKeyboardMarkup:
+	items = [
+		(t("stats_week", lang), pack_cb(MasterMenuCB, act="stats_week")),
+		(t("stats_month", lang), pack_cb(MasterMenuCB, act="stats_month")),
+		(t("back", lang), pack_cb(MasterMenuCB, act="menu")),
+	]
+	return get_simple_kb(items, cols=2)
 
 
 __all__ = [
@@ -110,78 +136,80 @@ __all__ = [
 	"get_stats_kb",
 	"get_time_start_kb",
 	"get_time_end_kb",
+	"format_master_profile_text",
 ]
 
 
-def _make_time_list(start_hour: int = 6, end_hour: int = 22, step_min: int = 30) -> list[str]:
-	"""Helper: produce list of hh:mm time strings from start_hour to end_hour inclusive with step_min increments."""
-	times: list[str] = []
-	for h in range(start_hour, end_hour + 1):
-		for m in range(0, 60, step_min):
-			# Stop if we've passed end_hour and minute > 0
-			if h == end_hour and m > 30:
-				continue
-			times.append(f"{h:02d}:{m:02d}")
-	return times
+def get_master_bookings_dashboard_kb(lang: str = "uk", mode: str = "upcoming", page: int = 1, total_pages: int = 1) -> InlineKeyboardMarkup:
+	"""Delegator: use shared build_bookings_dashboard_kb for master dashboard."""
+	try:
+		from bot.app.telegram.client.client_keyboards import build_bookings_dashboard_kb
+
+		meta = {"mode": mode, "page": int(page or 1), "total_pages": int(total_pages or 1)}
+		return build_bookings_dashboard_kb("master", meta, lang=lang)
+	except Exception:
+		# Fallback to previous behaviour minimal keyboard
+		from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+		from bot.app.telegram.common.callbacks import pack_cb, NavCB
+		return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))]])
 
 
-def get_time_start_kb(day: int, *, start_hour: int = 6, end_hour: int = 22, step_min: int = 30) -> InlineKeyboardMarkup:
+from bot.app.core.constants import (
+	DEFAULT_DAY_END_HOUR,
+	DEFAULT_TIME_STEP_MINUTES,
+)
+
+
+def get_time_start_kb(day: int, *, times: list[str] | None = None) -> InlineKeyboardMarkup:
 	"""Keyboard for selecting the start time for a day's window."""
-	logger.debug("Building time start kb for day=%s start_hour=%s end_hour=%s step=%s", day, start_hour, end_hour, step_min)
+	logger.debug("Building time start kb for day=%s times=%s", day, times)
 	builder = InlineKeyboardBuilder()
-	times = _make_time_list(start_hour, end_hour, step_min)
+	times = times or build_time_slot_list()
 	for tstr in times:
 		# Pack time without ':' because ':' is used as separator by CallbackData.pack()
 		token = tstr.replace(":", "")
 		builder.button(text=tstr, callback_data=pack_cb(MasterScheduleCB, action="pick_start", day=day, time=token))
+	builder.adjust(4)
 	# Back button returns to day actions (so master can continue editing the day)
-	builder.button(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
-	# Also provide an explicit cancel action that clears FSM flows
-	builder.button(text=f"{t('cancel')}", callback_data=pack_cb(MasterScheduleCB, action="cancel", day=day))
-
-	# Arrange times into rows of 4, then the back button as a full-width row
-	buttons_count = len(times) + 1
-	full_rows = len(times) // 4
-	rem = len(times) % 4
-	sizes: list[int] = []
-	sizes.extend([4] * full_rows)
-	if rem:
-		sizes.append(rem)
-	sizes.append(1)  # back button row
-	builder.adjust(*sizes)
+	try:
+		back_button = InlineKeyboardButton(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
+		builder.row(back_button)
+	except Exception:
+		pass
 	return builder.as_markup()
 
 
-def get_time_end_kb(day: int, start_time: str, *, end_hour: int = 22, step_min: int = 30) -> InlineKeyboardMarkup:
+def get_time_end_kb(day: int, start_time: str, *, items: list[tuple[str, str]], end_hour: int = DEFAULT_DAY_END_HOUR, step_min: int = DEFAULT_TIME_STEP_MINUTES) -> InlineKeyboardMarkup:
 	"""Keyboard for selecting the end time given a chosen start_time.
 
 	End choices are strictly after start_time with the same step increments.
 	"""
 	logger.debug("Building time end kb for day=%s start_time=%s end_hour=%s step=%s", day, start_time, end_hour, step_min)
-	builder = InlineKeyboardBuilder()
-	# compute minutes from midnight
-	h, m = map(int, start_time.split(":"))
-	start_minutes = h * 60 + m
-	times = _make_time_list(0, end_hour, step_min)
-	# filter to times strictly greater than start_time
-	end_choices = [ts for ts in times if (int(ts.split(":")[0]) * 60 + int(ts.split(":")[1])) > start_minutes]
-	for tstr in end_choices:
-		# Pack time without ':' to avoid separator conflicts
-		token = tstr.replace(":", "")
-		builder.button(text=tstr, callback_data=pack_cb(MasterScheduleCB, action="pick_end", day=day, time=token))
-	# Back returns to day actions
-	builder.button(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
-	# Cancel action clears FSM
-	builder.button(text=f"{t('cancel')}", callback_data=pack_cb(MasterScheduleCB, action="cancel", day=day))
 
-	# arrange into rows of 4 + final back row
-	full_rows = len(end_choices) // 4
-	rem = len(end_choices) % 4
-	sizes: list[int] = []
-	sizes.extend([4] * full_rows)
-	if rem:
-		sizes.append(rem)
-	sizes.append(1)
-	builder.adjust(*sizes)
-	return builder.as_markup()
+	# Allow callers to provide precomputed items (label, callback_data).
+	# If items are not provided we delegate computation to master_services
+	# so that all time logic lives in the service layer.
+	def _build(items: list[tuple[str, str]] | None = None) -> InlineKeyboardMarkup:
+		builder = InlineKeyboardBuilder()
+		it = list(items or [])
+		for label, cb in it:
+			try:
+				builder.button(text=label, callback_data=cb)
+			except Exception:
+				# skip problematic entry
+				continue
+		# Back returns to day actions
+		try:
+			builder.adjust(4)
+		except Exception:
+			pass
+		try:
+			back_button = InlineKeyboardButton(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
+			builder.row(back_button)
+		except Exception:
+			pass
+		return builder.as_markup()
+
+	# Build from precomputed items (handlers compute via service layer)
+	return _build(items)
 

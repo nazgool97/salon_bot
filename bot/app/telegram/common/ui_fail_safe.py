@@ -2,6 +2,8 @@ from __future__ import annotations
 import logging
 import inspect
 from typing import Any, Callable, Optional, TypeVar
+from typing import cast
+from typing import cast
 from aiogram.types import Message, CallbackQuery
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ async def handle_callback_error(target: Message | CallbackQuery | Any, lang: str
         if hasattr(target, "answer"):
             res = target.answer(text)
             if inspect.isawaitable(res):
-                await res  # type: ignore
+                await cast(Any, res)
             return
     except Exception:
         logger.error("Failed to notify user about error", exc_info=True)
@@ -131,11 +133,7 @@ async def safe_edit(
     Returns:
         True, если операция успешна, иначе False.
     """
-    try:
-        caller = inspect.stack()[1]
-        logger.debug("safe_edit called from %s:%d %s", caller.filename, caller.lineno, caller.function)
-    except Exception:
-        pass
+
 
     text = safe_text(text)
     fallback_text = safe_text(fallback_text) if fallback_text else None
@@ -175,22 +173,22 @@ async def safe_edit(
             if msg_obj is not None and hasattr(msg_obj, "answer"):
                 res = msg_obj.answer(text, **kwargs)
                 if inspect.isawaitable(res):
-                    await res  # type: ignore
+                    await cast(Any, res)
             else:
                 # As a last resort, answer the callback (toast/alert)
                 res = norm.answer(text, **kwargs)
                 if inspect.isawaitable(res):
-                    await res  # type: ignore
+                    await cast(Any, res)
         elif isinstance(norm, Message):
             res = norm.answer(text, **kwargs)
             if inspect.isawaitable(res):
-                await res  # type: ignore
+                await cast(Any, res)
         else:
             # Fallback for other types that may implement answer()
             if hasattr(norm, "answer"):
                 res = norm.answer(text, **kwargs)
                 if inspect.isawaitable(res):
-                    await res  # type: ignore
+                    await cast(Any, res)
             else:
                 raise RuntimeError("No suitable answer method on message object")
         logger.debug("Сообщение успешно отправлено: %s", text[:50])
@@ -204,19 +202,19 @@ async def safe_edit(
                     if msg_obj is not None and hasattr(msg_obj, "answer"):
                         res = msg_obj.answer(fallback_text, **kwargs)
                         if inspect.isawaitable(res):
-                            await res  # type: ignore
+                            await cast(Any, res)
                     else:
                         res = norm.answer(fallback_text, **kwargs)
                         if inspect.isawaitable(res):
-                            await res  # type: ignore
+                            await cast(Any, res)
                 elif isinstance(norm, Message):
                     res = norm.answer(fallback_text, **kwargs)
                     if inspect.isawaitable(res):
-                        await res  # type: ignore
+                        await cast(Any, res)
                 elif hasattr(norm, "answer"):
                     res = norm.answer(fallback_text, **kwargs)
                     if inspect.isawaitable(res):
-                        await res  # type: ignore
+                        await cast(Any, res)
                 else:
                     raise
                 logger.debug("Резервное сообщение отправлено: %s", fallback_text[:50])

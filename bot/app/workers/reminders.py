@@ -7,102 +7,180 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Awaitable, Callable, Optional
 
 from aiogram import Bot
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 
 from bot.app.core.db import get_session
 from bot.app.domain.models import Booking, BookingStatus, Service, User, Master, BookingItem
-from bot.app.services.shared_services import safe_get_locale
+from bot.app.services.shared_services import safe_get_locale, LOCAL_TZ
 from bot.app.translations import t
-import bot.config as cfg
 
 logger = logging.getLogger(__name__)
 
 
 async def _remind_once(now_utc: datetime, bot: Bot) -> int:
+    """Scan upcoming bookings within the next 24 hours and send reminders.
+
+    Returns the number of reminders successfully sent.
+    """
+    # Determine lead time from settings (minutes) and compute window
+    from bot.app.services.client_services import UserRepo, BookingRepo
+    # Use ServiceRepo + SettingsRepo directly
+    from bot.app.services.admin_services import ServiceRepo, SettingsRepo
+    from bot.app.services.shared_services import _safe_send, LOCAL_TZ
+
     try:
-        # Window: all future bookings within the next 24h that are not reminded yet
-        window_utc = now_utc + timedelta(hours=24)
+        lead_min = int(await SettingsRepo.get_reminder_lead_minutes())
+    except Exception:
+        lead_min = 60
+    window_utc = now_utc + timedelta(minutes=lead_min)
+
+    try:
+        # Load Booking rows directly so we can observe reminder metadata and avoid
+        # sending duplicates. We filter out bookings that already have a reminder
+        # recorded with the same lead minutes.
+        from bot.app.domain.models import Booking as BookingModel, TERMINAL_STATUSES
+        from sqlalchemy import or_
+
         async with get_session() as session:
             stmt = (
-                select(Booking, User.telegram_id)
-                .join(User, User.id == Booking.user_id)
+                select(BookingModel)
                 .where(
-                    Booking.status.in_([BookingStatus.CONFIRMED, BookingStatus.PAID]),
-                    Booking.remind_24h_sent.is_(False),
-                    Booking.starts_at > now_utc,
-                    Booking.starts_at <= window_utc,
+                    BookingModel.starts_at >= now_utc,
+                    BookingModel.starts_at < window_utc,
+                    BookingModel.status.notin_(tuple(TERMINAL_STATUSES)),
+                    or_(
+                        BookingModel.last_reminder_sent_at.is_(None),
+                        BookingModel.last_reminder_lead_minutes != int(lead_min),
+                    ),
                 )
+                .order_by(BookingModel.starts_at)
             )
-            rows = list((await session.execute(stmt)).all())
-            count = 0
-            for booking, chat_id in rows:
+            res = await session.execute(stmt)
+            bookings = res.scalars().all()
+
+        user_ids = {int(getattr(b, "user_id", 0) or 0) for b in bookings if getattr(b, "user_id", None)}
+        clients_map = await UserRepo.get_by_ids(user_ids) if user_ids else {}
+
+        sent_count = 0
+        for booking in bookings:
+            try:
+                # Determine client id (Booking.user_id) and resolve user
+                uid = int(getattr(booking, "user_id", getattr(booking, "client_id", 0) or 0) or 0)
+                user = clients_map.get(uid)
+                chat_id = getattr(user, "telegram_id", None) if user else None
+                if not chat_id:
+                    logger.debug("Reminder: no chat_id resolved for booking %s (user_id=%s)", getattr(booking, "id", "?"), uid)
+                    continue
+
+                # locale
+                lang = await safe_get_locale(int(chat_id))
+
+                # Resolve service and master display names
                 try:
-                    # Resolve locale and details
-                    # Resolve locale via centralized safe_get_locale (handles fallbacks)
-                    lang = await safe_get_locale(int(chat_id))
+                    svc_id = getattr(booking, "service_id", None)
+                    if not svc_id:
+                        service_name = t("service_label", lang)
+                    else:
+                        service_name = await ServiceRepo.get_service_name(str(svc_id))
+                except Exception:
+                    service_name = t("service_label", lang)
+                try:
+                    from bot.app.services.master_services import MasterRepo
 
-                    # Load service/master names (support multi-service via BookingItem list)
-                    svc = await session.get(Service, booking.service_id)
-                    m = await session.get(Master, booking.master_id)
-                    # Try to collect names from BookingItem; fallback to single service
-                    try:
-                        rows = list((await session.execute(
-                            select(BookingItem.service_id, Service.name)
-                            .join(Service, Service.id == BookingItem.service_id)
-                            .where(BookingItem.booking_id == booking.id)
-                        )).all())
-                        if rows:
-                            service_name = " + ".join([r[1] or r[0] for r in rows])
+                    master_name = await MasterRepo.get_master_name(int(getattr(booking, "master_id", 0) or 0))
+                except Exception:
+                    master_name = t("master_label", lang)
+                try:
+                    starts_at = booking.starts_at
+                    dt_local = starts_at.astimezone(LOCAL_TZ) if (LOCAL_TZ and starts_at is not None) else starts_at
+                    time_txt = f"{dt_local:%H:%M}"
+                except Exception:
+                    time_txt = "--:--"
+
+                # Determine local date context
+                try:
+                    now_local = datetime.now(LOCAL_TZ) if LOCAL_TZ else datetime.now()
+                    starts_date = dt_local.date() if dt_local is not None else None
+                    tomorrow_date = (now_local + timedelta(days=1)).date()
+                    today_date = now_local.date()
+                except Exception:
+                    starts_date = None
+                    tomorrow_date = None
+                    today_date = None
+
+                # Select translation key: prefer exact 'tomorrow' when appointment is tomorrow,
+                # otherwise use 1h template when lead_min ~60, else use same-day template.
+                use_key = None
+                if starts_date is not None and starts_date == tomorrow_date:
+                    use_key = "reminder_24h_body"
+                elif abs(int(lead_min) - 60) <= 5:
+                    use_key = "reminder_1h_body"
+                else:
+                    use_key = "reminder_same_day_body"
+
+                # Title: pick matching title for selected body key
+                if use_key == "reminder_1h_body":
+                    title_key = "reminder_1h_title"
+                elif use_key == "reminder_same_day_body":
+                    title_key = "reminder_same_day_title"
+                else:
+                    title_key = "reminder_24h_title"
+                title = t(title_key, lang)
+                if title == title_key:
+                    title = {
+                        "uk": "Нагадування про запис",
+                        "ru": "Напоминание о записи",
+                        "en": "Appointment reminder",
+                    }.get(lang, "Appointment reminder")
+
+                body_template = t(use_key, lang)
+                if not isinstance(body_template, str) or body_template == use_key:
+                    # Fallbacks if translations missing
+                    if use_key == "reminder_24h_body":
+                        body_template = t("reminder_24h_body", lang)
+                    elif use_key == "reminder_1h_body":
+                        body_template = t("reminder_1h_body", lang)
+                    else:
+                        body_template = t("reminder_same_day_body", lang)
+
+                body = body_template.format(time=time_txt, service=service_name, master=master_name)
+                text = f"<b>{title}</b>\n\n{body}"
+
+                ok = await _safe_send(bot, chat_id, text)
+                if not ok:
+                    logger.warning("Failed to send 24h reminder to %s for booking %s", chat_id, getattr(booking, "id", "?"))
+                    continue
+                # mark reminder metadata (timestamp + lead) and keep backward flags
+                try:
+                    async with get_session() as session:
+                        now_ts = datetime.now(UTC)
+                        values = {
+                            "last_reminder_sent_at": now_ts,
+                            "last_reminder_lead_minutes": int(lead_min),
+                        }
+                        # Keep old boolean flags for backward compatibility
+                        if int(lead_min) >= 24 * 60:
+                            values["remind_24h_sent"] = True
                         else:
-                            service_name = getattr(svc, "name", None) or t("service_label", lang)
-                    except Exception:
-                        service_name = getattr(svc, "name", None) or t("service_label", lang)
-                    master_name = getattr(m, "name", None) or t("master_label", lang)
+                            values["remind_1h_sent"] = True
 
-                    # Localized time
-                    LOCAL_TZ = getattr(cfg, "LOCAL_TZ", None)
-                    try:
-                        dt_local = booking.starts_at.astimezone(LOCAL_TZ) if LOCAL_TZ else booking.starts_at
-                        time_txt = f"{dt_local:%H:%M}"
-                    except Exception:
-                        time_txt = "--:--"
+                        await session.execute(
+                            update(Booking).where(Booking.id == getattr(booking, "id", None)).values(**values)
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.exception("Failed to mark reminder metadata for booking %s", getattr(booking, "id", "?"))
 
-                    title = t("reminder_24h_title", lang)
-                    if title == "reminder_24h_title":
-                        title = {
-                            "uk": "Нагадування про запис",
-                            "ru": "Напоминание о записи",
-                            "en": "Appointment reminder",
-                        }.get(lang, "Appointment reminder")
-                    body = t("reminder_24h_body", lang).format(time=time_txt, service=service_name, master=master_name)
-                    text = f"<b>{title}</b>\n\n{body}"
+                sent_count += 1
+            except Exception as ie:
+                logger.exception("Error processing reminder for booking %s: %s", getattr(booking, "id", "?"), ie)
 
-                    try:
-                        from bot.app.services.shared_services import _safe_send
-                        ok = await _safe_send(bot, chat_id, text)
-                        if not ok:
-                            logger.warning("Failed to send 24h reminder to %s for booking %s", chat_id, booking.id)
-                            # Skip marking sent on delivery failure
-                            continue
-                    except Exception as se:
-                        logger.warning("Failed to send 24h reminder to %s for booking %s: %s", chat_id, booking.id, se)
-                        continue
-
-                    await session.execute(
-                        update(Booking)
-                        .where(Booking.id == booking.id)
-                        .values(remind_24h_sent=True)
-                    )
-                    count += 1
-                except Exception as ie:
-                    logger.exception("Error processing reminder for booking %s: %s", getattr(booking, "id", "?"), ie)
-            if count:
-                await session.commit()
-            return count
+        return sent_count
     except Exception as e:
         logger.error("Reminder sweep failed: %s", e)
         return 0
@@ -113,7 +191,7 @@ async def _run_loop(stop_event: asyncio.Event, bot: Bot, interval_seconds: int) 
     try:
         await asyncio.sleep(2)
     except Exception:
-        pass
+        logger.exception("reminders: initial sleep interrupted")
     while not stop_event.is_set():
         try:
             await _remind_once(datetime.now(UTC), bot)
@@ -129,8 +207,12 @@ async def _run_loop(stop_event: asyncio.Event, bot: Bot, interval_seconds: int) 
 
 async def start_reminders_worker(bot: Bot) -> Callable[[], Awaitable[None]]:
     """Start the reminders worker and return an async stop() function."""
-    settings = getattr(cfg, "SETTINGS", {})
-    interval_seconds = int(settings.get("reminders_check_seconds", 60))
+    interval_seconds_raw = os.getenv("REMINDERS_CHECK_SECONDS", "60")
+    try:
+        interval_seconds = int(interval_seconds_raw)
+    except ValueError:
+        logger.warning("Invalid REMINDERS_CHECK_SECONDS=%r, defaulting to 60", interval_seconds_raw)
+        interval_seconds = 60
     stop_event: asyncio.Event = asyncio.Event()
     task = asyncio.create_task(_run_loop(stop_event, bot, interval_seconds), name="reminders-worker")
 
@@ -142,7 +224,7 @@ async def start_reminders_worker(bot: Bot) -> Callable[[], Awaitable[None]]:
             except Exception:
                 task.cancel()
         except Exception:
-            pass
+            logger.exception("reminders: stop failed")
 
     logger.info("Reminders worker started (interval=%ss)", interval_seconds)
     return _stop

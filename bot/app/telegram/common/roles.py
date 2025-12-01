@@ -10,12 +10,10 @@ from typing import Literal
 from aiogram.types import CallbackQuery, Message
 from aiogram.filters import BaseFilter
 
-import os
-import bot.config as cfg
 from bot.app.core.db import get_session
 from ...domain.models import User, Master
 from sqlalchemy import select
-from bot.app.services.shared_services import safe_get_locale
+from bot.app.services.shared_services import safe_get_locale, get_admin_ids, get_master_ids
 from bot.app.translations import t
 
 logger = logging.getLogger(__name__)
@@ -30,15 +28,23 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
     """
     uid = getattr(getattr(obj, "from_user", None), "id", None)
     allowed = False
+    # Temporary debug: record attempts to run role checks so we can diagnose
+    # routing problems where messages from admins are not accepted.
+    try:
+        logger.debug("ensure_role: checking role=%s for uid=%s", role, uid)
+    except Exception:
+        pass
     try:
         if role == "admin":
-            allowed = bool(uid) and bool(await is_admin(int(uid)))
+            allowed = bool(uid) and bool(await is_admin(int(uid or 0)))
         elif role == "master":
-            allowed = bool(uid) and bool(await is_master(int(uid)))
+            allowed = bool(uid) and bool(await is_master(int(uid or 0)))
         else:
             allowed = False
     except Exception as e:
-        logger.debug("Role check error for %s: %s", role, e)
+        # Log exception at info level so it's visible in normal logs while
+        # diagnosing production issues with DB connectivity or sessions.
+        logger.exception("Role check error for %s (uid=%s): %s", role, uid, e)
         allowed = False
 
     if allowed:
@@ -55,14 +61,14 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
         if isinstance(obj, Message):
             await obj.answer(text)
         else:
-            # Acknowledge the callback without an alert text to avoid repeated
-            # modal popups for regular clients. Admins typically use commands
-            # (Messages) and will still receive the textual notice above.
+            # For callback queries, show a localized alert so the user sees
+            # why the action was denied. This makes diagnosing routing/role
+            # issues easier in the UI. If this becomes noisy, we can revert
+            # to a silent acknowledge, but for now an alert improves UX.
             try:
-                await obj.answer()
+                await obj.answer(text, show_alert=True)
             except Exception:
-                # Best-effort: if answering fails, ignore - we don't want to
-                # spam logs for common race conditions between callback edits.
+                # Best-effort: if answering fails, ignore to avoid spamming logs
                 pass
     except Exception as send_err:
         logger.warning("Failed to send access denied message: %s", send_err)
@@ -85,7 +91,7 @@ async def is_admin_user(obj: Message | CallbackQuery) -> bool:
     """
     try:
         uid = getattr(getattr(obj, "from_user", None), "id", None)
-        return bool(uid) and bool(await is_admin(int(uid)))
+        return bool(uid) and bool(await is_admin(int(uid or 0)))
     except Exception:
         return False
 
@@ -94,7 +100,7 @@ async def is_master_user(obj: Message | CallbackQuery) -> bool:
     """Return True if the sender is a master without sending denial messages."""
     try:
         uid = getattr(getattr(obj, "from_user", None), "id", None)
-        return bool(uid) and bool(await is_master(int(uid)))
+        return bool(uid) and bool(await is_master(int(uid or 0)))
     except Exception:
         return False
 
@@ -102,8 +108,8 @@ async def is_master_user(obj: Message | CallbackQuery) -> bool:
 # =====================================================
 # ENV + DB backed role checks (moved from core.db)
 # =====================================================
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
-MASTER_IDS = [int(x) for x in os.getenv("MASTER_IDS", "").split(",") if x.strip().isdigit()]
+ADMIN_IDS = get_admin_ids()
+MASTER_IDS = get_master_ids()
 
 
 def is_admin_env(user_id: int) -> bool:
@@ -115,19 +121,31 @@ def is_master_env(user_id: int) -> bool:
 
 
 async def is_admin_db(user_id: int) -> bool:
-    async with get_session() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == user_id, User.is_admin == True)
-        )
-        return result.scalar_one_or_none() is not None
+    try:
+        async with get_session() as session:
+            result = await session.execute(
+                select(User).where(User.telegram_id == user_id, User.is_admin == True)
+            )
+            found = result.scalar_one_or_none() is not None
+            logger.debug("is_admin_db: user_id=%s found=%s", user_id, found)
+            return found
+    except Exception as e:
+        logger.exception("is_admin_db failed for user_id=%s: %s", user_id, e)
+        return False
 
 
 async def is_master_db(user_id: int) -> bool:
-    async with get_session() as session:
-        result = await session.execute(
-            select(Master).where(Master.telegram_id == user_id)
-        )
-        return result.scalar_one_or_none() is not None
+    try:
+        async with get_session() as session:
+            result = await session.execute(
+                select(Master).where(Master.telegram_id == user_id)
+            )
+            found = result.scalar_one_or_none() is not None
+            logger.debug("is_master_db: user_id=%s found=%s", user_id, found)
+            return found
+    except Exception as e:
+        logger.exception("is_master_db failed for user_id=%s: %s", user_id, e)
+        return False
 
 
 async def is_admin(user_id: int) -> bool:
@@ -150,9 +168,12 @@ class AdminRoleFilter(BaseFilter):
     behavior and localization remain consistent.
     """
 
-    async def __call__(self, obj: Message | CallbackQuery) -> bool:  # type: ignore[override]
+    async def __call__(self, obj: Message | CallbackQuery) -> bool:
         try:
-            return await ensure_admin(obj)
+            uid = getattr(getattr(obj, 'from_user', None), 'id', None)
+            allowed = await ensure_admin(obj)
+            logger.debug("AdminRoleFilter: uid=%s allowed=%s", uid, allowed)
+            return allowed
         except Exception:
             return False
 
@@ -163,9 +184,12 @@ class MasterRoleFilter(BaseFilter):
     Delegates to `ensure_master` for consistent behavior.
     """
 
-    async def __call__(self, obj: Message | CallbackQuery) -> bool:  # type: ignore[override]
+    async def __call__(self, obj: Message | CallbackQuery) -> bool:
         try:
-            return await ensure_master(obj)
+            uid = getattr(getattr(obj, 'from_user', None), 'id', None)
+            allowed = await ensure_master(obj)
+            logger.debug("MasterRoleFilter: uid=%s allowed=%s", uid, allowed)
+            return allowed
         except Exception:
             return False
 

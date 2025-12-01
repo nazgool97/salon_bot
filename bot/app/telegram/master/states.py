@@ -7,6 +7,7 @@ class MasterStates(StatesGroup):
     """States used by master flows (kept minimal)."""
 
     edit_note = State()
+    cancel_reason_text = State()
     # Settings editing
     settings_menu = State()
     settings_edit_profile = State()

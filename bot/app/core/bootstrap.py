@@ -14,6 +14,19 @@ from bot.app.domain import models
 __all__ = ["init_services", "init_masters", "maybe_start_scheduler"]
 
 
+DEFAULT_SERVICES: list[tuple[str, str, int, str]] = [
+    ("haircut", "Стрижка", 3000, "hair"),
+    ("color", "Фарбування", 5000, "color"),
+    ("nails", "Манікюр", 2500, "nails"),
+    ("brows", "Брови", 2000, "brows"),
+]
+
+DEFAULT_MASTERS: list[tuple[int, str]] = [
+    (111, "Катя"),
+    (222, "Олена"),
+]
+
+
 async def _upsert_services(
     existing_ids: set[str], session: AsyncSession, specs: Iterable[tuple[str, str, int, str]]
 ) -> None:
@@ -63,20 +76,6 @@ async def _ensure_master(session: AsyncSession, telegram_id: int, name: str) -> 
     obj = models.Master(telegram_id=telegram_id, name=name)
     session.add(obj)
     return obj
-
-
-
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-import bot.config as cfg
-
-# Указываем parse_mode через DefaultBotProperties
-bot = Bot(
-    token=getattr(cfg, "BOT_TOKEN", ""),
-    default=DefaultBotProperties(parse_mode="HTML")
-)
-
-dp = Dispatcher()
 
 
 

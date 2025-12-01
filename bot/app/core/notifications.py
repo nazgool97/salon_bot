@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable
 
 from aiogram import Bot
 
-import bot.config as cfg
 from bot.app.services.shared_services import _safe_send
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,10 @@ async def notify_admins(message: str, bot: Bot) -> None:
         message: Text to send to admins.
         bot: An initialized aiogram.Bot instance.
     """
-    admin_ids: Iterable[int] = getattr(cfg, "ADMIN_IDS", []) or []
+    admin_ids_str = os.getenv("ADMIN_IDS", "")
+    admin_ids: Iterable[int] = [
+        int(part.strip()) for part in admin_ids_str.split(",") if part.strip().isdigit()
+    ]
     if not admin_ids:
         logger.debug("notify_admins: no ADMIN_IDS configured; skipping")
         return

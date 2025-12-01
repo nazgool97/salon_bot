@@ -9,10 +9,11 @@ State keys used in FSMContext:
 We serialize InlineKeyboardMarkup via model_dump/model_validate so it is safe
 to restore later for editing the same message.
 """
+from typing import Any, cast
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 
-def _dump_markup(markup: InlineKeyboardMarkup | None) -> dict | None:
+def _dump_markup(markup: InlineKeyboardMarkup | None) -> dict[str, Any] | None:
     if not markup:
         return None
     try:
@@ -20,7 +21,7 @@ def _dump_markup(markup: InlineKeyboardMarkup | None) -> dict | None:
     except Exception:
         return None
 
-def _restore_markup(dump: dict | None) -> InlineKeyboardMarkup | None:
+def _restore_markup(dump: dict[str, Any] | None) -> InlineKeyboardMarkup | None:
     if not dump:
         return None
     try:
@@ -41,6 +42,7 @@ async def nav_push(
     *,
     deduplicate: bool = True,
     lang: str | None = None,
+    parse_mode: str | None = None,
 ) -> bool:
     """Push current screen onto stack and set new current screen.
 
@@ -55,18 +57,23 @@ async def nav_push(
         True if a push occurred, False if skipped due to deduplication.
     """
     data = await state.get_data()
-    stack: list[dict] = data.get("nav_stack", [])
+    stack: list[dict[str, Any]] = data.get("nav_stack", [])
     cur_text = data.get("current_text")
     cur_markup = data.get("current_markup")
     dumped_new = _dump_markup(new_markup)
     if deduplicate and cur_text == new_text and cur_markup == dumped_new:
         return False
     if cur_text is not None:
-        stack.append({"text": cur_text, "markup": cur_markup})
+        stack.append({"text": cur_text, "markup": cur_markup, "parse_mode": data.get("current_parse_mode")})
     payload = {"nav_stack": stack, "current_text": new_text, "current_markup": dumped_new}
+    # store parse_mode for the current screen so it can be restored when popping
+    if parse_mode:
+        payload["current_parse_mode"] = parse_mode
     if lang:
         payload["current_lang"] = lang
-    await state.update_data(**payload)
+    # mypy: FSMContext.update_data accepts a Mapping[str, Any] | None as a single
+    # argument; using the dict directly keeps the typing consistent.
+    await state.update_data(payload)
     return True
 
 async def nav_back(state: FSMContext) -> tuple[str | None, InlineKeyboardMarkup | None, bool]:
@@ -76,26 +83,29 @@ async def nav_back(state: FSMContext) -> tuple[str | None, InlineKeyboardMarkup 
         (text, markup, popped?) where popped? is False if stack empty.
     """
     data = await state.get_data()
-    stack: list[dict] = data.get("nav_stack", [])
+    stack: list[dict[str, Any]] = data.get("nav_stack", [])
     if not stack:
         return None, None, False
     frame = stack.pop()
-    await state.update_data(nav_stack=stack, current_text=frame.get("text"), current_markup=frame.get("markup"))
+    # Restore parse_mode for the now-current frame (might be None)
+    await state.update_data(nav_stack=stack, current_text=frame.get("text"), current_markup=frame.get("markup"), current_parse_mode=frame.get("parse_mode"))
     return frame.get("text"), _restore_markup(frame.get("markup")), True
 
 
 async def nav_replace(state: FSMContext, new_text: str, new_markup: InlineKeyboardMarkup | None, *, lang: str | None = None) -> None:
     """Replace current screen without pushing previous state. Optionally set lang."""
-    payload = {"current_text": new_text, "current_markup": _dump_markup(new_markup)}
+    payload: dict[str, Any] = {"current_text": new_text, "current_markup": _dump_markup(new_markup)}
     if lang:
         payload["current_lang"] = lang
-    await state.update_data(**payload)
+    # preserve parse_mode when replacing if provided in new_markup.model_dump()
+    # Pass mapping directly to match FSMContext.update_data typing
+    await state.update_data(payload)
 
 
 async def nav_can_go_back(state: FSMContext) -> bool:
     """Return True if there is at least one frame to go back to."""
     data = await state.get_data()
-    stack: list[dict] = data.get("nav_stack", [])
+    stack: list[dict[str, Any]] = data.get("nav_stack", [])
     return bool(stack)
 
 
@@ -105,10 +115,16 @@ async def nav_current(state: FSMContext) -> tuple[str | None, InlineKeyboardMark
     return data.get("current_text"), _restore_markup(data.get("current_markup"))
 
 
-async def nav_get_lang(state: FSMContext) -> str | None:
-    """Get the current UI language stored in nav state (if any)."""
-    data = await state.get_data()
-    return data.get("current_lang")
+async def nav_get_lang(state: FSMContext | None) -> str | None:
+    """Get the current UI language stored in nav state (if any).
+
+    NOTE: Locale is expected to be provided by middleware and passed to handlers
+    as the `locale` argument. Returning `None` here ensures existing handler
+    patterns that fall back to `locale` (e.g. `(await nav_get_lang(state)) or locale`)
+    will consistently use the middleware-provided `locale` as the single source
+    of truth. This reduces the need for handlers to read FSM data for locale.
+    """
+    return None
 
 
 async def nav_set_lang(state: FSMContext, lang: str) -> None:
@@ -129,6 +145,7 @@ __all__ = [
 
 from typing import Optional, Union, Any
 from aiogram.types import Message, CallbackQuery
+from aiogram.exceptions import TelegramAPIError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -160,12 +177,7 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
         from bot.app.telegram.common.ui_fail_safe import safe_edit
     except Exception:
         # If imports fail, log and abort silently to avoid crashing callers
-        try:
-            import logging
-
-            logging.getLogger(__name__).debug("show_main_client_menu: required imports unavailable")
-        except Exception:
-            pass
+        logger.debug("show_main_client_menu: required imports unavailable")
         return
 
     try:
@@ -182,15 +194,13 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
             try:
                 await nav_reset(state)
             except Exception:
-                # best-effort
-                pass
+                logger.exception("nav_reset failed inside show_main_client_menu")
 
         kb = await get_main_menu(user_id)
         try:
-            logger.info("Отправлено меню: %s", getattr(kb, 'inline_keyboard', None))
+            logger.debug("Отправлено меню: %s", getattr(kb, 'inline_keyboard', None))
         except Exception:
-            # best-effort logging; don't fail the menu send on logging error
-            pass
+            logger.exception("show_main_client_menu: logging debug failed")
         lang = await safe_get_locale(user_id)
         text_root = tr("main_menu", lang=lang) or "Главное меню"
 
@@ -203,7 +213,7 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
                     try:
                         await target_msg.answer(text_root, reply_markup=kb)
                     except Exception:
-                        pass
+                        logger.exception("show_main_client_menu: answer fallback failed")
                 else:
                     # Reraise to let caller handle unexpected Telegram errors
                     raise
@@ -211,7 +221,7 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
             try:
                 await target_msg.answer(text_root, reply_markup=kb)
             except Exception:
-                pass
+                logger.exception("show_main_client_menu: send via target_msg failed")
 
         if state is not None:
             try:
@@ -219,17 +229,12 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
                 try:
                     await state.update_data(current_screen="main")
                 except Exception:
-                    pass
+                        logger.exception("show_main_client_menu: failed to update state.current_screen")
             except Exception:
-                pass
+                logger.exception("show_main_client_menu: failed to nav_replace or update state")
     except Exception:
-        # swallow unexpected exceptions here to avoid breaking callers
-        try:
-            import logging
-
-            logging.getLogger(__name__).exception("show_main_client_menu: unexpected error")
-        except Exception:
-            pass
+            # Log unexpected exceptions; don't raise from helper
+            logger.exception("show_main_client_menu: unexpected error")
 
 
 async def nav_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
@@ -242,13 +247,10 @@ async def nav_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContex
             try:
                 await nav_reset(state)
             except Exception:
-                pass
+                    logger.exception("nav_root: nav_reset failed")
         await show_main_client_menu(obj, state)
     except Exception:
-        try:
-            logger.exception("nav_root: unexpected error")
-        except Exception:
-            pass
+        logger.exception("nav_root: unexpected error")
 
 
 async def nav_pop(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
@@ -269,17 +271,25 @@ async def nav_pop(obj: Union[Message, CallbackQuery], state: Optional[FSMContext
         try:
             if isinstance(obj, CallbackQuery) and obj.message is not None:
                 from bot.app.telegram.common.ui_fail_safe import safe_edit
-                await safe_edit(obj.message, text or "", reply_markup=markup)
+                # retrieve parse_mode that was stored for the restored frame
+                try:
+                    data = await state.get_data()
+                    pm = data.get("current_parse_mode")
+                except Exception:
+                    pm = None
+                # Pass keyword args explicitly so static type checkers don't
+                # attempt to match positional parameters (e.g. fallback_text).
+                if pm:
+                    await safe_edit(obj.message, text or "", reply_markup=markup, parse_mode=pm)
+                else:
+                    await safe_edit(obj.message, text or "", reply_markup=markup)
                 return
         except Exception:
-            pass
+                logger.exception("nav_pop: failed to pop or restore navigation frame")
         # Fallback: show root
         await nav_root(obj, state)
     except Exception:
-        try:
-            logger.exception("nav_pop: unexpected error")
-        except Exception:
-            pass
+        logger.exception("nav_pop: unexpected error")
 
 
 async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
@@ -325,15 +335,14 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                     await nav_root(obj, state)
                     return
             except Exception:
-                # If anything goes wrong detecting titles, continue with normal flow
-                pass
+                    logger.exception("nav_role_root: failed to detect current role titles")
 
         # Reset nav stack now (role root should be the new root)
         if state is not None:
             try:
                 await nav_reset(state)
             except Exception:
-                pass
+                logger.exception("nav_role_root: nav_reset failed")
 
         # Determine role and show the appropriate menu. Use lazy imports to
         # avoid circular imports at module load time.
@@ -352,11 +361,11 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
             if pref == "master":
                 try:
                     from bot.app.telegram.master.master_handlers import show_master_menu
-                    await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
-                    return
+                    if state is not None:
+                        await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
+                        return
                 except Exception:
-                    # fall through to role-detection if preferred handling fails
-                    pass
+                        logger.exception("nav_role_root: preferred master handler failed")
             if pref == "admin":
                 try:
                     from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
@@ -372,11 +381,10 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                         if state is not None:
                             await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
                     except Exception:
-                        pass
+                            logger.exception("nav_role_root: preferred admin handler failed")
                     return
                 except Exception:
-                    # fall through to role-detection if preferred handling fails
-                    pass
+                    logger.exception("nav_role_root: preferred admin handler failed, falling back")
 
             # If no preferred role hint or preferred handling failed, fall back
             # to dynamic role detection (existing behaviour).
@@ -388,11 +396,11 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                 try:
                     # Delegate to master handler's show_master_menu which resets nav
                     from bot.app.telegram.master.master_handlers import show_master_menu
-                    await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
-                    return
+                    if state is not None:
+                        await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
+                        return
                 except Exception:
-                    # If master menu build/show fails, fall through to admin/client
-                    pass
+                    logger.exception("nav_role_root: master role detection failed, falling back")
             if await is_admin_user(obj):
                 try:
                     from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
@@ -408,22 +416,17 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                         if state is not None:
                             await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
                     except Exception:
-                        pass
+                        logger.exception("nav_role_root: updating nav state for admin role failed")
                     return
                 except Exception:
-                    # If admin menu build/show fails, fall through to client
-                    pass
+                    logger.exception("nav_role_root: admin role detection failed, falling back")
         except Exception:
-            # Role checks failed — fall back to client root
-            pass
+              logger.exception("nav_role_root: role detection failed")
 
         # Default fallback: client main menu
         await nav_root(obj, state)
     except Exception:
-        try:
-            logger.exception("nav_role_root: unexpected error")
-        except Exception:
-            pass
+        logger.exception("nav_role_root: unexpected error")
 
 
 # Navigation router: central handler for NavCB callbacks (root/back/role_root).
@@ -433,27 +436,45 @@ nav_router = Router(name="navigation")
 
 
 @nav_router.callback_query(NavCB.filter(F.act == "root"))
-async def _handle_nav_root(cb: CallbackQuery, state: FSMContext):
+async def _handle_nav_root(cb: CallbackQuery, state: FSMContext) -> None:
     """Глобальный возврат в главное меню клиента."""
     await cb.answer()
     await nav_root(cb, state)
 
 
 @nav_router.callback_query(NavCB.filter(F.act == "back"))
-async def _handle_nav_back(cb: CallbackQuery, state: FSMContext):
+async def _handle_nav_back(cb: CallbackQuery, state: FSMContext) -> None:
     """Шаг назад по стеку навигации."""
     await cb.answer()
     await nav_pop(cb, state)
 
 
 @nav_router.callback_query(NavCB.filter(F.act == "role_root"))
-async def _handle_nav_role_root(cb: CallbackQuery, state: FSMContext):
+async def _handle_nav_role_root(cb: CallbackQuery, state: FSMContext) -> None:
     """Возврат в корневое меню роли (admin/master/client)."""
     await cb.answer()
     await nav_role_root(cb, state)
 
 
+@nav_router.callback_query(NavCB.filter(F.act == "noop"))
+async def _handle_nav_noop(cb: CallbackQuery, state: FSMContext) -> None:
+    """No-op navigation handler used by UI labels (prevents unhandled callbacks).
+
+    The pagination center label uses a harmless NavCB act='noop' so clicking it
+    doesn't produce an error; this handler simply acknowledges the callback.
+    """
+    try:
+        await cb.answer()
+    except TelegramAPIError as exc:
+        logger.debug("nav_noop: TelegramAPIError while acknowledging noop: %s", exc)
+    except Exception:
+        logger.exception("nav_noop: unexpected error while acknowledging noop")
+
+
 __all__.extend(["nav_router"])
+
+
+# (debug handler removed)
 
 
 __all__.extend([

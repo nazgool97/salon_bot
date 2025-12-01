@@ -14,16 +14,20 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import update, select
 
 from bot.app.core.db import get_session
+from bot.app.services.shared_services import get_env_int as _get_env_int, get_admin_ids
 from bot.app.domain.models import Booking, BookingStatus
-import bot.config as cfg
+from aiogram import Bot
 
 logger = logging.getLogger(__name__)
+
+
+"""Use get_env_int from shared_services; local implementation removed."""
 
 
 async def _expire_once(now_utc: datetime) -> int:
     try:
         async with get_session() as session:
-            hold_minutes = int(getattr(cfg, "get_hold_minutes", lambda: 1)())
+            hold_minutes = _get_env_int("RESERVATION_HOLD_MINUTES", 5)
             stmt = (
                 update(Booking)
                 .where(
@@ -83,19 +87,15 @@ async def _run_loop(stop_event: asyncio.Event, interval_seconds: int | None) -> 
     try:
         await asyncio.sleep(2)
     except Exception:
-        pass
+        logger.exception("expiration: initial sleep interrupted")
     while not stop_event.is_set():
         try:
             await _expire_once(datetime.now(UTC))
         except Exception as e:
             logger.exception("Expiration worker iteration error: %s", e)
-        # Recompute interval each iteration from runtime SETTINGS so changes
+        # Recompute interval each iteration from ENV so changes
         # take effect without restarting the process.
-        try:
-            settings = getattr(cfg, "SETTINGS", {})
-            cur_interval = int(settings.get("reservation_expire_check_seconds", 30))
-        except Exception:
-            cur_interval = 30
+        cur_interval = _get_env_int("RESERVATION_EXPIRE_CHECK_SECONDS", 30)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=cur_interval)
         except asyncio.TimeoutError:
@@ -109,9 +109,7 @@ from typing import Awaitable, Callable, Optional
 
 async def start_expiration_worker() -> Callable[[], Awaitable[None]]:
     """Start the expiration worker and return an async stop() function."""
-    # Allow configuration via SETTINGS; default: run every 30 seconds
-    settings = getattr(cfg, "SETTINGS", {})
-    interval_seconds = int(settings.get("reservation_expire_check_seconds", 30))
+    interval_seconds = _get_env_int("RESERVATION_EXPIRE_CHECK_SECONDS", 30)
     stop_event: asyncio.Event = asyncio.Event()
     # pass initial interval (kept for signature/backwards compat)
     task = asyncio.create_task(_run_loop(stop_event, interval_seconds), name="expire-worker")
@@ -124,7 +122,7 @@ async def start_expiration_worker() -> Callable[[], Awaitable[None]]:
             except Exception:
                 task.cancel()
         except Exception:
-            pass
+            logger.exception("expiration: stop failed")
 
     logger.info("Expiration worker started (interval=%ss)", interval_seconds)
     return _stop
@@ -135,4 +133,146 @@ async def stop_expiration_worker(stop_callable: Optional[Callable[[], Awaitable[
     if stop_callable:
         await stop_callable()
 
+
+
+
+# Примерная логика для cleanup_worker.py
+from datetime import datetime, timedelta, UTC
+from sqlalchemy import select, update, or_
+
+
+# Статусы, которые считаются "активными", но уже должны были завершиться
+LIMBO_STATUSES = [
+    BookingStatus.CONFIRMED,
+    BookingStatus.PAID,
+    BookingStatus.RESERVED,
+    BookingStatus.AWAITING_CASH,
+    BookingStatus.PENDING_PAYMENT
+]
+
+# Как долго ждать после начала записи, прежде чем считать ее "неявкой"
+# (Например, 2 часа, чтобы дать мастеру время закончить и нажать "Готово")
+NO_SHOW_GRACE_PERIOD_HOURS = 2 
+
+async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None = None, bot: Bot | None = None) -> None:
+    """Internal cleanup loop that marks long-past LIMBO bookings as NO_SHOW.
+
+    This loop checks for limbo bookings every `interval_seconds` (default 900s)
+    and respects `stop_event` for graceful shutdown.
+    """
+    check_interval_seconds = interval_seconds if interval_seconds is not None else _get_env_int("CLEANUP_CHECK_SECONDS", 900)
+
+    logger.info("Запуск воркера очистки 'лимбо' записей...")
+    while not stop_event.is_set():
+        try:
+            now = datetime.now(UTC)
+
+            # Ищем записи, которые начались более N часов назад и все еще "активны"
+            cutoff_time = now - timedelta(hours=NO_SHOW_GRACE_PERIOD_HOURS)
+
+            async with get_session() as session:
+                # 1. Находим кандидатов на авто-неявку
+                stmt = select(Booking.id).where(
+                    Booking.starts_at < cutoff_time,
+                    Booking.status.in_(LIMBO_STATUSES)
+                )
+                result = await session.execute(stmt)
+                booking_ids_to_fail = result.scalars().all()
+
+                if booking_ids_to_fail:
+                    logger.info(f"Найдено {len(booking_ids_to_fail)} 'лимбо' записей. Обновление статуса на NO_SHOW...")
+
+                    # 2. Обновляем их статус на NO_SHOW
+                    update_stmt = update(Booking).where(
+                        Booking.id.in_(booking_ids_to_fail)
+                    ).values(
+                        status=BookingStatus.NO_SHOW
+                    )
+                    await session.execute(update_stmt)
+                    await session.commit()
+                    logger.info(f"Обновлено {len(booking_ids_to_fail)} записей.")
+
+                    # 3. Notify affected parties about NO_SHOW (if bot provided)
+                    if bot is not None:
+                        try:
+                            from bot.app.services.client_services import send_booking_notification
+                            from bot.app.services.master_services import MasterRepo
+                            admins = get_admin_ids() or []
+                            for bid in booking_ids_to_fail:
+                                try:
+                                    bd = await MasterRepo.get_booking_display_data(int(bid))
+                                    client_tid = bd.get("client_telegram_id") if bd else None
+                                    master_tid = bd.get("master_telegram_id") if bd else None
+                                    recipients: list[int] = []
+                                    if client_tid:
+                                        try:
+                                            recipients.append(int(client_tid))
+                                        except Exception:
+                                            pass
+                                    if master_tid:
+                                        try:
+                                            recipients.append(int(master_tid))
+                                        except Exception:
+                                            pass
+                                    for a in admins:
+                                        try:
+                                            recipients.append(int(a))
+                                        except Exception:
+                                            pass
+                                    recipients = list(dict.fromkeys(recipients))
+                                    if recipients:
+                                        try:
+                                            await send_booking_notification(bot, int(bid), "no_show", recipients)
+                                        except Exception:
+                                            logger.exception("Failed to send no-show notification for booking %s", bid)
+                                except Exception:
+                                    logger.exception("Failed to prepare/notify for booking %s", bid)
+                        except Exception:
+                            logger.exception("Failed to run NO_SHOW notifications loop")
+
+        except Exception as e:
+            logger.exception(f"Ошибка в cleanup loop: {e}")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=check_interval_seconds)
+        except asyncio.TimeoutError:
+            continue
+        except Exception:
+            break
+
+
+
+
 __all__ = ["start_expiration_worker", "stop_expiration_worker"]
+
+
+async def start_cleanup_worker(bot: Bot | None = None) -> Callable[[], Awaitable[None]]:
+    """Start the cleanup worker and return an async stop() function.
+
+    Uses the same stop-event pattern as `start_expiration_worker` for
+    graceful shutdown.
+    """
+    interval_seconds = _get_env_int("CLEANUP_CHECK_SECONDS", 900)
+    stop_event: asyncio.Event = asyncio.Event()
+    task = asyncio.create_task(_cleanup_loop(stop_event, interval_seconds, bot=bot), name="cleanup-worker")
+
+    async def _stop() -> None:
+        try:
+            stop_event.set()
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except Exception:
+                task.cancel()
+        except Exception:
+            logger.exception("cleanup: stop failed")
+
+    logger.info("Cleanup worker started (interval=%ss)", interval_seconds)
+    return _stop
+
+
+async def stop_cleanup_worker(stop_callable: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+    """Compatibility helper: call provided stop callable if any."""
+    if stop_callable:
+        await stop_callable()
+
+__all__.extend(["start_cleanup_worker", "stop_cleanup_worker"])

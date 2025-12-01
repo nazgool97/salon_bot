@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
-import bot.config as cfg
 from bot.app.services.shared_services import safe_get_locale
 
 logger = logging.getLogger(__name__)

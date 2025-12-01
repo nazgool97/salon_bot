@@ -6,262 +6,310 @@ from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from rich.logging import RichHandler
+
 from bot.app.telegram.main_router import build_main_router
-from bot.app.workers.expiration import start_expiration_worker, stop_expiration_worker
-from bot.app.workers.reminders import start_reminders_worker, stop_reminders_worker
-import bot.config as bot_config
-import argparse
-import sys
+from bot.app.workers.expiration import start_expiration_worker, start_cleanup_worker
+from bot.app.workers.reminders import start_reminders_worker
 from bot.app.core.db import get_session
 from bot.app.domain.models import Master
+from bot.app.services.shared_services import get_admin_ids, safe_get_locale
+from bot.app.translations import t
+import argparse
+import sys
 
-logger = logging.getLogger("bot.run")
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("bot.log")]
+
+# ==============================================================
+# LOGGING CONFIG (Variant B)
+# ==============================================================
+
+# Console: INFO / WARNING / ERROR (Rich)
+console_handler = RichHandler(
+    rich_tracebacks=True,
+    markup=True,
+    show_time=True,
+    show_level=True,
+    show_path=False,
+    log_time_format="%H:%M:%S",
 )
 
-async def maybe_seed() -> None:
-    """Опционально заполняет базовые данные, если установлен флаг RUN_BOOTSTRAP.
+# File: WARNING+ only
+file_handler = logging.FileHandler("bot.log", encoding="utf-8")
+file_handler.setLevel(logging.WARNING)
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+))
 
-    Использует легковесные идемпотентные помощники из bot.app.core.bootstrap.
-    """
+# Resolve root log level from environment (LOG_LEVEL), default INFO
+_env_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+_level = getattr(logging, _env_level, logging.INFO)
+
+logging.basicConfig(
+    level=_level,       # configurable via LOG_LEVEL
+    format="%(message)s",
+    handlers=[console_handler, file_handler],
+)
+
+logger = logging.getLogger("bot")
+
+
+# Reduce noisy logs — but keep WARNINGS
+logging.getLogger("aiogram").setLevel(logging.INFO)
+logging.getLogger("aiogram.dispatcher").setLevel(logging.INFO)
+logging.getLogger("aiogram.event").setLevel(logging.INFO)
+
+logging.getLogger("asyncpg").setLevel(logging.WARNING)
+logging.getLogger("alembic").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+
+# ==============================================================
+# BOOTSTRAP
+# ==============================================================
+
+async def maybe_seed() -> None:
+    """Опционально заполняет данные через RUN_BOOTSTRAP."""
     if os.getenv("RUN_BOOTSTRAP", "0").lower() not in {"1", "true", "yes"}:
         return
-    logger.info("[bootstrap] Seeding baseline services/masters if missing…")
+
+    logger.info("[bootstrap] Running…")
+
     try:
         from bot.app.core.bootstrap import init_services, init_masters
-        import bot.config as cfg
+        from bot.app.services.admin_services import invalidate_services_cache
+        from bot.app.services.master_services import invalidate_masters_cache
 
         await init_services()
         await init_masters()
-        # Очищаем кэш, чтобы меню сразу отображали свежие данные
+
         try:
-            getattr(cfg, "invalidate_services_cache", (lambda: None))()
-            getattr(cfg, "invalidate_masters_cache", (lambda: None))()
+            invalidate_services_cache()
         except Exception:
-            pass
-        logger.info("[bootstrap] Seeding completed")
+            logger.exception("maybe_seed: invalidate_services_cache failed")
+
+        try:
+            invalidate_masters_cache()
+        except Exception:
+            logger.exception("maybe_seed: invalidate_masters_cache failed")
+
+        logger.info("[bootstrap] Completed")
     except Exception as e:
-        logger.error("Bootstrap seeding failed: %s", e)
+        logger.error("[bootstrap] Failed: %s", e)
+
+
+# ==============================================================
+# ADMIN NOTIFY
+# ==============================================================
 
 async def _notify_admins(bot: Bot) -> None:
-    import bot.config as cfg
-    from bot.app.services.shared_services import safe_get_locale
-    from bot.app.translations import t
-    admin_ids = getattr(cfg, "ADMIN_IDS", []) or []
+    admin_ids = get_admin_ids()
+
     for uid in admin_ids:
         try:
-            # Use safe_get_locale which centralizes DB errors and provides a default
             lang = await safe_get_locale(int(uid or 0))
             msg = t("bot_started_notice", lang)
+
             if msg == "bot_started_notice":
-                # Текст по умолчанию, если ключ отсутствует
                 msg = {
-                    "uk": "Бот запущено. Надішліть /start для меню або /ping для перевірки.",
-                    "ru": "Бот запущен. Отправьте /start для меню или /ping для проверки.",
-                    "en": "Bot started. Send /start for menu or /ping to check."
-                }.get(lang, "Bot started. Send /start for menu or /ping to check.")
+                    "uk": "Бот запущено. Надішліть /start або /ping.",
+                    "ru": "Бот запущен. Отправьте /start или /ping.",
+                    "en": "Bot started. Send /start or /ping."
+                }.get(lang, "Bot started. Send /start or /ping.")
+
+            from bot.app.services.shared_services import _safe_send
+
             try:
-                from bot.app.services.shared_services import _safe_send
                 await _safe_send(bot, uid, msg)
             except Exception:
                 await bot.send_message(uid, msg)
         except Exception:
-            # Игнорируем, если пользователь не запустил бот
-            pass
+            logger.exception("_notify_admins: failed to send admin notifications")
+
+
+# ==============================================================
+# MAIN
+# ==============================================================
 
 async def main() -> None:
-    TELEGRAM_TOKEN = getattr(bot_config, "BOT_TOKEN", "") or os.getenv("BOT_TOKEN", "")
-    if not TELEGRAM_TOKEN:
+    token = os.getenv("BOT_TOKEN")
+    if not token:
         logger.error("BOT_TOKEN is not set")
-        raise SystemExit("BOT_TOKEN env var is required")
+        raise SystemExit(1)
 
-    # Загружаем настройки из базы данных (переопределяют ENV) перед подключением роутеров/воркеров
+    # Load settings BEFORE routers
     try:
-        import bot.config as cfg
-        fn = getattr(cfg, "load_settings_from_db", None)
-        if callable(fn):
-            res = fn()
-            # Ожидаем, если это корутина
-            if hasattr(res, "__await__"):
-                await res  # type: ignore
-            logger.info("Runtime settings loaded from DB at startup")
+        from bot.app.services.admin_services import load_settings_from_db
+        await load_settings_from_db()
+        logger.info("Loaded runtime settings from DB")
     except Exception as e:
-        logger.warning("Could not load settings from DB at startup: %s", e)
+        logger.warning("Could not load settings from DB: %s", e)
 
-    # Инициализируем Bot и Dispatcher
-    bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
 
-    # Подключаем feature роутеры напрямую в Dispatcher.
-    # Непосредственное включение каждого роутера в dp обходиt возможные
-    # несовместимости версий aiogram при вложенных include_router.
-    # Register admin router first so role-protected FSM handlers are matched
-    # before more general client fallback handlers. This ordering prevents
-    # the client catch-all from accidentally consuming stateful admin inputs.
-    # Include a small global navigation router first so NavCB callbacks are
-    # handled before other feature routers. This router should be included
-    # into the Dispatcher PRIOR to admin/master/client routers.
+    # Navigation first
     try:
         from bot.app.telegram.common.navigation import nav_router
         dp.include_router(nav_router)
-        logger.info("Navigation router included into Dispatcher")
+        logger.info("Navigation router included")
     except Exception as e:
-        logger.error("Failed to include nav_router into Dispatcher: %s", e)
+        logger.error("Failed to include nav_router: %s", e)
 
-    try:
-        from bot.app.telegram.admin.admin_handlers import admin_router
-        dp.include_router(admin_router)
-        logger.info("Admin router included into Dispatcher")
-    except Exception as e:
-        logger.error("Failed to include admin_router into Dispatcher: %s", e)
-
-    # Include master router before client router so master role-protected
-    # callback handlers and FSM flows are matched prior to more general
-    # client handlers. This reduces fragile fallback parsing in master code.
-    try:
-        from bot.app.telegram.master.master_handlers import master_router
-        dp.include_router(master_router)
-        logger.info("Master router included into Dispatcher")
-    except Exception as e:
-        logger.error("Failed to include master_router into Dispatcher: %s", e)
-
-    try:
-        from bot.app.telegram.client.client_handlers import client_router
-        dp.include_router(client_router)
-        logger.info("Client router included into Dispatcher")
-    except Exception as e:
-        logger.error("Failed to include client_router into Dispatcher: %s", e)
-
-    # Keep a composed main_router available for other tooling, but do not rely
-    # on nested include_router behaviour for registration.
+    # Main router
     try:
         main_router = build_main_router()
-        logger.info("Main router built (feature routers already registered into Dispatcher)")
-    except Exception:
-        main_router = None
-    # Ensure main_router's global handlers (e.g. NavCB) are registered in the
-    # Dispatcher. build_main_router composes feature routers but here we also
-    # include it into the Dispatcher so top-level handlers (global navigation)
-    # are active.
-    if main_router is not None:
-        try:
-            dp.include_router(main_router)
-            logger.info("Main router included into Dispatcher")
-        except Exception as e:
-            logger.error("Failed to include main_router into Dispatcher: %s", e)
+        dp.include_router(main_router)
+        logger.info("Main router included")
+    except Exception as e:
+        logger.error("Failed to include main router: %s", e)
 
-    # Убедимся, что polling получает обновления, если ранее был установлен вебхук
+    # Ensure polling mode
     try:
         await bot.delete_webhook(drop_pending_updates=False)
-        logger.info("Webhook deleted (if existed); switching to polling mode")
-    except Exception as e:
-        logger.debug("No webhook to delete or failed to delete webhook: %s", e)
+        logger.info("Webhook removed → polling enabled")
+    except Exception:
+        logger.exception("main: failed to delete webhook (continuing)")
 
-    # Register global error handlers on the Dispatcher so aiogram will forward
-    # uncaught exceptions from handlers here. This allows removing many
-    # per-handler try/except blocks and centralizes logging/notifications.
+    # Global error handlers
     try:
         from aiogram.filters import ExceptionTypeFilter
         from sqlalchemy.exc import SQLAlchemyError
         from aiogram.exceptions import TelegramAPIError
         from bot.app.telegram.common.errors import (
-            handle_db_error,
-            handle_telegram_error,
+            handle_db_error, handle_telegram_error
         )
 
-        async def _on_db_error(update, exception):
-            # attempt best-effort context extraction
-            ctx = f"update_id={getattr(update, 'update_id', None)}"
-            await handle_db_error(exception, context=ctx)
+        async def _extract_exception(args, kwargs):
+            """Helper: find an exception object from various aiogram error handler signatures.
 
-        async def _on_telegram_error(update, exception):
-            ctx = f"update_id={getattr(update, 'update_id', None)}"
-            await handle_telegram_error(exception, context=ctx)
+            aiogram versions/passages may call registered error handlers with different
+            signatures (for example: (update, exception) or a single ErrorEvent object
+            with an .exception attribute). Make extraction robust.
+            """
+            # kwargs may contain 'exception'
+            if kwargs.get("exception"):
+                return kwargs.get("exception")
 
-        async def _on_global_error(update, exception):
-            # Fallback for any other exceptions — log and notify admins
-            logger.exception("Unhandled exception in handler for update=%s: %s", getattr(update, 'update_id', None), exception)
-            try:
-                # reuse telegram error notifier for admin alerts
-                await handle_telegram_error(exception, context=f"unhandled update {getattr(update, 'update_id', None)}")
-            except Exception:
-                # swallow
-                pass
+            # args might be (update, exception)
+            if len(args) >= 2 and isinstance(args[1], Exception):
+                return args[1]
+
+            # args might be a single ErrorEvent-like object with .exception
+            if len(args) >= 1:
+                first = args[0]
+                if hasattr(first, "exception"):
+                    return getattr(first, "exception")
+
+            # fallback: try to find any Exception instance in args
+            for a in args:
+                if isinstance(a, Exception):
+                    return a
+
+            return None
+
+
+        async def _on_db_error(*args, **kwargs):
+            exc = await _extract_exception(args, kwargs)
+            if exc is None:
+                # Nothing to do
+                return
+            await handle_db_error(exc)
+
+
+        async def _on_telegram_error(*args, **kwargs):
+            exc = await _extract_exception(args, kwargs)
+            if exc is None:
+                return
+            await handle_telegram_error(exc)
+
+
+        async def _on_unhandled(*args, **kwargs):
+            exc = await _extract_exception(args, kwargs)
+            logger.exception("Unhandled exception: %s", exc)
+            if exc is not None:
+                await handle_telegram_error(exc)
 
         dp.errors.register(_on_db_error, ExceptionTypeFilter(SQLAlchemyError))
         dp.errors.register(_on_telegram_error, ExceptionTypeFilter(TelegramAPIError))
-        dp.errors.register(_on_global_error)
-        logger.info("Registered global error handlers on Dispatcher")
-    except Exception as e:
-        logger.warning("Failed to register Dispatcher error handlers: %s", e)
+        dp.errors.register(_on_unhandled)
 
-    # Опционально заполняем данные перед началом polling, если установлен флаг
+        logger.info("Global error handlers registered")
+    except Exception as e:
+        logger.warning("Failed to register error handlers: %s", e)
+
+    # Seed
     await maybe_seed()
 
-    # Логируем разрешенные типы обновлений для диагностики
+    # Log update types
     try:
         used = dp.resolve_used_update_types()
-        logger.info("Resolved update types: %s", used)
+        logger.info("Update types: %s", used)
     except Exception:
-        pass
+        logger.exception("main: resolve_used_update_types failed")
 
-    # Уведомляем админов о запуске
+    # Notify admins
     await _notify_admins(bot)
 
-    # Запускаем фоновые воркеры
-    stop_worker = await start_expiration_worker()
-    stop_reminders = await start_reminders_worker(bot)
-    logger.info("Starting polling...")
+    # Start background workers
+    stop_exp = await start_expiration_worker()
+    stop_rem = await start_reminders_worker(bot)
+    stop_cleanup = await start_cleanup_worker(bot)
+
+    logger.info("Starting polling…")
 
     try:
-        # Позволяем aiogram определять разрешенные обновления (без ограничений)
         await dp.start_polling(bot)
     finally:
         try:
-            await stop_worker()
+            await stop_exp()
         except Exception:
-            pass
+            logger.exception("main: stop_exp failed during shutdown")
         try:
-            await stop_reminders()
+            await stop_rem()
         except Exception:
-            pass
+            logger.exception("main: stop_rem failed during shutdown")
+        try:
+            await stop_cleanup()
+        except Exception:
+            logger.exception("main: stop_cleanup failed during shutdown")
+
+
+# ==============================================================
+# CLI helper: create-master
+# ==============================================================
 
 if __name__ == "__main__":
-    # Support a small management subcommand without adding new files.
     parser = argparse.ArgumentParser(prog="run_bot.py")
     sub = parser.add_subparsers(dest="cmd")
-    cm = sub.add_parser("create-master", help="Create a Master record (admin-only)")
-    cm.add_argument("--tg-id", required=True, type=int, help="Telegram ID for the new master")
-    cm.add_argument("--name", required=True, type=str, help="Display name for the master")
-    cm.add_argument("--admin-id", required=True, type=int, help="Telegram ID of the admin running this command (must be in ADMIN_IDS)")
+
+    cm = sub.add_parser("create-master")
+    cm.add_argument("--tg-id", type=int, required=True)
+    cm.add_argument("--name", type=str, required=True)
+    cm.add_argument("--admin-id", type=int, required=True)
 
     args = parser.parse_args()
+
     if args.cmd == "create-master":
-        # Safety check: require the provided admin-id to be in configured ADMIN_IDS
-        import bot.config as cfg
-        if int(args.admin_id) not in getattr(cfg, "ADMIN_IDS", set()):
-            print("Refusing to run: admin_id not in cfg.ADMIN_IDS", file=sys.stderr)
+        admin_ids = set(get_admin_ids())
+        if args.admin_id not in admin_ids:
+            print("Forbidden: admin_id not allowed", file=sys.stderr)
             raise SystemExit(2)
 
-        async def _create_master(tg_id: int, name: str) -> int:
+        async def _create(tg_id, name):
             async with get_session() as session:
-                # Try to find existing by telegram_id
                 from sqlalchemy import select
                 res = await session.execute(select(Master).where(Master.telegram_id == tg_id))
-                existing = res.scalars().first()
-                if existing:
+                if res.scalars().first():
                     print("Master already exists.")
                     return 1
+
                 session.add(Master(telegram_id=tg_id, name=name))
                 await session.commit()
                 print("Master created.")
                 return 0
 
-        rc = asyncio.run(_create_master(int(args.tg_id), args.name))
-        raise SystemExit(rc)
-    else:
-        with suppress(KeyboardInterrupt, SystemExit):
-            asyncio.run(main())
+        exit(asyncio.run(_create(args.tg_id, args.name)))
+
+    # Default behavior — run bot
+    with suppress(KeyboardInterrupt, SystemExit):
+        asyncio.run(main())

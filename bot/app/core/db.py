@@ -9,8 +9,12 @@ Single authoritative module providing:
 
 import os
 from contextlib import asynccontextmanager
+import logging
+import traceback
+import asyncio
 from typing import AsyncIterator, Callable
 from sqlalchemy import select
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -29,6 +33,8 @@ DEFAULT_URL = "postgresql+asyncpg://app_user:change_me@db:5432/booking_app"
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+# Schema init flags used by tests / bootstrapping
 _SCHEMA_READY: bool = False
 _SCHEMA_CHECKING: bool = False
 
@@ -48,6 +54,48 @@ def get_engine() -> AsyncEngine:
     if _engine is None:
         url = os.getenv(DATABASE_URL_ENV, DEFAULT_URL)
         _engine = _make_engine(url)
+        # Attach lightweight pool event listeners so we can trace checkouts/checkins
+        # and identify leaked connections. These listeners log a short stack so
+        # we can find the call sites that caused a checkout without a later
+        # checkin.
+        try:
+            sync_engine = _engine.sync_engine
+
+            logger = logging.getLogger(__name__)
+
+            def _on_checkout(dbapi_con, con_record, con_proxy):
+                """Pool checkout listener with improved caller attribution.
+
+                Captures a longer stack, then picks the first frame that comes
+                from the project (a path containing '/bot/') to make it easier
+                to find the app-level call site that triggered the checkout.
+                """
+                task = asyncio.current_task()
+                task_name = getattr(task, "get_name", lambda: None)() if task is not None else None
+                logger.debug(
+                    "POOL checkout: con=%s record=%s task=%s task_name=%s",
+                    getattr(dbapi_con, "pid", id(dbapi_con)),
+                    con_record,
+                    repr(task),
+                    task_name,
+        )
+
+            def _on_checkin(dbapi_con, con_record):
+                task = asyncio.current_task()
+                task_name = getattr(task, "get_name", lambda: None)() if task is not None else None
+                logger.debug(
+                    "POOL checkin: con=%s record=%s task=%s task_name=%s",
+                    getattr(dbapi_con, "pid", id(dbapi_con)),
+                    con_record,
+                    repr(task),
+                    task_name,
+                )
+
+            # Listen on the underlying (sync) engine's pool events.
+            event.listen(sync_engine, "checkout", _on_checkout)
+            event.listen(sync_engine, "checkin", _on_checkin)
+        except Exception:
+            logging.getLogger(__name__).exception("Failed to attach pool event listeners")
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
 
@@ -61,30 +109,18 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 @asynccontextmanager
 async def get_session() -> AsyncIterator[AsyncSession]:
     """Provide a new AsyncSession."""
-    global _SCHEMA_READY, _SCHEMA_CHECKING
-    if not _SCHEMA_READY and not _SCHEMA_CHECKING:
-        _SCHEMA_CHECKING = True
-        try:
-            eng = get_engine()
-            async with eng.begin() as conn:
-                from sqlalchemy import text
-                try:
-                    await conn.execute(text("SELECT 1 FROM users LIMIT 1"))
-                    _SCHEMA_READY = True
-                except Exception:
-                    try:
-                        await init_db(force=False)
-                    except Exception:
-                        pass
-        finally:
-            _SCHEMA_CHECKING = False
-
+    logger = logging.getLogger(__name__)
     factory = get_session_factory()
     session = factory()
+    # capture a short creation stack to help track callers that don't close sessions
+    logger.debug("get_session: created session id=%s", id(session))
     try:
         yield session
     finally:
-        await session.close()
+        try:
+            await session.close()
+        finally:
+            logger.debug("get_session: closed session id=%s", id(session))
 
 
 # =====================================================

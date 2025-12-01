@@ -5,7 +5,8 @@ We now delegate directly to the modular booking package.
 """
 
 import importlib as _il
-from typing import Any
+from typing import Any, Optional
+from types import ModuleType
 
 
 async def get_masters(service_id: str | None = None) -> dict[int, str]:  # minimal stub
@@ -27,11 +28,14 @@ class _UserServiceShim:
 
 user_service = _UserServiceShim()
 
+# Legacy module hooks: annotate as Optional[ModuleType] to satisfy static checkers
+payment_service: Optional[ModuleType]
 try:  # expose payment_service module for legacy monkeypatch target paths
     payment_service = _il.import_module("bot.app.services.client.payment_service")
 except Exception:  # pragma: no cover
     payment_service = None
 
+i18n_service: Optional[ModuleType]
 try:
     i18n_service = _il.import_module("bot.app.services.shared.i18n_service")
 except Exception:  # pragma: no cover
