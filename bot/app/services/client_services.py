@@ -1443,16 +1443,19 @@ async def get_available_time_slots_for_services(
         if gap_duration_minutes >= total_duration:
             # Instead of only returning the gap start, generate stepped slots
             # across the gap so clients can pick any available start time.
+            # Determine tick step for generating candidate starts.
+            # Prefer explicit admin setting `slot_tick_minutes` if available,
+            # otherwise fall back to 5 minutes which provides fine-grained
+            # selection for clients.
             try:
-                slot_step_min = await SettingsRepo.get_slot_duration()
+                slot_step_min = await SettingsRepo.get_slot_tick_minutes()
                 slot_step_min = int(slot_step_min or 0)
             except Exception:
                 slot_step_min = 0
 
-            # Fallback to reasonable tick: if slot_step is missing or zero,
-            # prefer a 15-minute grid (or total_duration if larger).
             if not slot_step_min or slot_step_min <= 0:
-                slot_step_min = 15 if total_duration < 15 else int(total_duration)
+                # default to 5-minute grid unless service duration is larger
+                slot_step_min = 5 if total_duration < 5 else int(total_duration)
 
             current = gap_start
             # walk the gap in steps and add each candidate that fits total_duration

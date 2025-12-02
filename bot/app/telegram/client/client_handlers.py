@@ -987,8 +987,15 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
         minutes = sorted({s.minute for s in slots if s.hour == hour})
     logger.info("hour_chosen_handler: derived minutes=%s for hour=%s (count slots=%d)", minutes, hour, len(slots) if slots else 0)
     if not minutes:
-        # Fallback ticks
-        minutes = [0, 15, 30, 45]
+        # Fallback to configured tick grid (default 5 minutes)
+        try:
+            tick = await SettingsRepo.get_slot_tick_minutes()
+            tick = int(tick or 0)
+        except Exception:
+            tick = 0
+        if not tick or tick <= 0:
+            tick = 5
+        minutes = list(range(0, 60, tick))
 
     # Determine action (booking vs reschedule)
     cur_state = await state.get_state()
