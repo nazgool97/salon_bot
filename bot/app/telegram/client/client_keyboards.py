@@ -20,7 +20,6 @@ from bot.app.telegram.common.callbacks import (
     TimeCB,
     RescheduleCB,
 )
-from bot.app.telegram.common.callbacks import HoursViewCB, HourCB
 from bot.app.telegram.common.callbacks import MasterMenuCB, NavCB, ClientMenuCB, RatingCB
 from bot.app.telegram.common.callbacks import MasterProfileCB, MasterServicesCB, MastersListCB
 from bot.app.telegram.common.callbacks import PayCB
@@ -104,7 +103,6 @@ async def get_time_slots_kb(
     service_id: str | None = None,
     master_id: int | None = None,
     booking_id: int | None = None,
-    add_hour_mode: bool = False,
 ) -> InlineKeyboardMarkup:
     """Builds the booking or reschedule keyboard for a list of time slots."""
 
@@ -140,14 +138,13 @@ async def get_time_slots_kb(
                 time=compact_time,
             )
         builder.button(text=label, callback_data=callback_data)
-    # Optional: add a quick entry to choose by hour->minutes instead
-    if add_hour_mode:
-        try:
-            hour_label = t("choose_time_by_hour", lang)
-        except Exception:
-            hour_label = "Выбрать по часам"
-        # Use HoursViewCB which carries service/master/date to open hour view
-        builder.button(text=hour_label, callback_data=pack_cb(HoursViewCB, service_id=normalized_service, master_id=normalized_master, date=date))
+
+    # Offer a stepwise hour->minute picker entry
+    try:
+        choose_by_hour = t("choose_time_by_hour", lang) or "Выбрать время"
+    except Exception:
+        choose_by_hour = "Выбрать время"
+    builder.button(text=choose_by_hour, callback_data=pack_cb(HoursViewCB, service_id=str(service_id or ""), master_id=int(master_id or 0), date=date))
 
     try:
         back_text = t("back", lang)
@@ -158,10 +155,8 @@ async def get_time_slots_kb(
     return builder.as_markup()
 
 
-async def get_hour_picker_kb(
-    hours: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, lang: str, cols: int = 4
-) -> InlineKeyboardMarkup:
-    """Builds an hour picker keyboard. Buttons pack `HourCB` with chosen hour."""
+async def get_hour_picker_kb(hours: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, lang: str, cols: int = 4) -> InlineKeyboardMarkup:
+    """Build an hours keyboard (e.g. 09:00, 10:00)."""
     builder = InlineKeyboardBuilder()
     normalized_service = str(service_id or "")
     normalized_master = int(master_id or 0)
@@ -172,15 +167,14 @@ async def get_hour_picker_kb(
         back_text = t("back", lang)
     except Exception:
         back_text = "⬅️ Назад"
+    # Cancel returns to nav back and clears FSM (handler will manage state)
     builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
     builder.adjust(cols)
     return builder.as_markup()
 
 
-async def get_minute_picker_kb(
-    minutes: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, hour: int, lang: str, action: Literal["booking", "reschedule"] = "booking", booking_id: int | None = None, cols: int = 4
-) -> InlineKeyboardMarkup:
-    """Builds a minute picker keyboard. Buttons pack final `TimeCB` or `RescheduleCB`."""
+async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, hour: int, lang: str, action: Literal["booking", "reschedule"] = "booking", booking_id: int | None = None, cols: int = 4) -> InlineKeyboardMarkup:
+    """Build minutes keyboard (e.g. 00,15,30,45). Back returns to hour picker."""
     builder = InlineKeyboardBuilder()
     normalized_service = str(service_id or "")
     normalized_master = int(master_id or 0)
@@ -193,11 +187,20 @@ async def get_minute_picker_kb(
         else:
             cb = pack_cb(TimeCB, service_id=normalized_service, master_id=normalized_master, date=date, time=compact)
         builder.button(text=label, callback_data=cb)
+
     try:
         back_text = t("back", lang)
     except Exception:
         back_text = "⬅️ Назад"
-    builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
+    # Back to hours view
+    builder.button(text=back_text, callback_data=pack_cb(HoursViewCB, service_id=normalized_service, master_id=normalized_master, date=date))
+    # Add explicit cancel button
+    try:
+        cancel_txt = t("cancel", lang) or "Отмена"
+    except Exception:
+        cancel_txt = "Отмена"
+    from bot.app.telegram.common.callbacks import CancelTimeCB
+    builder.button(text=cancel_txt, callback_data=pack_cb(CancelTimeCB))
     builder.adjust(cols)
     return builder.as_markup()
 

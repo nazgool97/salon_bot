@@ -33,10 +33,9 @@ from bot.app.telegram.common.callbacks import (
     DateCB,
     TimeCB,
     RescheduleCB,
-    HoursViewCB,
-    HourCB,
     pack_cb,
 )
+from bot.app.telegram.common.callbacks import HoursViewCB, HourCB, CancelTimeCB
 from bot.app.telegram.common.callbacks import PayCB, BookingActionCB
 from bot.app.telegram.common.callbacks import MyBookingsCB
 from bot.app.telegram.common.callbacks import MasterMenuCB
@@ -72,6 +71,8 @@ from bot.app.telegram.client.client_keyboards import (
     build_rating_keyboard,
     build_my_bookings_keyboard,
     get_time_slots_kb,
+    get_hour_picker_kb,
+    get_minute_picker_kb,
 )
 from bot.app.services.client_services import format_bookings_for_ui, format_booking_details_text
 from bot.app.services.shared_services import default_language, get_admin_ids, get_contact_info
@@ -165,6 +166,8 @@ class BookingStates(StatesGroup):
     waiting_for_date = State()
     reschedule_select_date = State()
     reschedule_select_time = State()
+    choosing_hour = State()
+    choosing_minute = State()
 
 
 from bot.app.telegram.common.navigation import show_main_client_menu as show_main_menu
@@ -795,19 +798,6 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         master_id_value = 0
 
     service_id_for_payload = str(getattr(callback_data, "service_id", ""))
-    # Persist compact slot list for potential hour->minute flow handlers
-    try:
-        compact = [s.strftime("%H%M") for s in slots]
-        data = await state.get_data() or {}
-        sf = data.get("slots_for_date") if isinstance(data, dict) else None
-        if not isinstance(sf, dict):
-            sf = {}
-        sf[selected_date] = compact
-        await state.update_data(slots_for_date=sf)
-    except Exception:
-        # best-effort: ignore state persistence failures
-        pass
-
     kb = await get_time_slots_kb(
         slots=slots,
         lang=lang,
@@ -816,7 +806,6 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         service_id=service_id_for_payload,
         master_id=master_id_value,
         booking_id=booking_id_value if is_reschedule else None,
-        add_hour_mode=True,
     )
 
     if cb.message:
@@ -836,128 +825,172 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
 
 
 @client_router.callback_query(HoursViewCB.filter())
-async def show_hours_view(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-    """Show a simple hour picker derived from available slots for the date."""
+async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+    """Show available hours for a selected date (stepwise picker entry)."""
     user_id = _get_cb_user_id(cb)
     if user_id is None:
+        try:
+            if cb.message:
+                await safe_edit(cb.message, text=t("error_retry", locale))
+            else:
+                await cb.answer(t("error_retry", locale))
+        except (TelegramAPIError, RuntimeError):
+            logger.exception("hours_view_handler: failed to notify anonymous user about error")
+        return
+
+    selected_date = getattr(callback_data, "date", None)
+    master_id = int(getattr(callback_data, "master_id", 0) or 0)
+    service_id = str(getattr(callback_data, "service_id", "") or "")
+
+    # Try to retrieve cached slots for the date from state; fallback to recomputing
+    slots = []
+    try:
+        data = await state.get_data()
+        cached = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
+        if cached and isinstance(cached, dict):
+            slots = cached.get(selected_date) or []
+    except Exception:
+        slots = []
+
+    # If no cached slots, recompute using service layer (safe fallback)
+    if not slots:
+        try:
+            from bot.app.services.client_services import get_available_time_slots_for_services, get_services_duration_and_price
+            # Compute duration for service(s)
+            sid = service_id or ""
+            if "+" in sid:
+                service_ids = [s for s in sid.split("+") if s]
+            else:
+                service_ids = [sid] if sid else []
+            slot_default = await _slot_duration_default()
+            if service_ids:
+                try:
+                    totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=master_id)
+                    duration = int(totals.get("total_minutes") or slot_default)
+                except Exception:
+                    duration = slot_default
+            else:
+                duration = slot_default
+            base_dt = datetime.fromisoformat(selected_date)
+            slots = await get_available_time_slots_for_services(base_dt, master_id, [duration])
+        except Exception:
+            slots = []
+
+    if not slots:
+        if cb.message:
+            await safe_edit(cb.message, t("no_time_for_date", locale), reply_markup=get_back_button())
         await cb.answer()
         return
-    selected_date = callback_data.date
-    service_id = str(getattr(callback_data, "service_id", ""))
-    try:
-        master_id = int(getattr(callback_data, "master_id", 0))
-    except Exception:
-        master_id = 0
 
-    # Try to read compact slots from state; if missing, recompute via service
-    try:
-        data = await state.get_data() or {}
-        sf = data.get("slots_for_date") if isinstance(data, dict) else None
-        compact = None
-        if isinstance(sf, dict):
-            compact = sf.get(selected_date)
-    except Exception:
-        compact = None
-
-    if not compact:
-        # Recompute available slots for that date as a fallback
-        try:
-            from datetime import datetime as _dt
-            base_dt = _dt.fromisoformat(selected_date)
-            from bot.app.services.client_services import get_available_time_slots_for_services
-            # Determine duration similarly to select_date: try to compute from state
-            slot_default = await _slot_duration_default()
-            try:
-                sd = int((await state.get_data() or {}).get("multi_duration_min") or slot_default)
-            except Exception:
-                sd = slot_default
-            slots = await get_available_time_slots_for_services(base_dt, master_id, [sd])
-            compact = [s.strftime("%H%M") for s in slots]
-        except Exception:
-            compact = []
-
-    hours = sorted({int(x[:2]) for x in compact}) if compact else []
-    if not hours:
-        await cb.answer(t("no_time_for_date", locale))
-        return
-
-    from bot.app.telegram.client.client_keyboards import get_hour_picker_kb
+    # Derive available hours
+    hours = sorted({s.hour for s in slots})
     kb = await get_hour_picker_kb(hours, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
     if cb.message:
-        prefix = t("choose_time_on_date_prefix", locale)
-        try:
-            base_dt = datetime.fromisoformat(selected_date)
-            formatted_date = base_dt.strftime("%d.%m.%Y")
-        except Exception:
-            formatted_date = selected_date
-        header = f"{prefix} {formatted_date}"
-        await nav_push(state, header, kb)
-        await safe_edit(cb.message, header, reply_markup=kb)
+        prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else t("choose_time", locale)
+        await nav_push(state, prompt, kb)
+        await safe_edit(cb.message, prompt, reply_markup=kb)
+    await state.set_state(BookingStates.choosing_hour)
     await cb.answer()
 
 
 @client_router.callback_query(HourCB.filter())
-async def select_hour_and_show_minutes(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-    """When an hour is selected, show available minutes (or default ticks)."""
+async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+    """Show minutes available for the chosen hour."""
     user_id = _get_cb_user_id(cb)
     if user_id is None:
         await cb.answer()
         return
-    selected_date = callback_data.date
-    service_id = str(getattr(callback_data, "service_id", ""))
-    try:
-        master_id = int(getattr(callback_data, "master_id", 0))
-    except Exception:
-        master_id = 0
+
+    selected_date = getattr(callback_data, "date", None)
+    master_id = int(getattr(callback_data, "master_id", 0) or 0)
+    service_id = str(getattr(callback_data, "service_id", "") or "")
     try:
         hour = int(getattr(callback_data, "hour", 0))
     except Exception:
         await cb.answer(t("invalid_data", locale), show_alert=True)
         return
 
-    # Try to extract minutes from stored slots
+    # Retrieve cached slots or recompute
+    slots = []
     try:
-        data = await state.get_data() or {}
-        sf = data.get("slots_for_date") if isinstance(data, dict) else None
-        compact = sf.get(selected_date) if isinstance(sf, dict) else None
+        data = await state.get_data()
+        cached = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
+        if cached and isinstance(cached, dict):
+            slots = cached.get(selected_date) or []
     except Exception:
-        compact = None
+        slots = []
 
-    minutes = []
-    if compact:
-        for s in compact:
-            if len(s) >= 4 and s[:2] == f"{hour:02d}":
+    if not slots:
+        try:
+            from bot.app.services.client_services import get_available_time_slots_for_services, get_services_duration_and_price
+            sid = service_id or ""
+            if "+" in sid:
+                service_ids = [s for s in sid.split("+") if s]
+            else:
+                service_ids = [sid] if sid else []
+            slot_default = await _slot_duration_default()
+            if service_ids:
                 try:
-                    minutes.append(int(s[2:4]))
+                    totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=master_id)
+                    duration = int(totals.get("total_minutes") or slot_default)
                 except Exception:
-                    continue
-    # Deduplicate and sort; fallback to quarter-hour ticks
-    minutes = sorted(set(minutes))
+                    duration = slot_default
+            else:
+                duration = slot_default
+            base_dt = datetime.fromisoformat(selected_date)
+            slots = await get_available_time_slots_for_services(base_dt, master_id, [duration])
+        except Exception:
+            slots = []
+
+    # Filter slots for the chosen hour
+    minutes = sorted({s.minute for s in slots if s.hour == hour})
     if not minutes:
+        # Fallback ticks
         minutes = [0, 15, 30, 45]
 
-    from bot.app.telegram.client.client_keyboards import get_minute_picker_kb
-    # Determine whether we're in reschedule mode by FSM state
+    # Determine action (booking vs reschedule)
     cur_state = await state.get_state()
-    action = "reschedule" if cur_state and "reschedule_select_date" in str(cur_state) or cur_state and "reschedule_select_time" in str(cur_state) else "booking"
+    action = "booking"
     booking_id = None
-    if action == "reschedule":
+    if cur_state and "reschedule_select_date" in str(cur_state):
+        action = "reschedule"
+        data = await state.get_data()
         try:
-            booking_id = int((await state.get_data() or {}).get("cres_booking_id") or 0)
+            booking_id = int((data or {}).get("cres_booking_id") or 0)
         except Exception:
             booking_id = None
 
     kb = await get_minute_picker_kb(minutes, service_id=service_id, master_id=master_id, date=selected_date, hour=hour, lang=locale, action=action, booking_id=booking_id)
     if cb.message:
-        prefix = t("choose_time_on_date_prefix", locale)
-        try:
-            base_dt = datetime.fromisoformat(selected_date)
-            formatted_date = base_dt.strftime("%d.%m.%Y")
-        except Exception:
-            formatted_date = selected_date
-        header = f"{prefix} {formatted_date}"
+        header = f"{t('choose_time_on_date_prefix', locale)} {datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')} — {hour:02d}:"
         await nav_push(state, header, kb)
         await safe_edit(cb.message, header, reply_markup=kb)
+    await state.set_state(BookingStates.choosing_minute)
+    await cb.answer()
+
+
+@client_router.callback_query(CancelTimeCB.filter())
+async def cancel_time_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+    """Cancel time picking flow: clear relevant FSM data and navigate back."""
+    try:
+        # Clear any temporary time-picking data
+        await state.update_data(selected_date=None)
+    except Exception:
+        pass
+    try:
+        text, markup, popped = await nav_back(state)
+        if popped and cb.message:
+            try:
+                await safe_edit(cb.message, text or "", reply_markup=markup)
+            except Exception:
+                await show_main_menu(cb, state)
+        else:
+            await show_main_menu(cb, state)
+    except Exception:
+        try:
+            await show_main_menu(cb, state)
+        except Exception:
+            pass
     await cb.answer()
 
 
