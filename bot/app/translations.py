@@ -210,9 +210,9 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
         "no_services_for_master": "❌ У цього майстра ще немає прив'язаних послуг.",
     "no_masters": "❌ Нема доступних майстрів",
     "no_masters_for_combination": "На жаль, немає майстрів, які виконують всі вибрані послуги одночасно. Спробуйте іншу комбінацію.",
-        "calendar_legend": "🗓️ - Нема вільних слотів  —  - Вихідний день",
+        "calendar_legend": "🔴 - Нема вільних слотів  —  - Вихідний день",
         "calendar_legend_lines": [
-            "🗓️ Нема вільних слотів",
+            "🔴 Нема вільних слотів",
             " — Вихідний день",
         ],
     "master_clear_confirm_with_conflicts": "У цей день у вас є {count} активні записи. Ви впевнені, що хочете скасувати їх і зробити день вихідним?",
@@ -726,9 +726,9 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
         "no_services_for_master": "❌ У этого мастера ещё нет привязанных услуг.",
     "no_masters": "❌ Нет доступных мастеров",
     "no_masters_for_combination": "К сожалению, нет мастеров, которые выполняют все выбранные услуги одновременно. Пожалуйста, попробуйте другую комбинацию.",
-    "calendar_legend": "🗓️ - Нет свободных слотов  —  - Выходной день",
+    "calendar_legend": "🔴 - Нет свободных слотов  —  - Выходной день",
     "calendar_legend_lines": [
-        "🗓️ Нет свободных слотов",
+        "🔴 Нет свободных слотов",
         " — Выходной день",
     ],
     # Full month names used in calendar header
@@ -1241,9 +1241,9 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
         "no_services_for_master": "❌ This master has no linked services yet.",
         "no_masters": "❌ No available masters",
     "no_masters_for_combination": "Unfortunately, there are no masters who perform all selected services at once. Please try a different combination.",
-    "calendar_legend": "🗓️ - No available slots  —  - Day off",
+    "calendar_legend": "🔴 - No available slots  —  - Day off",
     "calendar_legend_lines": [
-        "🗓️ No available slots",
+        "🔴 No available slots",
         " — Day off",
     ],
     # Full month names used in calendar header
