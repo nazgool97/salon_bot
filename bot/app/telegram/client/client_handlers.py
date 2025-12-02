@@ -821,30 +821,40 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         master_id_value = 0
 
     service_id_for_payload = str(getattr(callback_data, "service_id", ""))
-    kb = await get_time_slots_kb(
-        slots=slots,
-        lang=lang,
-        action="reschedule" if is_reschedule else "booking",
-        date=selected_date,
-        service_id=service_id_for_payload,
-        master_id=master_id_value,
-        booking_id=booking_id_value if is_reschedule else None,
-    )
+    # Instead of showing the full slots list first, present the hour-picker
+    # immediately so the user picks an hour first (then minutes). This keeps
+    # the caching of compact slots in state so subsequent handlers reuse it.
+    # Derive available hours from returned slots (support both datetime objects
+    # and compact string representations cached earlier).
+    if slots and isinstance(slots[0], str):
+        hours = sorted({int(s[:2]) for s in slots})
+    else:
+        hours = sorted({s.hour for s in slots})
+
+    kb = await get_hour_picker_kb(hours, service_id=service_id_for_payload, master_id=master_id_value, date=selected_date, lang=lang)
 
     if cb.message:
-        prefix = t("choose_time_on_date_prefix", lang)
-        # Форматируем дату в DD.MM.YYYY
-        formatted_date = base_dt.strftime("%d.%m.%Y")
-        header = f"{prefix} {formatted_date}"
-        await nav_push(state, header, kb)
-        await safe_edit(cb.message, header, reply_markup=kb)
+        # Include the selected date in the hour-picking prompt (same style as minutes header)
+        try:
+            date_label = datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')
+        except Exception:
+            date_label = selected_date or ""
+        prompt = t("choose_time_by_hour_title", lang) if t("choose_time_by_hour_title", lang) != "choose_time_by_hour_title" else f"{t('choose_time', lang)} {date_label}"
+        await nav_push(state, prompt, kb)
+        await safe_edit(cb.message, prompt, reply_markup=kb)
     await cb.answer()
-    # For reschedule, transition to time selection state; else keep booking creation flow metadata
+
+    # For reschedule flows keep the reschedule state so downstream handlers
+    # recognize the flow; otherwise set chosen-date metadata and choosing_hour.
     if cur_state and "reschedule_select_date" in str(cur_state):
         await state.set_state(BookingStates.reschedule_select_time)
     else:
-        await state.update_data(selected_date=selected_date)
-    logger.info("Временные слоты показаны для пользователя %s на %s", user_id, selected_date)
+        try:
+            await state.update_data(selected_date=selected_date)
+        except Exception:
+            pass
+        await state.set_state(BookingStates.choosing_hour)
+    logger.info("Временные слоты (часы) показаны для пользователя %s на %s", user_id, selected_date)
 
 
 @client_router.callback_query(HoursViewCB.filter())
@@ -914,7 +924,12 @@ async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext
     logger.info("hours_view_handler: derived hours=%s from slots_count=%d", hours, len(slots) if slots else 0)
     kb = await get_hour_picker_kb(hours, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
     if cb.message:
-        prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else t("choose_time", locale)
+        # Include the selected date in the hour-picking prompt so it matches minutes view
+        try:
+            date_label = datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')
+        except Exception:
+            date_label = selected_date or ""
+        prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else f"{t('choose_time', locale)} {date_label}"
         await nav_push(state, prompt, kb)
         await safe_edit(cb.message, prompt, reply_markup=kb)
     await state.set_state(BookingStates.choosing_hour)
@@ -986,7 +1001,11 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
     else:
         minutes = sorted({s.minute for s in slots if s.hour == hour})
     logger.info("hour_chosen_handler: derived minutes=%s for hour=%s (count slots=%d)", minutes, hour, len(slots) if slots else 0)
-    if not minutes:
+    # If there are no minute candidates or only a single candidate, offer
+    # a full tick-based minute grid so the user can pick a conventional
+    # minute (00, 05, 10, ...). This improves UX when availability
+    # enumeration returns a sparse set (e.g. [15]).
+    if not minutes or len(minutes) <= 1:
         # Fallback to configured tick grid (default 5 minutes)
         try:
             tick = await SettingsRepo.get_slot_tick_minutes()
@@ -995,7 +1014,48 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
             tick = 0
         if not tick or tick <= 0:
             tick = 5
-        minutes = list(range(0, 60, tick))
+        # Build candidate tick grid but filter out minute values that would
+        # produce a start later than the latest available slot for the day.
+        # This prevents offering starts that would make the booking end
+        # after the working window (e.g. offering :55 for a 60m total).
+        try:
+            # Reconstruct full slots as datetimes in local tz to compute max
+            from bot.app.services.shared_services import LOCAL_TZ
+            base_dt = datetime.fromisoformat(selected_date).date()
+            slot_datetimes: list[datetime] = []
+            if slots and isinstance(slots[0], str):
+                for s in slots:
+                    try:
+                        hh = int(s[:2])
+                        mm = int(s[2:4])
+                        slot_datetimes.append(datetime.combine(base_dt, datetime.min.time()).replace(hour=hh, minute=mm, tzinfo=LOCAL_TZ))
+                    except Exception:
+                        continue
+            else:
+                for s in slots:
+                    try:
+                        slot_datetimes.append(datetime.combine(base_dt, s).replace(tzinfo=LOCAL_TZ))
+                    except Exception:
+                        continue
+            if slot_datetimes:
+                latest_slot = max(slot_datetimes)
+            else:
+                latest_slot = None
+        except Exception:
+            latest_slot = None
+
+        candidate_minutes = list(range(0, 60, tick))
+        filtered: list[int] = []
+        for m in candidate_minutes:
+            try:
+                from bot.app.services.shared_services import LOCAL_TZ
+                candidate_dt = datetime.combine(datetime.fromisoformat(selected_date).date(), datetime.min.time()).replace(hour=hour, minute=int(m), tzinfo=LOCAL_TZ)
+                if latest_slot is None or candidate_dt <= latest_slot:
+                    filtered.append(int(m))
+            except Exception:
+                continue
+        minutes = filtered or candidate_minutes
+        logger.info("hour_chosen_handler: fallback to tick-grid tick=%d minutes_count=%d (filtered)", tick, len(minutes))
 
     # Determine action (booking vs reschedule)
     cur_state = await state.get_state()
