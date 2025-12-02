@@ -775,6 +775,17 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         return
 
     slots = await get_available_time_slots_for_services(base_dt, callback_data.master_id, [duration])
+    # Cache compact slot list in FSM state for this date to support stepwise pickers
+    try:
+        compact = [s.strftime("%H%M") for s in slots]
+        data = await state.get_data()
+        existing = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
+        m = dict(existing or {})
+        m[selected_date] = compact
+        await state.update_data(slots_for_date=m)
+    except Exception:
+        # Ignore caching errors — handlers will recompute if needed
+        pass
     lang = locale
     if not slots:
         if cb.message:
@@ -883,7 +894,11 @@ async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext
         return
 
     # Derive available hours
-    hours = sorted({s.hour for s in slots})
+    # Support cached compact strings or datetime objects
+    if slots and isinstance(slots[0], str):
+        hours = sorted({int(s[:2]) for s in slots})
+    else:
+        hours = sorted({s.hour for s in slots})
     kb = await get_hour_picker_kb(hours, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
     if cb.message:
         prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else t("choose_time", locale)
@@ -910,7 +925,7 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
         await cb.answer(t("invalid_data", locale), show_alert=True)
         return
 
-    # Retrieve cached slots or recompute
+    # Retrieve cached slots (compact strings) or recompute
     slots = []
     try:
         data = await state.get_data()
@@ -942,8 +957,20 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
         except Exception:
             slots = []
 
-    # Filter slots for the chosen hour
-    minutes = sorted({s.minute for s in slots if s.hour == hour})
+    # Filter slots for the chosen hour (supports compact strings)
+    minutes = []
+    if slots and isinstance(slots[0], str):
+        for s in slots:
+            try:
+                hh = int(s[:2])
+                mm = int(s[2:4])
+            except Exception:
+                continue
+            if hh == hour:
+                minutes.append(mm)
+        minutes = sorted(set(minutes))
+    else:
+        minutes = sorted({s.minute for s in slots if s.hour == hour})
     if not minutes:
         # Fallback ticks
         minutes = [0, 15, 30, 45]
