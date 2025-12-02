@@ -183,7 +183,11 @@ async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None
     normalized_master = int(master_id or 0)
     normalized_booking = int(booking_id or 0)
     for m in sorted(set(int(x) for x in minutes)):
-        label = f"{m:02d}"
+        # Display minutes as requested: '00', '5', '10', '15', ...
+        if int(m) == 0:
+            label = "00"
+        else:
+            label = str(int(m))
         compact = f"{int(hour):02d}{int(m):02d}"
         if action == "reschedule":
             cb = pack_cb(RescheduleCB, action="time", booking_id=normalized_booking, date=date, time=compact)
