@@ -775,6 +775,18 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         return
 
     slots = await get_available_time_slots_for_services(base_dt, callback_data.master_id, [duration])
+    # Debug: log returned slots for diagnosis
+    try:
+        logger.info("select_date: fetched %d slots for %s (master=%s)", len(slots), selected_date, callback_data.master_id)
+        if slots:
+            # show first up to 8 compact samples
+            try:
+                sample = [s.strftime("%H%M") if hasattr(s, 'strftime') else str(s) for s in slots[:8]]
+            except Exception:
+                sample = [str(s) for s in slots[:8]]
+            logger.info("select_date: slot samples=%s", sample)
+    except Exception:
+        pass
     # Cache compact slot list in FSM state for this date to support stepwise pickers
     try:
         compact = [s.strftime("%H%M") for s in slots]
@@ -899,6 +911,7 @@ async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext
         hours = sorted({int(s[:2]) for s in slots})
     else:
         hours = sorted({s.hour for s in slots})
+    logger.info("hours_view_handler: derived hours=%s from slots_count=%d", hours, len(slots) if slots else 0)
     kb = await get_hour_picker_kb(hours, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
     if cb.message:
         prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else t("choose_time", locale)
@@ -934,6 +947,7 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
             slots = cached.get(selected_date) or []
     except Exception:
         slots = []
+    logger.info("hour_chosen_handler: cached slots type=%s count=%d", type(slots).__name__, len(slots) if slots else 0)
 
     if not slots:
         try:
@@ -971,6 +985,7 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
         minutes = sorted(set(minutes))
     else:
         minutes = sorted({s.minute for s in slots if s.hour == hour})
+    logger.info("hour_chosen_handler: derived minutes=%s for hour=%s (count slots=%d)", minutes, hour, len(slots) if slots else 0)
     if not minutes:
         # Fallback ticks
         minutes = [0, 15, 30, 45]
