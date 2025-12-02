@@ -1328,75 +1328,135 @@ async def get_or_create_user(telegram_id: int, name: str | None = None, username
         logger.error("get_or_create_user(repo) failed for %s: %s", telegram_id, e)
         raise
 
-async def get_available_time_slots(date: datetime, master_id: int, service_duration_min: int) -> List[dtime]:
-    try:
-        local_day_start = date.replace(tzinfo=LOCAL_TZ)
-        local_day_end = local_day_start + timedelta(days=1)
-        day_start_utc = local_day_start.astimezone(UTC)
-        day_end_utc = local_day_end.astimezone(UTC)
 
-        # Use canonical booking list provider to get Booking instances for the day
-        hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
-        now_utc = datetime.now(UTC)
-        # Load bookings for the day for this master directly to avoid calling
-        # Direct master bookings query (legacy wrapper removed). We need
-        # raw Booking objects so we can inspect holds/statuses below.
-        async with get_session() as session:
-            result = await session.execute(
-                select(Booking).where(
-                    Booking.master_id == master_id,
-                    Booking.starts_at >= day_start_utc,
-                    Booking.starts_at < day_end_utc,
-                ).order_by(Booking.starts_at)
-            )
-            bookings_objs = result.scalars().all()
-        blocked_intervals: list[tuple[datetime, datetime]] = []
-
-        for b in bookings_objs:
-            try:
-                starts_at = getattr(b, "starts_at", None)
-                if not starts_at:
-                    continue
-
-                if is_booking_slot_blocked(b, now_utc, hold_minutes):
-                    interval = _get_booking_interval(b, service_duration_min)
-                    if interval:
-                        blocked_intervals.append(interval)
-            except Exception:
-                continue
-
-        # Determine working windows using centralized helper to avoid duplicated parsing logic
-        try:
-            windows_local = await master_services.get_work_windows_for_day(master_id, date)
-        except Exception:
-            windows_local = [(dtime(hour=9), dtime(hour=18))]
-
-        step = timedelta(minutes=service_duration_min)
-        available_slots: List[dtime] = []
-        # Iterate all windows
-        for ws, we in windows_local:
-            work_start_local = datetime.combine(date.date(), ws).replace(tzinfo=LOCAL_TZ)
-            work_end_local = datetime.combine(date.date(), we).replace(tzinfo=LOCAL_TZ)
-            work_start = work_start_local.astimezone(UTC)
-            work_end = work_end_local.astimezone(UTC)
-            current = work_start
-            while current + step <= work_end:
-                slot_start = current
-                slot_end = current + step
-                overlap = False
-                for b_start, b_end in blocked_intervals:
-                    if slot_start < b_end and slot_end > b_start:
-                        overlap = True
-                        break
-                if not overlap:
-                    available_slots.append(slot_start.astimezone(LOCAL_TZ).time())
-                current += step
-
-        logger.debug("Доступные слоты для мастера %s на %s: %s", master_id, date, available_slots)
-        return available_slots
-    except Exception as e:
-        logger.exception("Ошибка получения слотов для мастера %s на %s: %s", master_id, date, e)
+async def get_available_time_slots_for_services(
+    date: datetime,
+    master_id: int,
+    service_durations: list[int]
+) -> List[dtime]:
+    """
+    Calculates available slots based on 'Gap' logic:
+    1. Get work windows.
+    2. Get busy intervals (bookings).
+    3. Subtract busy intervals from windows to find free gaps.
+    4. A slot is available at the START of each gap if the gap is long enough.
+    """
+    total_duration = sum(service_durations)
+    if total_duration <= 0:
         return []
+
+    try:
+        # 1. Get Work Windows (Local Time)
+        # Returns list of (start_time, end_time)
+        windows_local = await master_services.get_work_windows_for_day(master_id, date)
+    except Exception:
+        windows_local = [(dtime(hour=9), dtime(hour=18))]
+    
+    if not windows_local:
+        return []
+
+    # 2. Get Bookings (UTC)
+    # We need the full day in UTC to catch all relevant bookings
+    local_day_start = date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=LOCAL_TZ)
+    local_day_end = local_day_start + timedelta(days=1)
+    day_start_utc = local_day_start.astimezone(UTC)
+    day_end_utc = local_day_end.astimezone(UTC)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Booking).where(
+                Booking.master_id == master_id,
+                Booking.starts_at >= day_start_utc,
+                Booking.starts_at < day_end_utc,
+            ).order_by(Booking.starts_at)
+        )
+        bookings_objs = result.scalars().all()
+
+    hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
+    now_utc = datetime.now(UTC)
+    
+    busy_intervals = []
+    for b in bookings_objs:
+        if is_booking_slot_blocked(b, now_utc, hold_minutes):
+            # Use a default fallback if duration is missing, though usually it should be there.
+            # We use 1 minute as absolute minimum fallback to avoid zero-length blocks if something is wrong.
+            interval = _get_booking_interval(b, 60) 
+            if interval:
+                busy_intervals.append(interval)
+
+    # Merge overlapping busy intervals
+    # Sort by start time
+    busy_intervals.sort(key=lambda x: x[0])
+    merged_busy = []
+    for b_start, b_end in busy_intervals:
+        if not merged_busy:
+            merged_busy.append((b_start, b_end))
+        else:
+            last_start, last_end = merged_busy[-1]
+            if b_start < last_end:
+                # Overlap or adjacent
+                merged_busy[-1] = (last_start, max(last_end, b_end))
+            else:
+                merged_busy.append((b_start, b_end))
+    
+    # 3. Calculate Gaps
+    # Convert windows to UTC intervals for calculation
+    window_intervals_utc = []
+    for ws, we in windows_local:
+        w_start = datetime.combine(date.date(), ws).replace(tzinfo=LOCAL_TZ).astimezone(UTC)
+        w_end = datetime.combine(date.date(), we).replace(tzinfo=LOCAL_TZ).astimezone(UTC)
+        window_intervals_utc.append((w_start, w_end))
+
+    free_gaps = []
+    for w_start, w_end in window_intervals_utc:
+        current_start = w_start
+        for b_start, b_end in merged_busy:
+            # If booking ends before current window position, skip it
+            if b_end <= current_start:
+                continue
+            # If booking starts after this window, we are done with bookings for this window
+            if b_start >= w_end:
+                break
+            
+            # If there is a gap before the booking
+            if b_start > current_start:
+                free_gaps.append((current_start, b_start))
+            
+            # Advance current_start to the end of the booking
+            current_start = max(current_start, b_end)
+        
+        # If there is space left after the last booking in this window
+        if current_start < w_end:
+            free_gaps.append((current_start, w_end))
+
+    # 4. Filter and Collect Slots
+    slots = []
+    lead_min = await SettingsRepo.get_same_day_lead_minutes()
+    now_local = datetime.now(LOCAL_TZ)
+    is_today = (local_day_start.date() == now_local.date())
+
+    for gap_start, gap_end in free_gaps:
+        # Calculate duration in minutes
+        gap_duration_minutes = (gap_end - gap_start).total_seconds() / 60
+        
+        # Check if the gap is large enough for the total service duration
+        if gap_duration_minutes >= total_duration:
+            # Candidate slot is the start of the gap
+            candidate_slot_utc = gap_start
+            
+            # Check lead time if it's today
+            if is_today and lead_min:
+                candidate_slot_local = candidate_slot_utc.astimezone(LOCAL_TZ)
+                # If the slot is sooner than lead_min from now, skip it
+                if (candidate_slot_local - now_local).total_seconds() / 60 < lead_min:
+                    continue
+            
+            # Add to results (converted to local time)
+            slots.append(candidate_slot_utc.astimezone(LOCAL_TZ).time())
+
+    logger.debug("Slots (Gap-based) for master %s on %s: %s", master_id, date, slots)
+    return slots
+
 
 
 async def get_available_days_for_month(master_id: int, year: int, month: int, service_duration_min: int = 60) -> set[int]:
@@ -1544,7 +1604,6 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
 
 
 
-
 async def create_booking(client_id: int, master_id: int, service_id: str, slot: datetime, *, hold_minutes: int | None = None) -> Booking:
     """Создает новую запись (бронирование).
 
@@ -1564,10 +1623,8 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
             try:
                 # Determine duration for the new booking (minutes) so we can compute new_end
                 try:
-                    from bot.app.domain.models import ServiceProfile
-
-                    sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
-                    new_dur = int(getattr(sp, "duration_minutes", 0) or 0)
+                    totals = await get_services_duration_and_price([service_id], online_payment=False, master_id=master_id)
+                    new_dur = int(totals.get("total_minutes") or 0)
                 except Exception:
                     new_dur = 0
                 if not new_dur:
@@ -1615,7 +1672,7 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
             # Snapshot service price at booking time and create booking via helper
             svc = await session.get(Service, service_id)
             svc_price = int(getattr(svc, "price_cents", 0) or 0)
-            booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=svc_price, hold_minutes=hold_minutes, service_id=service_id)
+            booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=svc_price, hold_minutes=hold_minutes, service_id=service_id, duration_minutes=new_dur)
             try:
                 await session.commit()
             except IntegrityError as ie:
@@ -1737,7 +1794,7 @@ async def create_composite_booking(client_id: int, master_id: int, service_ids: 
                     raise
 
             price_cents = int(totals.get("total_price_cents", 0) or 0) or None
-            booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=price_cents, hold_minutes=hold_minutes, service_id=str(service_ids[0]))
+            booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=price_cents, hold_minutes=hold_minutes, service_id=str(service_ids[0]), duration_minutes=new_dur)
             await session.flush()
             # add items
             pos = 0
@@ -1888,6 +1945,7 @@ async def _create_booking_base(
     price_cents: int | None = None,
     hold_minutes: int | None = None,
     service_id: str | None = None,
+    duration_minutes: int | None = None,
 ) -> Booking:
     """Internal helper: populate Booking object, add to session, but do not commit outer changes.
 
@@ -1912,24 +1970,25 @@ async def _create_booking_base(
     booking.cash_hold_expires_at = datetime.now(UTC) + timedelta(minutes=max(1, _hold))
     # Determine and set ends_at for exclusion constraint correctness.
     try:
-        duration_min = None
-        if service_id:
-            from bot.app.domain.models import ServiceProfile, MasterService
-            # Master-specific override first
-            try:
-                ms_row = await session.scalar(
-                    select(MasterService).where(
-                        MasterService.master_telegram_id == int(master_id),
-                        MasterService.service_id == service_id,
+        duration_min = duration_minutes
+        if not duration_min:
+            if service_id:
+                from bot.app.domain.models import ServiceProfile, MasterService
+                # Master-specific override first
+                try:
+                    ms_row = await session.scalar(
+                        select(MasterService).where(
+                            MasterService.master_telegram_id == int(master_id),
+                            MasterService.service_id == service_id,
+                        )
                     )
-                )
-                if ms_row and getattr(ms_row, "duration_minutes", None):
-                    duration_min = int(getattr(ms_row, "duration_minutes") or 0)
-            except Exception:
-                duration_min = None
-            if not duration_min:
-                sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
-                duration_min = int(getattr(sp, "duration_minutes", 0) or 0)
+                    if ms_row and getattr(ms_row, "duration_minutes", None):
+                        duration_min = int(getattr(ms_row, "duration_minutes") or 0)
+                except Exception:
+                    duration_min = None
+                if not duration_min:
+                    sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
+                    duration_min = int(getattr(sp, "duration_minutes", 0) or 0)
         if not duration_min:
             duration_min = await SettingsRepo.get_slot_duration()
         booking.ends_at = slot + timedelta(minutes=duration_min)

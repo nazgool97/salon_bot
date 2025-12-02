@@ -1108,7 +1108,7 @@ async def admin_manage_prices(callback: CallbackQuery, state: FSMContext, locale
     except Exception:
         services = []
     lang = locale
-    text = t("manage_prices_title", lang)
+    text = f"{t('manage_prices_title', lang)}\n\n{t('manage_prices_desc', lang)}"
     if m := _get_msg_obj(callback):
         kb = services_list_kb(services, lang)
         await nav_push(state, text, kb, lang=lang)
@@ -1968,7 +1968,8 @@ async def admin_settings_reminder(callback: CallbackQuery, state: FSMContext, lo
         from bot.app.services.admin_services import SettingsRepo
         rem = await SettingsRepo.get_reminder_lead_minutes()
         kb = admin_reminder_menu_kb(lang)
-        title = t("settings_reminder_title", lang) if t("settings_reminder_title", lang) != "settings_reminder_title" else "Reminder time"
+        base_title = t("settings_reminder_title", lang) if t("settings_reminder_title", lang) != "settings_reminder_title" else "Reminder time"
+        title = f"{base_title}\n\n{t('settings_reminder_desc', lang)}"
         if m := _get_msg_obj(callback):
             await nav_push(state, title, kb, lang=lang)
             await safe_edit(m, title, reply_markup=kb)
@@ -3550,10 +3551,11 @@ async def admin_hold_menu(callback: CallbackQuery, state: FSMContext, locale: st
     if m := getattr(callback, "message", None):
         lang = locale
         kb = admin_hold_menu_kb(lang)
-        await nav_push(state, t("settings_title", lang), kb, lang=lang)
+        text = f"{t('settings_title', lang)}\n\n{t('hold_desc', lang)}"
+        await nav_push(state, text, kb, lang=lang)
         # Only catch Telegram errors for the editing call
         try:
-            await safe_edit(m, t("settings_title", lang), reply_markup=kb)
+            await safe_edit(m, text, reply_markup=kb)
         except TelegramAPIError:
             logger.exception("Telegram error while editing message in admin_hold_menu")
     await callback.answer()
@@ -3566,9 +3568,10 @@ async def admin_cancel_menu(callback: CallbackQuery, state: FSMContext, locale: 
     if m := getattr(callback, "message", None):
         lang = locale
         kb = admin_cancel_menu_kb(lang)
-        await nav_push(state, t("settings_title", lang), kb, lang=lang)
+        text = f"{t('settings_title', lang)}\n\n{t('cancel_desc', lang)}"
+        await nav_push(state, text, kb, lang=lang)
         try:
-            await safe_edit(m, t("settings_title", lang), reply_markup=kb)
+            await safe_edit(m, text, reply_markup=kb)
         except TelegramAPIError:
             logger.exception("Telegram error while editing message in admin_cancel_menu")
     await callback.answer()
@@ -4079,89 +4082,7 @@ async def cmd_set_locale(message: Message, locale: str) -> None:
             logger.exception("Unexpected error in cmd_set_locale: %s", e)
 
 
-@admin_router.message(F.text)
-async def admin_settings_text_input(message: Message, state: FSMContext, locale: str) -> None:
-    """Catch free-form text when a settings edit is pending.
 
-    Uses FSM data key 'pending_setting' set by corresponding callback handlers.
-    After applying and saving the value, refreshes the settings keyboard.
-    """
-    try:
-        data = await state.get_data()
-        pending = data.get("pending_setting")
-    except Exception:
-        pending = None
-    if not pending:
-        return
-    lang = locale
-    raw = (message.text or "").strip()
-    key = None
-    value: Any = None
-    ok = False
-    if pending == "currency":
-        key = "currency"
-        if re.fullmatch(r"[A-Za-z]{3}", raw):
-            value = raw.upper()
-            ok = True
-        else:
-            await message.answer("❌ Invalid currency code (e.g. UAH/EUR/USD)")
-    elif pending == "address":
-        key = "contact_address"
-        if raw:
-            value = raw[:300]
-            ok = True
-        else:
-            await message.answer("❌ Address cannot be empty")
-    elif pending == "instagram":
-        key = "contact_instagram"
-        handle = raw.lstrip("@")
-        if re.fullmatch(r"[A-Za-z0-9._]{2,30}", handle) and not (
-            ".." in handle or handle.startswith('.') or handle.endswith('.')
-        ):
-            value = handle
-            ok = True
-        else:
-            # Provide keep-old / retry options
-            try:
-                from bot.app.services.admin_services import SettingsRepo as _SR
-                old_val = await _SR.get_setting("contact_instagram", None)
-                if not old_val:
-                    old_val = await _SR.get_setting("instagram", None)
-            except Exception:
-                old_val = None
-            from aiogram.utils.keyboard import InlineKeyboardBuilder
-            kb = InlineKeyboardBuilder()
-            kb.button(text=(t("retry", lang) if t("retry", lang) != "retry" else "Retry"), callback_data=pack_cb(NavCB, act="back"))
-            if old_val:
-                kb.button(text=(t("keep_old", lang) if t("keep_old", lang) != "keep_old" else f"Keep {old_val}"), callback_data=pack_cb(NavCB, act="back"))
-            kb.adjust(1, 1)
-            await message.answer("❌ Invalid Instagram username", reply_markup=kb.as_markup())
-    if ok and key:
-        try:
-            await SettingsRepo.update_setting(key, value)
-            # Silent: rely on subsequent submenu refresh; no verbose message
-        except Exception:
-            await message.answer("❌ Save failed")
-    try:
-        await state.update_data(pending_setting=None)
-    except Exception:
-        pass
-    # Refresh appropriate submenu
-    try:
-        if pending in ("address", "instagram"):
-            from bot.app.telegram.admin.admin_keyboards import contacts_settings_kb
-            phone = await SettingsRepo.get_setting("contact_phone", None)
-            address = await SettingsRepo.get_setting("contact_address", None)
-            instagram = await SettingsRepo.get_setting("contact_instagram", None)
-            kb = contacts_settings_kb(
-                lang,
-                phone=phone,
-                address=address,
-                instagram=instagram,
-            )
-            await message.answer(t("settings_category_contacts", lang) or "Contacts", reply_markup=kb)
-    except Exception:
-        pass
 
 
 

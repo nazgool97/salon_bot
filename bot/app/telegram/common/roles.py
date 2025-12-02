@@ -172,7 +172,7 @@ class AdminRoleFilter(BaseFilter):
         try:
             uid = getattr(getattr(obj, 'from_user', None), 'id', None)
             allowed = await ensure_admin(obj)
-            logger.debug("AdminRoleFilter: uid=%s allowed=%s", uid, allowed)
+            logger.info("AdminRoleFilter: uid=%s allowed=%s", uid, allowed)
             return allowed
         except Exception:
             return False
@@ -188,7 +188,7 @@ class MasterRoleFilter(BaseFilter):
         try:
             uid = getattr(getattr(obj, 'from_user', None), 'id', None)
             allowed = await ensure_master(obj)
-            logger.debug("MasterRoleFilter: uid=%s allowed=%s", uid, allowed)
+            logger.info("MasterRoleFilter: uid=%s allowed=%s", uid, allowed)
             return allowed
         except Exception:
             return False

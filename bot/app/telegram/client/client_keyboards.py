@@ -641,13 +641,13 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
                 page = int(meta.get("page", 1) if meta else 1)
                 total_pages = int(meta.get("total_pages", 1) if meta else 1)
                 nav_buttons: list[InlineKeyboardButton] = []
-                if mode == "completed":
-                    if page > 1:
-                        nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)))
-                    if page < max(1, int(total_pages or 1)):
-                        nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)))
-                    if nav_buttons:
-                        kb.row(*nav_buttons)
+                # Allow pagination for both upcoming and completed modes
+                if page > 1:
+                    nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)))
+                if page < max(1, int(total_pages or 1)):
+                    nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)))
+                if nav_buttons:
+                    kb.row(*nav_buttons)
             except Exception:
                 logger.exception("get_masters_catalog_keyboard: failed to extract master id/name")
 

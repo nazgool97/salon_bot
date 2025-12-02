@@ -191,8 +191,8 @@ def services_list_kb(services: list[tuple[str, str]], lang: str = "uk") -> Inlin
     items: list[tuple[str, str]] = [
         (f"{name}", pack_cb(AdminEditPriceCB, service_id=str(sid))) for sid, name in services[:100]
     ]
-    from bot.app.telegram.common.callbacks import AdminMenuCB
-    items.append((tr("back", lang=lang), pack_cb(NavCB, act="role_root")))
+    from bot.app.telegram.common.callbacks import NavCB
+    items.append((tr("back", lang=lang), pack_cb(NavCB, act="back")))
     return get_simple_kb(items, cols=1)
 
 
@@ -241,7 +241,7 @@ def no_services_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 def edit_price_kb(service_id: str, lang: str = "uk") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     # Quick adjust row (-50, -20, -5)
-    from bot.app.telegram.common.callbacks import AdminPriceAdjCB, AdminSetPriceCB, AdminSetCurrencyCB
+    from bot.app.telegram.common.callbacks import AdminPriceAdjCB, AdminSetPriceCB, AdminSetCurrencyCB, NavCB
     for d in (-50, -20, -5):
         kb.button(text=f"{d}", callback_data=pack_cb(AdminPriceAdjCB, service_id=str(service_id), delta=int(d)))
     # Quick adjust row (+5, +20, +50)
@@ -250,7 +250,7 @@ def edit_price_kb(service_id: str, lang: str = "uk") -> InlineKeyboardMarkup:
     # Manual edit and currency
     kb.button(text=(tr("set_price", lang=lang) if tr("set_price", lang=lang) != "set_price" else "✏️ "+tr("enter_price", lang=lang)), callback_data=pack_cb(AdminSetPriceCB, service_id=str(service_id)))
     kb.button(text=(tr("set_currency", lang=lang) if tr("set_currency", lang=lang) != "set_currency" else tr("enter_currency", lang=lang)), callback_data=pack_cb(AdminSetCurrencyCB, service_id=str(service_id)))
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 3, 1, 1)
     return kb.as_markup()
 
@@ -337,7 +337,7 @@ def service_currency_picker_kb(service_id: str, lang: str = "uk") -> InlineKeybo
     from bot.app.telegram.common.callbacks import AdminSetServiceCurrencyCB, NavCB
     for code in ("UAH", "USD", "EUR"):
         kb.button(text=code, callback_data=pack_cb(AdminSetServiceCurrencyCB, service_id=str(service_id), code=code))
-    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 1)
     return kb.as_markup()
 
@@ -394,7 +394,7 @@ def admin_settings_kb(
     else:
         kb.button(text=tr("reminder_lead_label", lang=lang).format(minutes=_rem2), callback_data=pack_cb(AdminMenuCB, act="settings_reminder"))
 
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
 
     # раскладываем кнопки по 2 в ряд
     kb.adjust(2, 2, 2, 2, 2, 1)
@@ -407,12 +407,12 @@ def admin_hold_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Меню выбора времени удержания резерва."""
     kb = InlineKeyboardBuilder()
     options = [1, 5, 10, 15, 20, 30, 45, 60]
-    from bot.app.telegram.common.callbacks import AdminSetHoldCB
+    from bot.app.telegram.common.callbacks import AdminSetHoldCB, NavCB
     for m in options:
         suffix = tr("minutes_short", lang=lang)
         label = f"{m} {suffix}" if suffix else f"{m}"
         kb.button(text=label, callback_data=pack_cb(AdminSetHoldCB, minutes=int(m)))
-    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 3, 1)
     logger.debug("Меню настройки удержания резерва сгенерировано")
     return kb.as_markup()
@@ -424,7 +424,7 @@ def admin_reminder_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     # options expressed in minutes — provide common lead times including minutes
     # Provide: 15m, 30m, 1h, 2h, 3h, 6h, 12h, 24h
     options = [15, 30, 60, 120, 180, 360, 720, 1440]
-    from bot.app.telegram.common.callbacks import AdminSetReminderCB
+    from bot.app.telegram.common.callbacks import AdminSetReminderCB, NavCB
     # Localized short labels: prefer hours when divisible by 60
     for m in options:
         if m % 60 == 0:
@@ -435,7 +435,7 @@ def admin_reminder_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
             suffix = tr("minutes_short", lang=lang) or "min"
             label = f"{m} {suffix}"
         kb.button(text=label, callback_data=pack_cb(AdminSetReminderCB, minutes=int(m)))
-    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 3, 1)
     logger.debug("Меню настройки времени напоминания сгенерировано")
     return kb.as_markup()
@@ -558,11 +558,11 @@ def admin_cancel_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Меню выбора окна запрета отмены (в часах)."""
     kb = InlineKeyboardBuilder()
     options = [1, 2, 3, 6, 12, 24, 48]
-    from bot.app.telegram.common.callbacks import AdminSetCancelCB
+    from bot.app.telegram.common.callbacks import AdminSetCancelCB, NavCB
     for h in options:
         label = f"{h} {tr('hours_short', lang=lang) or 'h'}"
         kb.button(text=label, callback_data=pack_cb(AdminSetCancelCB, hours=int(h)))
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="role_root"))
+    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 3, 1)
     logger.debug("Меню настройки окна отмены (часы) сгенерировано")
     return kb.as_markup()

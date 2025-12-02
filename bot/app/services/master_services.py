@@ -420,23 +420,33 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 rev_txt = format_money_cents(rev_cents, 'UAH')
             except Exception:
                 rev_txt = str(int(stats.get('revenue_cents', 0) or 0) / 100.0)
-            seven_lines.append(f"Revenue: {rev_txt}")
-            # Avg per day
+            # Revenue (localized label)
+            try:
+                rev_lbl = t('revenue_title', l)
+                # keep only label part if translation contains a colon
+                rev_lbl = rev_lbl.split(':')[0] if rev_lbl else 'Revenue'
+            except Exception:
+                rev_lbl = 'Revenue'
+            seven_lines.append(f"{rev_lbl}: {rev_txt}")
+            # Avg per day (localized)
             try:
                 avgd = float(stats.get('avg_per_day', 0.0) or 0.0)
-                seven_lines.append(f"Avg/day: {avgd:.1f}")
+                avg_lbl = t('avg_per_day', l) or 'Avg/day'
+                seven_lines.append(f"{avg_lbl}: {avgd:.1f}")
             except Exception:
                 pass
-            # No-show rate
+            # No-show rate (localized)
             try:
                 nsr = float(stats.get('no_show_rate', 0.0) or 0.0)
-                seven_lines.append(f"No-show rate: {nsr:.1f}%")
+                nsr_lbl = t('no_show_rate', l) or 'No-show rate'
+                seven_lines.append(f"{nsr_lbl}: {nsr:.1f}%")
             except Exception:
                 pass
-            # Next booking time
+            # Next booking time (localized)
             try:
                 if stats.get('next_booking_time'):
-                    seven_lines.append(f"Next: {stats.get('next_booking_time')}")
+                    next_lbl = t('next_label', l) or 'Next'
+                    seven_lines.append(f"{next_lbl}: {stats.get('next_booking_time')}")
             except Exception:
                 pass
             seven_line = "\n" + "\n".join(seven_lines)
@@ -804,13 +814,30 @@ class MasterRepo:
     async def upsert_client_note(booking_id: int, note_text: str) -> bool:
         """Insert or update MasterClientNote for booking's master and user."""
         try:
+            logger.info(
+                "MasterRepo.upsert_client_note called booking_id=%s note_len=%s",
+                booking_id,
+                len(note_text or ""),
+            )
             async with get_session() as session:
                 from bot.app.domain.models import Booking, MasterClientNote
                 from sqlalchemy import select, and_
+
                 booking = await session.get(Booking, booking_id)
                 if not (booking and booking.user_id and booking.master_id):
-                    logger.warning("MasterRepo.upsert_client_note: booking or fields missing: %s", booking_id)
+                    logger.warning(
+                        "MasterRepo.upsert_client_note: booking or fields missing booking_id=%s booking=%s",
+                        booking_id,
+                        bool(booking),
+                    )
                     return False
+
+                logger.info(
+                    "MasterRepo.upsert_client_note: found booking id=%s user_id=%s master_id=%s",
+                    getattr(booking, "id", None),
+                    getattr(booking, "user_id", None),
+                    getattr(booking, "master_id", None),
+                )
 
                 note = await session.scalar(
                     select(MasterClientNote).where(
@@ -821,8 +848,18 @@ class MasterRepo:
                     )
                 )
                 if note:
+                    logger.info(
+                        "MasterRepo.upsert_client_note: updating existing note for master=%s user=%s",
+                        booking.master_id,
+                        booking.user_id,
+                    )
                     note.note = note_text
                 else:
+                    logger.info(
+                        "MasterRepo.upsert_client_note: creating new note for master=%s user=%s",
+                        booking.master_id,
+                        booking.user_id,
+                    )
                     note = MasterClientNote(
                         master_telegram_id=booking.master_id,
                         user_id=booking.user_id,
@@ -830,7 +867,12 @@ class MasterRepo:
                     )
                     session.add(note)
                 await session.commit()
-                logger.info("MasterRepo.upsert_client_note: note updated for booking %s", booking_id)
+                logger.info(
+                    "MasterRepo.upsert_client_note: note updated for booking %s master=%s user=%s",
+                    booking_id,
+                    booking.master_id,
+                    booking.user_id,
+                )
                 return True
         except Exception as e:
             logger.exception("MasterRepo.upsert_client_note failed for %s: %s", booking_id, e)
@@ -1332,7 +1374,7 @@ class MasterRepo:
                 # cases where the junction seems to contain values but the
                 # in_(mids) query later doesn't match (type/coercion issues,
                 # whitespace, different DB/schema instance, etc.).
-                logger.debug(
+                logger.info(
                     "get_masters_for_service: service_id=%r -> raw_mid_rows=%r -> mids=%s",
                     service_id,
                     raw_mid_rows,
@@ -1342,13 +1384,13 @@ class MasterRepo:
                     # Additional debug: list distinct service_ids present in master_services
                     try:
                         all_rows = await session.execute(select(MasterService.master_telegram_id, MasterService.service_id))
-                        logger.debug("get_masters_for_service: master_services full sample=%r", all_rows.all())
+                        logger.info("get_masters_for_service: master_services full sample=%r", all_rows.all())
                     except Exception:
-                        logger.debug("get_masters_for_service: failed to fetch master_services sample for debugging")
+                        logger.info("get_masters_for_service: failed to fetch master_services sample for debugging")
                     return []
                 res = await session.execute(select(Master).where(Master.telegram_id.in_(mids)))
                 masters = list(res.scalars().all())
-                logger.debug("get_masters_for_service: service_id=%s -> master_ids=%s, masters_found=%d", service_id, mids, len(masters))
+                logger.info("get_masters_for_service: service_id=%s -> master_ids=%s, masters_found=%d", service_id, mids, len(masters))
                 return masters
         except Exception as e:
             logger.exception("MasterRepo.get_masters_for_service failed for %s: %s", service_id, e)
@@ -2113,7 +2155,7 @@ async def services_with_masters(wanted_ids: set[str]) -> set[str]:
     try:
         return await MasterRepo.services_with_masters(wanted_ids)
     except Exception as e:
-        logger.debug("MasterRepo.services_with_masters failed, falling back to module query: %s", e)
+        logger.info("MasterRepo.services_with_masters failed, falling back to module query: %s", e)
     try:
         if not wanted_ids:
             return set()

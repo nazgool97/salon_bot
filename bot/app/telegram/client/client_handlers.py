@@ -10,6 +10,7 @@ from bot.app.domain.models import Booking, BookingStatus, Master, MasterService,
 from aiogram import F, Router, Bot
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, PreCheckoutQuery, LabeledPrice
+from aiogram.enums import ContentType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.exc import SQLAlchemyError
@@ -738,7 +739,7 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         return
     selected_date = callback_data.date
     logger.info("Выбор даты для пользователя %s, date=%s", user_id, selected_date)
-    from bot.app.services.client_services import get_available_time_slots
+    from bot.app.services.client_services import get_available_time_slots_for_services
     slot_default = await _slot_duration_default()
     # Determine slot duration: always compute via get_services_duration_and_price
     # so per-master overrides are respected (single and multi-service flows).
@@ -768,7 +769,7 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         await cb.answer(t("invalid_date", lang))
         return
 
-    slots = await get_available_time_slots(base_dt, callback_data.master_id, duration)
+    slots = await get_available_time_slots_for_services(base_dt, callback_data.master_id, [duration])
     lang = locale
     if not slots:
         if cb.message:
@@ -1662,7 +1663,7 @@ async def client_reschedule_start(cb: CallbackQuery, callback_data, state: FSMCo
         available_days = set()
         allowed_weekdays = []
 
-    # Compute day states for current month
+    # Compute day states in handler to keep keyboards dumb
     try:
         from bot.app.services.client_services import compute_calendar_day_states
         day_states = compute_calendar_day_states(
@@ -1736,7 +1737,7 @@ async def client_reschedule_time(cb: CallbackQuery, callback_data, state: FSMCon
 
 
 @client_router.callback_query(RescheduleCB.filter(F.action == "confirm"))
-async def client_reschedule_confirm(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def client_reschedule_confirm(cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
     """Подтверждает перенос бронирования на новое время."""
     lang = await resolve_locale(state, locale, cb.from_user.id)
     booking_id = int(callback_data.booking_id)
@@ -1764,9 +1765,6 @@ async def client_reschedule_confirm(cb: CallbackQuery, callback_data, state: FSM
         # Show the updated booking list immediately.
         await my_bookings(cb, callback_data, state, locale, replace_screen=True)
         await cb.answer(t("reschedule_done_toast", lang))
-
-
-
 
 
 @client_router.callback_query(PayCB.filter(F.action == "online"))
@@ -1892,6 +1890,50 @@ async def pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
         await pre_checkout_query.answer(ok=True)
     except Exception:
         logger.exception("pre_checkout_query: failed to answer pre-checkout query")
+
+
+@client_router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
+async def handle_successful_payment(message: Message, locale: str) -> None:
+    """Handle Telegram successful_payment update.
+
+    - Parses booking id from invoice payload (booking_{id}).
+    - Marks booking as PAID and sets paid_at.
+    - Notifies master and admins about the payment.
+    - Confirms to the client.
+    """
+    try:
+        sp = getattr(message, "successful_payment", None)
+        if not sp:
+            return
+        payload = getattr(sp, "invoice_payload", "") or ""
+        m = re.match(r"booking_(\d+)", str(payload))
+        if not m:
+            return
+        booking_id = int(m.group(1))
+
+        # Persist payment status
+        try:
+            await BookingRepo.mark_paid(booking_id)
+        except Exception:
+            logger.exception("Failed to mark booking %s as paid", booking_id)
+
+        # Notify master and admins
+        try:
+            booking = await BookingRepo.get(booking_id)
+            recipients = [int(getattr(booking, "master_id", 0))] + get_admin_ids()
+            bot = getattr(message, "bot", None)
+            if bot:
+                await send_booking_notification(bot, booking_id, "paid", recipients)
+        except Exception:
+            logger.exception("Failed to send paid notifications for booking %s", booking_id)
+
+        # Acknowledge to the client
+        try:
+            await message.answer(t("payment_success", locale))
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("handle_successful_payment: unexpected error")
 
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "cancel"))

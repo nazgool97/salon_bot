@@ -182,6 +182,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 	master check is necessary here.
 	"""
 	text = (msg.text or "").strip()
+	logger.info("master_edit_note_fallback: entered state with text_len=%s from_user=%s", len(text), getattr(getattr(msg, 'from_user', None), 'id', None))
 
 	# Prefer middleware-injected `locale` as the canonical source of truth
 	lang = locale or default_language()
@@ -256,11 +257,15 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 	try:
 		ok = False
 		if booking_id:
+			logger.info("master_edit_note_fallback: attempting upsert_client_note booking_id=%s", booking_id)
 			ok = await master_services.MasterRepo.upsert_client_note(booking_id, text)
+			logger.info("master_edit_note_fallback: upsert_client_note result=%s for booking_id=%s", ok, booking_id)
 		elif user_id:
 			master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
 			if master_id:
+				logger.info("master_edit_note_fallback: attempting upsert_client_note_for_user master_id=%s user_id=%s", master_id, user_id)
 				ok = await master_services.MasterRepo.upsert_client_note_for_user(int(master_id), int(user_id), text)
+				logger.info("master_edit_note_fallback: upsert_client_note_for_user result=%s for master_id=%s user_id=%s", ok, master_id, user_id)
 			else:
 				ok = False
 		else:
@@ -270,6 +275,65 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 			# Send confirmation and show updated client card when possible
 			try:
 				await msg.answer(t("master_note_saved", lang))
+			except Exception:
+				pass
+			
+			# Redirect to My Clients (Page 1)
+			try:
+				master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
+				if master_id:
+					clients = await master_services.MasterRepo.get_clients_for_master(int(master_id))
+				else:
+					clients = []
+			except Exception:
+				clients = []
+
+			from aiogram.utils.keyboard import InlineKeyboardBuilder
+			from bot.app.telegram.common.callbacks import pack_cb, ClientInfoCB, MasterMenuCB
+
+			builder = InlineKeyboardBuilder()
+			PAGE_SIZE = 5
+			page = 1
+
+			if not clients:
+				try:
+					await msg.answer(text=t("master_no_clients", lang), reply_markup=get_master_main_menu(lang))
+				except Exception:
+					pass
+				return
+
+			total = len(clients)
+			total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+			start = 0
+			end = PAGE_SIZE
+			page_clients = clients[start:end]
+
+			for uid, name, username in page_clients:
+				label = name or f"#{uid}"
+				if username:
+					label = f"{label} (@{username})"
+				builder.button(text=label, callback_data=pack_cb(ClientInfoCB, user_id=int(uid)))
+
+			if total_pages > 1:
+				builder.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
+				builder.button(text=t("page_next", lang), callback_data=pack_cb(MasterMenuCB, act="my_clients", page=2))
+			else:
+				builder.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
+
+			sizes = [1] * len(page_clients)
+			sizes.append(2 if total_pages > 1 else 1)
+			builder.adjust(*sizes)
+			kb = builder.as_markup()
+			title = t("master_my_clients_header", lang)
+			try:
+				await msg.answer(text=title, reply_markup=kb)
+			except Exception:
+				pass
+			return
+		else:
+			# Inform master that saving the note failed so they aren't left wondering
+			try:
+				await msg.answer(t("error_retry", lang))
 			except Exception:
 				pass
 			# try to render updated card if we have user-scoped flow
@@ -500,9 +564,14 @@ async def master_client_note_edit(cb: CallbackQuery, callback_data, state: FSMCo
 		else:
 			prompt = t('master_enter_note', lang)
 
+		from aiogram.utils.keyboard import InlineKeyboardBuilder
+		builder = InlineKeyboardBuilder()
+		builder.button(text=t("cancel", lang), callback_data=pack_cb(MasterClientNoteCB, action="cancel_edit", user_id=int(user_id)))
+		kb = builder.as_markup()
+
 		try:
 			if cb.message:
-				await cb.message.answer(prompt)
+				await safe_edit(cb.message, text=prompt, reply_markup=kb)
 			else:
 				await cb.answer()
 		except Exception:
@@ -515,6 +584,16 @@ async def master_client_note_edit(cb: CallbackQuery, callback_data, state: FSMCo
 			await cb.answer()
 		except Exception:
 			pass
+
+
+@master_router.callback_query(MasterClientNoteCB.filter(F.action == "cancel_edit"))
+async def master_client_note_cancel(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+	"""Cancel edit note and return to client card."""
+	try:
+		await state.clear()
+	except Exception:
+		pass
+	await master_client_info(cb, callback_data, state, locale)
 
 
 
@@ -1767,16 +1846,6 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 	await cb.answer()
 
 
-
-
-# Split booking actions into focused handlers to improve readability and testability.
-
-
-def _resolve_lang(state: FSMContext, locale: str) -> str:
-	# helper: prefer nav stack lang when handlers need it; individual handlers will await nav_get_lang
-	return locale or default_language()
-
-
 @master_router.callback_query(BookingActionCB.filter(F.act == "master_detail"))
 async def booking_master_detail(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
 	try:
@@ -2109,6 +2178,7 @@ async def booking_add_note(cb: CallbackQuery, callback_data, state: FSMContext, 
 	await state.update_data(client_note_booking_id=booking_id)
 	await state.set_state(MasterStates.edit_note)
 	try:
+		logger.info("booking_add_note: invoked by master=%s booking_id=%s", getattr(getattr(cb, 'from_user', None), 'id', None), booking_id)
 		res = await master_services.handle_add_note(booking_id, locale)
 		if res:
 			prompt, kb = res
@@ -2146,14 +2216,14 @@ async def booking_cancel_note(cb: CallbackQuery, callback_data, state: FSMContex
 		else:
 			try:
 				bd = await build_booking_details(booking_id, user_id=None, lang=locale)
-				text = format_booking_details_text(bd, locale, role="master")
+				text = format_booking_details_text(bd, lang, role="master")
 				markup = build_booking_card_kb(bd, booking_id, role="master", lang=locale)
 				await safe_edit(cb.message, text=text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
 			except Exception:
 				try:
-					text = format_booking_details_text(bd, locale, role='master')
+					text = format_booking_details_text(bd, lang, role='master')
 				except Exception:
-					text = format_booking_details_text(bd, locale)
+					text = format_booking_details_text(bd, lang)
 				from aiogram.utils.keyboard import InlineKeyboardBuilder
 				kb2 = InlineKeyboardBuilder()
 				kb2.button(text=t("booking_mark_done_button"), callback_data=pack_cb(BookingActionCB, act="mark_done", booking_id=booking_id))
@@ -2264,3 +2334,8 @@ async def stats_month(cb: CallbackQuery, state: FSMContext, locale: str) -> None
 # master-specific bookings rendering moved to `bot.app.services.master_services.render_bookings_page`.
 # The legacy inline helper was removed to avoid duplication; the service should be the single source
 # of truth for bookings rendering logic.
+
+@master_router.message(F.text)
+async def master_catch_all_debug(msg: Message, state: FSMContext, locale: str) -> None:
+    st = await state.get_state()
+    logger.info("master_catch_all_debug: caught message '%s' in state '%s' from user %s", msg.text, st, msg.from_user.id)

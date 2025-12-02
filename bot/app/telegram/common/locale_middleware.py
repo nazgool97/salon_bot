@@ -30,5 +30,5 @@ class LocaleMiddleware(BaseMiddleware):
             # Delegate to the shared safe_get_locale helper which handles
             # DB failures and provides a default fallback.
             data["locale"] = await safe_get_locale(user_id)
-            logger.debug("Установлена локаль %s для пользователя %s", data["locale"], user_id)
+            logger.info("LocaleMiddleware: set locale %s for user %s", data["locale"], user_id)
         return await handler(event, data)
