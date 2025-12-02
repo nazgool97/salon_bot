@@ -67,8 +67,8 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
     "services_for_master": "🛠️ Послуги",
         "choose_master": "Оберіть майстра:",
         "choose_date": "Оберіть дату:",
-        "choose_time": "Оберіть час:",
-        "choose_time_on_date_prefix": "Оберіть час на",
+        "choose_time": "Оберіть годину на",
+        "choose_time_on_date_prefix": "Оберіть хвилини на",
         "no_time_for_date": "На цю дату немає вільного часу.",
         "weekday_short": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"],
         "weekday_full": [
@@ -598,8 +598,8 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
     "services_for_master": "🛠️ Услуги",
         "choose_master": "Выберите мастера:",
         "choose_date": "Выберите дату:",
-        "choose_time": "Выберите час на дату",
-        "choose_time_on_date_prefix": "Выберите минуты на дату",
+        "choose_time": "Выберите час на",
+        "choose_time_on_date_prefix": "Выберите минуты на",
         "no_time_for_date": "На эту дату нет свободного времени.",
         "weekday_short": ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"],
         "weekday_full": [
@@ -1118,8 +1118,8 @@ TRANSLATIONS: dict[str, dict[str, str | list[str]]] = {
     "services_for_master": "🛠️ Services",
         "choose_master": "Choose a master:",
         "choose_date": "Choose a date:",
-        "choose_time": "Choose a time:",
-        "choose_time_on_date_prefix": "Choose a time on",
+        "choose_time": "Choose hour on",
+        "choose_time_on_date_prefix": "Choose minutes on",
         "no_time_for_date": "No free time on this date.",
         "weekday_short": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         "weekday_full": [
