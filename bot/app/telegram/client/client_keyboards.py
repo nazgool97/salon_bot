@@ -20,6 +20,7 @@ from bot.app.telegram.common.callbacks import (
     TimeCB,
     RescheduleCB,
 )
+from bot.app.telegram.common.callbacks import HoursViewCB, HourCB
 from bot.app.telegram.common.callbacks import MasterMenuCB, NavCB, ClientMenuCB, RatingCB
 from bot.app.telegram.common.callbacks import MasterProfileCB, MasterServicesCB, MastersListCB
 from bot.app.telegram.common.callbacks import PayCB
@@ -103,6 +104,7 @@ async def get_time_slots_kb(
     service_id: str | None = None,
     master_id: int | None = None,
     booking_id: int | None = None,
+    add_hour_mode: bool = False,
 ) -> InlineKeyboardMarkup:
     """Builds the booking or reschedule keyboard for a list of time slots."""
 
@@ -138,6 +140,14 @@ async def get_time_slots_kb(
                 time=compact_time,
             )
         builder.button(text=label, callback_data=callback_data)
+    # Optional: add a quick entry to choose by hour->minutes instead
+    if add_hour_mode:
+        try:
+            hour_label = t("choose_time_by_hour", lang)
+        except Exception:
+            hour_label = "Выбрать по часам"
+        # Use HoursViewCB which carries service/master/date to open hour view
+        builder.button(text=hour_label, callback_data=pack_cb(HoursViewCB, service_id=normalized_service, master_id=normalized_master, date=date))
 
     try:
         back_text = t("back", lang)
@@ -145,6 +155,50 @@ async def get_time_slots_kb(
         back_text = "⬅️ Назад"
     builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
     builder.adjust(3, 3, 3, 1, 1)
+    return builder.as_markup()
+
+
+async def get_hour_picker_kb(
+    hours: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, lang: str, cols: int = 4
+) -> InlineKeyboardMarkup:
+    """Builds an hour picker keyboard. Buttons pack `HourCB` with chosen hour."""
+    builder = InlineKeyboardBuilder()
+    normalized_service = str(service_id or "")
+    normalized_master = int(master_id or 0)
+    for h in sorted(set(int(x) for x in hours)):
+        label = f"{h:02d}:00"
+        builder.button(text=label, callback_data=pack_cb(HourCB, service_id=normalized_service, master_id=normalized_master, date=date, hour=int(h)))
+    try:
+        back_text = t("back", lang)
+    except Exception:
+        back_text = "⬅️ Назад"
+    builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
+    builder.adjust(cols)
+    return builder.as_markup()
+
+
+async def get_minute_picker_kb(
+    minutes: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, hour: int, lang: str, action: Literal["booking", "reschedule"] = "booking", booking_id: int | None = None, cols: int = 4
+) -> InlineKeyboardMarkup:
+    """Builds a minute picker keyboard. Buttons pack final `TimeCB` or `RescheduleCB`."""
+    builder = InlineKeyboardBuilder()
+    normalized_service = str(service_id or "")
+    normalized_master = int(master_id or 0)
+    normalized_booking = int(booking_id or 0)
+    for m in sorted(set(int(x) for x in minutes)):
+        label = f"{m:02d}"
+        compact = f"{int(hour):02d}{int(m):02d}"
+        if action == "reschedule":
+            cb = pack_cb(RescheduleCB, action="time", booking_id=normalized_booking, date=date, time=compact)
+        else:
+            cb = pack_cb(TimeCB, service_id=normalized_service, master_id=normalized_master, date=date, time=compact)
+        builder.button(text=label, callback_data=cb)
+    try:
+        back_text = t("back", lang)
+    except Exception:
+        back_text = "⬅️ Назад"
+    builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
+    builder.adjust(cols)
     return builder.as_markup()
 
 logger = logging.getLogger(__name__)

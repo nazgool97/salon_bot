@@ -206,6 +206,10 @@ AdminWorkHoursClosedCB = create_callback_data("admin_work_hours_closed", day=int
 # Service-level currency set (picker buttons)
 AdminSetServiceCurrencyCB = create_callback_data("admin_set_service_currency", service_id=str, code=str)
 
+# Hour-based time selection (client-side): show hours, then minutes
+HoursViewCB = create_callback_data("hours", service_id=str, master_id=int, date=str)
+HourCB = create_callback_data("hour", service_id=str, master_id=int, date=str, hour=int)
+
 # Алиас для обратной совместимости
 PaymentCB = PayCB
 
