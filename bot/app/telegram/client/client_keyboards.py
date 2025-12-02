@@ -19,6 +19,9 @@ from bot.app.telegram.common.callbacks import (
     ServiceSelectCB,
     TimeCB,
     RescheduleCB,
+    HoursViewCB,
+    HourCB,
+    CancelTimeCB,
 )
 from bot.app.telegram.common.callbacks import MasterMenuCB, NavCB, ClientMenuCB, RatingCB
 from bot.app.telegram.common.callbacks import MasterProfileCB, MasterServicesCB, MastersListCB
