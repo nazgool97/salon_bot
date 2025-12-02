@@ -1441,18 +1441,34 @@ async def get_available_time_slots_for_services(
         
         # Check if the gap is large enough for the total service duration
         if gap_duration_minutes >= total_duration:
-            # Candidate slot is the start of the gap
-            candidate_slot_utc = gap_start
-            
-            # Check lead time if it's today
-            if is_today and lead_min:
-                candidate_slot_local = candidate_slot_utc.astimezone(LOCAL_TZ)
-                # If the slot is sooner than lead_min from now, skip it
-                if (candidate_slot_local - now_local).total_seconds() / 60 < lead_min:
-                    continue
-            
-            # Add to results (converted to local time)
-            slots.append(candidate_slot_utc.astimezone(LOCAL_TZ).time())
+            # Instead of only returning the gap start, generate stepped slots
+            # across the gap so clients can pick any available start time.
+            try:
+                slot_step_min = await SettingsRepo.get_slot_duration()
+                slot_step_min = int(slot_step_min or 0)
+            except Exception:
+                slot_step_min = 0
+
+            # Fallback to reasonable tick: if slot_step is missing or zero,
+            # prefer a 15-minute grid (or total_duration if larger).
+            if not slot_step_min or slot_step_min <= 0:
+                slot_step_min = 15 if total_duration < 15 else int(total_duration)
+
+            current = gap_start
+            # walk the gap in steps and add each candidate that fits total_duration
+            while (current + timedelta(minutes=total_duration)) <= gap_end:
+                # Check lead time if it's today (compare in local timezone)
+                if is_today and lead_min:
+                    try:
+                        candidate_local = current.astimezone(LOCAL_TZ)
+                        if (candidate_local - now_local).total_seconds() / 60 < lead_min:
+                            current = current + timedelta(minutes=slot_step_min)
+                            continue
+                    except Exception:
+                        pass
+
+                slots.append(current.astimezone(LOCAL_TZ).time())
+                current = current + timedelta(minutes=slot_step_min)
 
     logger.debug("Slots (Gap-based) for master %s on %s: %s", master_id, date, slots)
     return slots
