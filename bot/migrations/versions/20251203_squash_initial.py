@@ -15,7 +15,11 @@ def upgrade():
     # descriptive comment lines that contain semicolons (e.g. "Type: EXTENSION;")
     # — those fragments are not valid SQL and must be skipped. We therefore
     # only execute chunks that contain common SQL verbs/phrases.
-    candidates = [cmd.strip() for cmd in sql.split(';') if cmd.strip()]
+    # Remove pg_dump comment lines that look like "-- ..." so semicolons
+    # inside those metadata comments don't break SQL chunking.
+    lines = [ln for ln in sql.splitlines() if not ln.strip().startswith('--')]
+    cleaned = '\n'.join(lines)
+    candidates = [cmd.strip() for cmd in cleaned.split(';') if cmd.strip()]
 
     sql_keywords = (
         'create ', 'alter ', 'comment ', 'set ', 'select ', 'insert ', 'update ',
