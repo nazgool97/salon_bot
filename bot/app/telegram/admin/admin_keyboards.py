@@ -272,17 +272,17 @@ def contacts_settings_kb(lang: str = "uk", *, phone: str | None = None, address:
     """Contacts settings: phone, address, Instagram."""
     kb = InlineKeyboardBuilder()
     if phone:
-        kb.button(text=f"📞 {tr('phone_label', lang=lang)}: {phone}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
+        kb.button(text=f"{tr('phone_label', lang=lang)}: {phone}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
     else:
-        kb.button(text=f"📞 {tr('phone_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
+        kb.button(text=f"{tr('phone_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
     if address:
-        kb.button(text=f"📍 {tr('address_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
+        kb.button(text=f"{tr('address_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
     else:
-        kb.button(text=f"📍 {tr('address_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
+        kb.button(text=f"{tr('address_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
     if instagram:
-        kb.button(text=f"📷 {tr('instagram_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
+        kb.button(text=f"{tr('instagram_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
     else:
-        kb.button(text=f"📷 {tr('instagram_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
+        kb.button(text=f"{tr('instagram_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1, 1, 1, 1)
     return kb.as_markup()

@@ -21,6 +21,13 @@ if cfg_name:  # pragma: no branch
 # add your model's MetaData object here
 # for 'autogenerate' support
 import importlib
+import sys
+import pathlib
+
+# Ensure the project root is on sys.path so imports like `from bot...` work
+# when Alembic runs inside the container (env.py is at bot/migrations/env.py)
+project_root = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
 
 # ruff: noqa: E402
 # importlib usage is local to alembic autogeneration; keep at top to satisfy linters

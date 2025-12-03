@@ -1454,8 +1454,12 @@ async def get_available_time_slots_for_services(
                 slot_step_min = 0
 
             if not slot_step_min or slot_step_min <= 0:
-                # default to 5-minute grid unless service duration is larger
-                slot_step_min = 5 if total_duration < 5 else int(total_duration)
+                # default to a fine-grained 5-minute grid (user-friendly)
+                # regardless of service duration. This ensures clients see
+                # familiar minute choices (00,05,10...) even for long
+                # services. Administrators can override via
+                # `slot_tick_minutes` setting.
+                slot_step_min = 5
 
             current = gap_start
             # walk the gap in steps and add each candidate that fits total_duration

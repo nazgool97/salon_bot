@@ -199,15 +199,8 @@ async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None
         back_text = t("back", lang)
     except Exception:
         back_text = "⬅️ Назад"
-    # Back to hours view
-    builder.button(text=back_text, callback_data=pack_cb(HoursViewCB, service_id=normalized_service, master_id=normalized_master, date=date))
-    # Add explicit cancel button
-    try:
-        cancel_txt = t("cancel", lang) or "Отмена"
-    except Exception:
-        cancel_txt = "Отмена"
-    from bot.app.telegram.common.callbacks import CancelTimeCB
-    builder.button(text=cancel_txt, callback_data=pack_cb(CancelTimeCB))
+    # Back returns to the previous step (handler will manage exact nav)
+    builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
     builder.adjust(cols)
     return builder.as_markup()
 
@@ -265,12 +258,12 @@ def _build_week_row_states(
     month=12 while current month=11 with day=31). We now use the calendar's
     explicit year/month arguments.
 
-    States from compute_calendar_day_states:
-      empty -> space placeholder
-      past -> ✖
-      not_allowed -> —
-      available -> clickable day number (packs real ISO date)
-      full -> 🗓️ (fully booked / no slots)
+        States from compute_calendar_day_states:
+            empty -> space placeholder
+            past -> ✖
+            not_allowed -> —
+            available -> clickable day number (packs real ISO date)
+            full -> 🔴 (fully booked / no slots)
     """
     from datetime import date as _date
     row: list[InlineKeyboardButton] = []
@@ -290,10 +283,10 @@ def _build_week_row_states(
                 cb = pack_cb(DateCB, service_id=service_id, master_id=master_id, date=str(day_date))
                 row.append(InlineKeyboardButton(text=str(day), callback_data=cb))
             except Exception:
-                row.append(InlineKeyboardButton(text="🗓️", callback_data="dummy"))
+                row.append(InlineKeyboardButton(text="🔴", callback_data="dummy"))
             continue
         # full / fallback
-        row.append(InlineKeyboardButton(text="🗓️", callback_data="dummy"))
+        row.append(InlineKeyboardButton(text="🔴", callback_data="dummy"))
     return row
 
 def _build_month_nav_row(service_id: str, master_id: int, year: int, month: int, month_label: str) -> list[InlineKeyboardButton]:

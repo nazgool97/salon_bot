@@ -2216,14 +2216,14 @@ async def booking_cancel_note(cb: CallbackQuery, callback_data, state: FSMContex
 		else:
 			try:
 				bd = await build_booking_details(booking_id, user_id=None, lang=locale)
-				text = format_booking_details_text(bd, lang, role="master")
+				text = format_booking_details_text(bd, locale, role="master")
 				markup = build_booking_card_kb(bd, booking_id, role="master", lang=locale)
 				await safe_edit(cb.message, text=text, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
 			except Exception:
 				try:
-					text = format_booking_details_text(bd, lang, role='master')
+					text = format_booking_details_text(bd, locale, role='master')
 				except Exception:
-					text = format_booking_details_text(bd, lang)
+					text = format_booking_details_text(bd, locale)
 				from aiogram.utils.keyboard import InlineKeyboardBuilder
 				kb2 = InlineKeyboardBuilder()
 				kb2.button(text=t("booking_mark_done_button"), callback_data=pack_cb(BookingActionCB, act="mark_done", booking_id=booking_id))
@@ -2338,4 +2338,9 @@ async def stats_month(cb: CallbackQuery, state: FSMContext, locale: str) -> None
 @master_router.message(F.text)
 async def master_catch_all_debug(msg: Message, state: FSMContext, locale: str) -> None:
     st = await state.get_state()
-    logger.info("master_catch_all_debug: caught message '%s' in state '%s' from user %s", msg.text, st, msg.from_user.id)
+    logger.info(
+    "master_catch_all_debug: caught message '%s' in state '%s' from user %s",
+    msg.text,
+    st,
+    getattr(msg.from_user, "id", None),
+)
