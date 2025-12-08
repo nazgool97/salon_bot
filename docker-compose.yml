@@ -11,23 +11,26 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-app_user} -d ${DB_NAME:-booking_app}"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
 
   migrations:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: salon_bot-migrations
     depends_on:
-      - db
+      db:
+        condition: service_healthy     # ждём, пока БД реально готова
     env_file:
       - .env
     command: >
       sh -c "
-      until pg_isready -h db -p 5432 -U ${DB_USER:-app_user}; do
-        echo 'Waiting for db...';
-        sleep 2;
-      done;
-      alembic upgrade head
+      echo 'Applying migrations...';
+      alembic upgrade head &&
+      echo 'Migrations completed successfully!'
       "
 
   bot:
@@ -36,7 +39,10 @@ services:
       dockerfile: Dockerfile
     container_name: salon_bot-bot
     depends_on:
-      - migrations
+      migrations:
+        condition: service_completed_successfully   # ЭТО САМОЕ ВАЖНОЕ!
+      db:
+        condition: service_healthy
     env_file:
       - .env
     command: python -m bot.app.run_bot

@@ -174,8 +174,9 @@ def get_time_start_kb(day: int, *, times: list[str] | None = None) -> InlineKeyb
 	try:
 		back_button = InlineKeyboardButton(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
 		builder.row(back_button)
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("get_time_start_kb: failed to append back_button: %s", e)
+		raise
 	return builder.as_markup()
 
 

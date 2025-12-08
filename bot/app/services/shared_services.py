@@ -183,7 +183,6 @@ to keep responsibilities clear and avoid circular imports.
 STATUS_EMOJI: Dict[str, str] = {
     "paid": "✅",
     "confirmed": "💵",
-    "awaiting_cash": "💵",  # legacy
     "pending_payment": "⏳",
     "reserved": "🟡",
     "expired": "⌛",
@@ -215,7 +214,7 @@ def _settings_cache_expired(last_checked: datetime | None) -> bool:
     if last_checked is None:
         return True
     try:
-        return (datetime.now(UTC) - last_checked) > timedelta(seconds=_ttl)
+        return (utc_now() - last_checked) > timedelta(seconds=_ttl)
     except Exception:
         return True
 
@@ -242,14 +241,14 @@ async def is_telegram_payments_enabled() -> bool:
             if val is None:
                 val = _env_bool("TELEGRAM_PAYMENTS_ENABLED", True)
             _PAYMENTS_ENABLED = bool(val)
-            _PAYMENTS_LAST_CHECKED = datetime.now(UTC)
+            _PAYMENTS_LAST_CHECKED = utc_now()
             logger.debug("Telegram Payments (shared) refresh: %s", _PAYMENTS_ENABLED)
         return bool(_PAYMENTS_ENABLED)
     except Exception:
         # Fallback to env-only behavior if repos are unavailable
         if _PAYMENTS_ENABLED is None or _settings_cache_expired(_PAYMENTS_LAST_CHECKED):
             _PAYMENTS_ENABLED = _env_bool("TELEGRAM_PAYMENTS_ENABLED", True)
-            _PAYMENTS_LAST_CHECKED = datetime.now(UTC)
+            _PAYMENTS_LAST_CHECKED = utc_now()
         return bool(_PAYMENTS_ENABLED)
 
 
@@ -267,7 +266,7 @@ async def toggle_telegram_payments() -> bool:
         if not ok:
             logger.warning("toggle_telegram_payments: DB persist failed; falling back to env only")
         _PAYMENTS_ENABLED = bool(new_val)
-        _PAYMENTS_LAST_CHECKED = datetime.now(UTC)
+        _PAYMENTS_LAST_CHECKED = utc_now()
         # Keep env in sync for compatibility
         os.environ["TELEGRAM_PAYMENTS_ENABLED"] = "1" if new_val else "0"
         logger.info("Telegram Payments toggled (shared): %s", new_val)
@@ -276,7 +275,7 @@ async def toggle_telegram_payments() -> bool:
         # Env-only fallback
         new_val = not await is_telegram_payments_enabled()
         _PAYMENTS_ENABLED = bool(new_val)
-        _PAYMENTS_LAST_CHECKED = datetime.now(UTC)
+        _PAYMENTS_LAST_CHECKED = utc_now()
         os.environ["TELEGRAM_PAYMENTS_ENABLED"] = "1" if new_val else "0"
         logger.info("Telegram Payments toggled (env fallback): %s", new_val)
         return bool(new_val)
@@ -297,7 +296,7 @@ async def get_telegram_provider_token(force_reload: bool = False) -> str | None:
         if not token:
             token = os.getenv("TELEGRAM_PAYMENT_PROVIDER_TOKEN")
         _PROVIDER_TOKEN_CACHE = token or None
-        _PROVIDER_LAST_CHECKED = datetime.now(UTC)
+        _PROVIDER_LAST_CHECKED = utc_now()
         return token or None
     except Exception as e:
         logger.warning("Failed to resolve Telegram provider token: %s", e)
@@ -376,6 +375,82 @@ def get_local_tz() -> ZoneInfo:
     except Exception:
         pass
     return LOCAL_TZ or ZoneInfo("UTC")
+    # Time helpers: prefer these helpers throughout the codebase so all
+    # modules consistently produce timezone-aware datetimes.
+from datetime import timezone
+
+
+def utc_now() -> datetime:
+    """Return current time as an aware UTC datetime."""
+    try:
+        return datetime.now(UTC)
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def local_now() -> datetime:
+    """Return current time in the configured local timezone (aware).
+
+    Falls back to UTC when local timezone resolution fails.
+    """
+    try:
+        return datetime.now(get_local_tz())
+    except Exception:
+        return datetime.now(UTC)
+
+
+def format_slot_label(slot: datetime | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None) -> str:
+    """Format a single UI time slot consistently across the app.
+
+    - `slot` may be a `datetime` or `time`-like object; when `None` returns empty string.
+    - `fmt` defaults to ``"%H:%M"`` and can be overridden for other layouts.
+    - `tz` may be a `zoneinfo.ZoneInfo` or a string timezone name; when provided,
+      the slot will be converted to that timezone before formatting.
+
+    This consolidates UI slot rendering (buttons, compact pickers) so the
+    format is applied uniformly and can centralize future localization.
+    """
+    if slot is None:
+        return ""
+    try:
+        # Resolve timezone preference
+        if tz is None:
+            lt = get_local_tz()
+        else:
+            lt = tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
+        # If slot is a datetime with tzinfo, convert; if it's time-only, just format
+        if hasattr(slot, "tzinfo") and getattr(slot, "tzinfo") is not None:
+            try:
+                return slot.astimezone(lt).strftime(fmt)
+            except Exception:
+                return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
+        # Fallback formatting for naive datetimes or time objects
+        return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
+    except Exception:
+        try:
+            return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
+        except Exception:
+            logger.exception("format_slot_label failed for slot=%s", slot)
+            return str(slot)
+
+
+def ensure_utc(dt: datetime | None) -> datetime | None:
+    """Convert given datetime to an aware UTC datetime.
+
+    If `dt` is naive, interpret it as UTC (do not guess local timezone).
+    Returns None when `dt` is None.
+    """
+    if dt is None:
+        return None
+    try:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except Exception:
+        try:
+            return dt.replace(tzinfo=UTC)
+        except Exception:
+            return None
 
 
 def _decode_time(tok: str | None) -> str | None:
@@ -396,6 +471,72 @@ def _decode_time(tok: str | None) -> str | None:
         return tok
     except Exception:
         return None
+
+
+async def get_service_duration(session, service_id: str | None, master_id: int | None = None) -> int:
+    """Resolve the effective duration (minutes) for a service+master pair.
+
+    Resolution order:
+      1. If `master_id` provided, check `master_services.duration_minutes`.
+      2. Check `services.duration_minutes` (canonical service-level value).
+      3. Check `service_profiles.duration_minutes` (legacy profile data).
+      4. Fallback to `SettingsRepo.get_slot_duration()` or
+         `DEFAULT_SERVICE_FALLBACK_DURATION`.
+
+    This helper is async and takes a SQLAlchemy `session` so callers can
+    reuse their existing transaction/session and avoid extra roundtrips.
+    """
+    try:
+        # Lazy imports to avoid circular dependencies at module-import time
+        from bot.app.domain.models import MasterService, Service, ServiceProfile
+        from bot.app.services.admin_services import SettingsRepo
+
+        # 1) master-specific override
+        if master_id is not None and service_id is not None:
+            try:
+                ms = await session.scalar(
+                    select(MasterService).where(
+                        MasterService.master_id == int(master_id),
+                        MasterService.service_id == service_id,
+                    )
+                )
+                if ms and getattr(ms, "duration_minutes", None):
+                    return int(getattr(ms, "duration_minutes") or 0)
+            except Exception:
+                # best-effort: continue to other fallbacks
+                pass
+
+        # 2) service-level duration
+        if service_id is not None:
+            try:
+                svc = await session.scalar(select(Service).where(Service.id == service_id))
+                if svc and getattr(svc, "duration_minutes", None):
+                    return int(getattr(svc, "duration_minutes") or 0)
+            except Exception:
+                pass
+
+        # 3) legacy service_profile
+        if service_id is not None:
+            try:
+                sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
+                if sp and getattr(sp, "duration_minutes", None):
+                    return int(getattr(sp, "duration_minutes") or 0)
+            except Exception:
+                pass
+
+        # 4) settings fallback
+        try:
+            val = await SettingsRepo.get_slot_duration()
+            if isinstance(val, int) and val > 0:
+                return int(val)
+        except Exception:
+            pass
+
+    except Exception:
+        # If imports or lookups fail, fall through to hardcoded default
+        pass
+
+    return int(DEFAULT_SERVICE_FALLBACK_DURATION)
 
 
 def status_to_emoji(status: object) -> str:
@@ -482,8 +623,8 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     if starts_at:
         try:
             lt = get_local_tz()
-            st = starts_at.astimezone(lt).strftime("%H:%M")
-            dt = starts_at.astimezone(lt).strftime("%d.%m")
+            st = format_slot_label(starts_at, fmt="%H:%M", tz=lt)
+            dt = format_date(starts_at, "%d.%m", tz=lt)
         except Exception:
             st = dt = ""
     price_cents = data.get("final_price_cents") or data.get("original_price_cents")
@@ -646,7 +787,8 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
                 date_str = "—"
 
         lines: list[str] = []
-        lines.append(f"<b>{__("booking_label")} #{booking_id}</b>")
+        # Use the № symbol in booking header per UX request
+        lines.append(f"<b>{__("booking_label")} №{booking_id}</b>")
         lines.append(f"{__("service_label")}: <b>{service_name}</b>")
         lines.append(f"{__("master_label")}: {master_name}")
         lines.append(f"{__("date_label")}: <b>{date_str}</b>")
@@ -748,6 +890,7 @@ __all__ = [
     # Note: get_service_name moved to bot.app.services.admin_services
     "format_booking_list_item",
     "format_booking_details_text",
+    "format_slot_label",
     "BookingInfo",
     "booking_info_from_mapping",
 ]
@@ -787,10 +930,10 @@ def _msg(obj: Message | CallbackQuery | Any) -> Message | None:
 
 def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
     """Return Telegram user id from Message/CallbackQuery or 0 if not available."""
-    try:
-        return int(getattr(getattr(obj, "from_user", None), "id", 0) or 0)
-    except Exception:
-        return 0
+    # Assume aiogram always provides `from_user` for user-originated updates.
+    # Let exceptions surface so issues are visible in logs instead of silently
+    # returning 0 and masking incorrect behavior.
+    return int(obj.from_user.id)
 
 
 def _safe_call(name: str, *args, **kwargs) -> None:

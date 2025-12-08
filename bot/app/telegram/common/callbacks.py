@@ -144,6 +144,8 @@ BookingsPageCB = create_callback_data("bookings_page", page=int)
 DelMasterPageCB = create_callback_data("del_master_page", page=int)
 ConfirmDelMasterCB = create_callback_data("confirm_del_master", master_id=int)
 ExecDelMasterCB = create_callback_data("exec_del_master", master_id=int)
+ConfirmForceDelMasterCB = create_callback_data("confirm_force_del_master", master_id=int)
+ExecForceDelMasterCB = create_callback_data("exec_force_del_master", master_id=int)
 DelServicePageCB = create_callback_data("del_service_page", page=int)
 ConfirmCancelAllMasterCB = create_callback_data("confirm_cancel_all_master", master_id=int)
 ExecCancelAllMasterCB = create_callback_data("exec_cancel_all_master", master_id=int)
@@ -195,6 +197,9 @@ AdminSetReminderCB = create_callback_data("admin_set_reminder", minutes=int)
 # Global currency setter (admin) — pick from a fixed whitelist
 AdminSetGlobalCurrencyCB = create_callback_data("admin_set_currency_global", code=str)
 
+# Admin timezone setter (pick from a small whitelist of zones)
+AdminSetTimezoneCB = create_callback_data("admin_set_timezone", tz=str)
+
 # Working hours pickers: start hour, then end hour
 AdminSetWorkStartCB = create_callback_data("admin_set_work_start", hour=int)
 AdminSetWorkEndCB = create_callback_data("admin_set_work_end", start=int, hour=int)
@@ -210,6 +215,9 @@ AdminSetServiceCurrencyCB = create_callback_data("admin_set_service_currency", s
 HoursViewCB = create_callback_data("hours", service_id=str, master_id=int, date=str)
 HourCB = create_callback_data("hour", service_id=str, master_id=int, date=str, hour=int)
 CancelTimeCB = create_callback_data("cancel_time")
+
+# Compact time picker adjustments: increment/decrement hours/minutes and submit
+TimeAdjustCB = create_callback_data("tadj", op=str, hour=int, minute=int, service_id=str, master_id=int, date=str)
 
 # Алиас для обратной совместимости
 PaymentCB = PayCB

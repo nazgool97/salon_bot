@@ -14,9 +14,10 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import update, select
 
 from bot.app.core.db import get_session
-from bot.app.services.shared_services import get_env_int as _get_env_int, get_admin_ids
+from bot.app.services.shared_services import get_env_int as _get_env_int, get_admin_ids, utc_now
 from bot.app.domain.models import Booking, BookingStatus
 from aiogram import Bot
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +29,50 @@ async def _expire_once(now_utc: datetime) -> int:
     try:
         async with get_session() as session:
             hold_minutes = _get_env_int("RESERVATION_HOLD_MINUTES", 5)
-            stmt = (
-                update(Booking)
-                .where(
+            # Find candidate bookings that should expire and group them by
+            # (master_id, starts_at). For each group acquire an advisory lock
+            # on that pair and then perform the update. This prevents races
+            # where a concurrent creator inserts a RESERVED/PENDING_PAYMENT
+            # booking for the same slot while we're expiring another.
+            result = await session.execute(
+                select(Booking.id, Booking.master_id, Booking.starts_at).where(
                     Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PENDING_PAYMENT]),
                     Booking.cash_hold_expires_at.is_not(None),
                     Booking.cash_hold_expires_at <= now_utc,
                 )
-                .values(status=BookingStatus.EXPIRED, cash_hold_expires_at=None)
-                .returning(Booking.id)
             )
-            result = await session.execute(stmt)
-            rows = result.fetchall()
-            count = len(rows)
-            logger.debug("Expired %d bookings with cash_hold_expires_at: %s", count, [row[0] for row in rows])
+            rows_all = result.fetchall()
+            groups: dict[tuple[int, object], list[int]] = {}
+            for bid, mid, starts in rows_all:
+                key = (int(mid), starts)
+                groups.setdefault(key, []).append(int(bid))
+
+            count = 0
+            for (mid, starts), ids in groups.items():
+                try:
+                    from sqlalchemy import text
+                    k1 = int(mid) % 2147483647
+                    k2 = int(starts.timestamp()) % 2147483647 if hasattr(starts, 'timestamp') else 0
+                    await session.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
+                except Exception:
+                    # best-effort advisory lock
+                    pass
+
+                stmt_upd = (
+                    update(Booking)
+                    .where(
+                        Booking.master_id == mid,
+                        Booking.starts_at == starts,
+                        Booking.status.in_([BookingStatus.RESERVED, BookingStatus.PENDING_PAYMENT]),
+                    )
+                    .values(status=BookingStatus.EXPIRED, cash_hold_expires_at=None)
+                    .returning(Booking.id)
+                )
+                res = await session.execute(stmt_upd)
+                got = res.fetchall()
+                if got:
+                    logger.debug("Expired bookings for master=%s starts_at=%s: %s", mid, starts, [r[0] for r in got])
+                count += len(got)
 
             stmt_no_hold = (
                 update(Booking)
@@ -90,7 +121,7 @@ async def _run_loop(stop_event: asyncio.Event, interval_seconds: int | None) -> 
         logger.exception("expiration: initial sleep interrupted")
     while not stop_event.is_set():
         try:
-            await _expire_once(datetime.now(UTC))
+            await _expire_once(utc_now())
         except Exception as e:
             logger.exception("Expiration worker iteration error: %s", e)
         # Recompute interval each iteration from ENV so changes
@@ -146,7 +177,6 @@ LIMBO_STATUSES = [
     BookingStatus.CONFIRMED,
     BookingStatus.PAID,
     BookingStatus.RESERVED,
-    BookingStatus.AWAITING_CASH,
     BookingStatus.PENDING_PAYMENT
 ]
 
@@ -165,7 +195,7 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
     logger.info("Запуск воркера очистки 'лимбо' записей...")
     while not stop_event.is_set():
         try:
-            now = datetime.now(UTC)
+            now = utc_now()
 
             # Ищем записи, которые начались более N часов назад и все еще "активны"
             cutoff_time = now - timedelta(hours=NO_SHOW_GRACE_PERIOD_HOURS)

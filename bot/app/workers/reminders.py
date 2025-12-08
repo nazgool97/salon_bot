@@ -16,7 +16,7 @@ from sqlalchemy import select, update, or_
 
 from bot.app.core.db import get_session
 from bot.app.domain.models import Booking, BookingStatus, Service, User, Master, BookingItem
-from bot.app.services.shared_services import safe_get_locale, LOCAL_TZ
+from bot.app.services.shared_services import safe_get_locale, LOCAL_TZ, local_now, utc_now
 from bot.app.translations import t
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
 
                 # Determine local date context
                 try:
-                    now_local = datetime.now(LOCAL_TZ) if LOCAL_TZ else datetime.now()
+                    now_local = local_now()
                     starts_date = dt_local.date() if dt_local is not None else None
                     tomorrow_date = (now_local + timedelta(days=1)).date()
                     today_date = now_local.date()
@@ -158,7 +158,7 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                 # mark reminder metadata (timestamp + lead) and keep backward flags
                 try:
                     async with get_session() as session:
-                        now_ts = datetime.now(UTC)
+                        now_ts = utc_now()
                         values = {
                             "last_reminder_sent_at": now_ts,
                             "last_reminder_lead_minutes": int(lead_min),
@@ -194,7 +194,7 @@ async def _run_loop(stop_event: asyncio.Event, bot: Bot, interval_seconds: int) 
         logger.exception("reminders: initial sleep interrupted")
     while not stop_event.is_set():
         try:
-            await _remind_once(datetime.now(UTC), bot)
+            await _remind_once(utc_now(), bot)
         except Exception as e:
             logger.exception("Reminders worker iteration error: %s", e)
         try:

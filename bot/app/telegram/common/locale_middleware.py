@@ -25,10 +25,21 @@ class LocaleMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        user_id = int(getattr(getattr(event, "from_user", None), "id", 0) or 0)
-        if user_id:
+        # aiogram provides `from_user` for user-originated events; access directly.
+        try:
+            user = getattr(event, "from_user", None)
+            if not user:
+                # Non-user-originated events (channels, etc.) — skip locale.
+                return await handler(event, data)
+            user_id = getattr(user, "id", None)
+            if not user_id:
+                return await handler(event, data)
             # Delegate to the shared safe_get_locale helper which handles
             # DB failures and provides a default fallback.
-            data["locale"] = await safe_get_locale(user_id)
-            logger.info("LocaleMiddleware: set locale %s for user %s", data["locale"], user_id)
+            data["locale"] = await safe_get_locale(int(user_id))
+            logger.info("LocaleMiddleware: set locale %s for user %s", data["locale"], int(user_id))
+        except Exception:
+            # Be defensive: do not prevent handlers from running if locale
+            # resolution fails for any reason.
+            logger.exception("LocaleMiddleware failed to resolve locale")
         return await handler(event, data)

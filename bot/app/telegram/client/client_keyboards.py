@@ -22,13 +22,14 @@ from bot.app.telegram.common.callbacks import (
     HoursViewCB,
     HourCB,
     CancelTimeCB,
+    TimeAdjustCB,
 )
 from bot.app.telegram.common.callbacks import MasterMenuCB, NavCB, ClientMenuCB, RatingCB
 from bot.app.telegram.common.callbacks import MasterProfileCB, MasterServicesCB, MastersListCB
 from bot.app.telegram.common.callbacks import PayCB
 from bot.app.telegram.common.roles import is_admin, is_master
 from bot.app.domain.models import Master, MasterService, Service, MasterProfile
-from bot.app.services.shared_services import safe_get_locale as _get_locale, default_language, format_date, format_money_cents
+from bot.app.services.shared_services import safe_get_locale as _get_locale, default_language, format_date, format_money_cents, local_now, format_slot_label
 
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -122,7 +123,7 @@ async def get_time_slots_kb(
     normalized_booking = _to_int(booking_id)
 
     for slot in slots:
-        label = slot.strftime("%H:%M")
+        label = format_slot_label(slot)
         compact_time = slot.strftime("%H%M")
         if action == "reschedule":
             callback_data = pack_cb(
@@ -148,6 +149,29 @@ async def get_time_slots_kb(
     except Exception:
         choose_by_hour = "Выбрать время"
     builder.button(text=choose_by_hour, callback_data=pack_cb(HoursViewCB, service_id=str(service_id or ""), master_id=int(master_id or 0), date=date))
+
+    # Compact picker button: open +/- picker prefilled with first available slot
+    try:
+        compact_label = t("compact_picker", lang) or "Compact picker"
+    except Exception:
+        compact_label = "Compact picker"
+    # Determine initial hour/minute from first slot if available
+    ih = 0
+    im = 0
+    try:
+        if slots:
+            first = slots[0]
+            if isinstance(first, str):
+                ih = int(first[:2])
+                im = int(first[2:4])
+            else:
+                # datetime or time
+                ih = int(getattr(first, 'hour', 0) or 0)
+                im = int(getattr(first, 'minute', 0) or 0)
+    except Exception:
+        ih = 0
+        im = 0
+    builder.button(text=compact_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(ih), minute=int(im), service_id=str(service_id or ""), master_id=int(master_id or 0), date=date))
 
     try:
         back_text = t("back", lang)
@@ -202,6 +226,80 @@ async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None
     # Back returns to the previous step (handler will manage exact nav)
     builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
     builder.adjust(cols)
+    return builder.as_markup()
+
+
+async def get_compact_time_picker_kb(
+    hour: int,
+    minute: int,
+    *,
+    service_id: str | None = None,
+    master_id: int | None = None,
+    date: str,
+    lang: str,
+    minute_step: int = 5,
+    cols: int = 2,
+) -> InlineKeyboardMarkup:
+    """Compact +/- time picker keyboard.
+
+    Layout (approx):
+    [  HH:MM  ]
+    [ -hr | +hr ]
+    [ -min | +min ]
+    [ submit ]
+    [ cancel ]
+
+    Buttons call `TimeAdjustCB` to increment/decrement and reconstruct the keyboard.
+    The submit button packs `TimeCB` with the currently selected time.
+    """
+    from bot.app.telegram.common.callbacks import pack_cb, TimeAdjustCB, TimeCB, CancelTimeCB
+
+    builder = InlineKeyboardBuilder()
+    normalized_service = str(service_id or "")
+    normalized_master = int(master_id or 0)
+
+    # Top label (more visible): show clock emoji and formatted time.
+    top_label = f"⏰ {hour:02d}:{minute:02d}"
+    builder.button(text=top_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+
+    # Localized labels for Hours / Minutes
+    try:
+        hours_label = t("picker_hours_label", lang)
+    except Exception:
+        hours_label = "Hours"
+    try:
+        minutes_label = t("picker_minutes_label", lang)
+    except Exception:
+        minutes_label = "Minutes"
+    # Use noop callbacks for label buttons to keep layout consistent
+    builder.button(text=hours_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(text=minutes_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+
+    # Adjustment rows: place hour +/- in the left column and minute +/- in the right column
+    # Plus row (on top) so users see increment above and decrement below
+    builder.button(text="➕", callback_data=pack_cb(TimeAdjustCB, op="hour_inc", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(text="➕", callback_data=pack_cb(TimeAdjustCB, op="min_inc", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    # Minus row (below)
+    builder.button(text="➖", callback_data=pack_cb(TimeAdjustCB, op="hour_dec", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(text="➖", callback_data=pack_cb(TimeAdjustCB, op="min_dec", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+
+    # Submit: pack TimeCB with compact time, localized label
+    compact = f"{int(hour):02d}{int(minute):02d}"
+    try:
+        submit_text = t("picker_submit", lang)
+    except Exception:
+        submit_text = "Submit"
+    builder.button(text=submit_text, callback_data=pack_cb(TimeCB, service_id=normalized_service, master_id=normalized_master, date=date, time=compact))
+
+    # Cancel localized
+    try:
+        cancel_text = t("picker_cancel", lang)
+    except Exception:
+        cancel_text = "Cancel"
+    builder.button(text=cancel_text, callback_data=pack_cb(CancelTimeCB))
+
+    # Arrange: top single, then two-column rows, then single-column actions
+    builder.adjust(1, 2, 2, 2, 1, 1)
     return builder.as_markup()
 
 logger = logging.getLogger(__name__)
@@ -339,16 +437,16 @@ async def get_calendar_keyboard(
         max_days = int(max_days)
     except Exception:
         max_days = 365
-    max_date = datetime.now().date() + timedelta(days=int(max_days))
+    max_date = local_now().date() + timedelta(days=int(max_days))
 
     if year is None or month is None:
-        now = datetime.now()
+        now = local_now()
         year, month = now.year, now.month
     if date(year, month, 1) > max_date:
         logger.warning("Попытка открыть календарь для слишком далекого будущего: %d-%d", year, month)
         year, month = max_date.year, max_date.month
 
-    today = date.today()
+    today = local_now().date()
     buttons: list[list[InlineKeyboardButton]] = []
 
     # Заголовок месяца с локализацией
@@ -466,7 +564,27 @@ async def get_master_keyboard(service_id: str, masters: list | None) -> InlineKe
     if masters_list:
         for master in masters_list:
             name = getattr(master, "name", str(getattr(master, "telegram_id", "?")))
-            mid = int(getattr(master, "telegram_id", 0))
+            # Prefer surrogate DB id when available; fall back to telegram_id for older records.
+            raw_mid = getattr(master, "id", None)
+            if raw_mid is None:
+                # Prefer to resolve surrogate id from telegram_id when possible
+                tid = getattr(master, "telegram_id", None)
+                if tid is not None:
+                    try:
+                        from bot.app.services.master_services import MasterRepo
+                        resolved = await MasterRepo.resolve_master_id(int(tid))
+                        if resolved:
+                            raw_mid = resolved
+                        else:
+                            raw_mid = int(tid)
+                    except Exception:
+                        raw_mid = int(tid)
+                else:
+                    raw_mid = 0
+            try:
+                mid = int(raw_mid or 0)
+            except Exception:
+                mid = 0
 
             # Кнопка 1: Просмотр профиля мастера
             builder.button(
@@ -521,10 +639,25 @@ async def get_masters_catalog_keyboard(masters: list | None, *, page: int = 1, t
         for m in masters_list:
             try:
                 if isinstance(m, tuple) and len(m) >= 2:
+                    # tuples returned by repos are (id, name)
                     mid = int(m[0])
                     name = str(m[1])
                 else:
-                    mid = int(getattr(m, "telegram_id", 0))
+                    # Prefer surrogate DB id; fall back to telegram_id for legacy objects
+                    mid = getattr(m, "id", None)
+                    if mid is None:
+                        tid = getattr(m, "telegram_id", None)
+                        if tid is not None:
+                            try:
+                                from bot.app.services.master_services import MasterRepo
+                                resolved = await MasterRepo.resolve_master_id(int(tid))
+                                mid = int(resolved) if resolved else int(tid)
+                            except Exception:
+                                mid = int(tid)
+                        else:
+                            mid = 0
+                    else:
+                        mid = int(mid)
                     name = str(getattr(m, "name", mid))
             except Exception:
                 mid = int(getattr(m, "telegram_id", 0))
@@ -832,10 +965,99 @@ async def get_payment_keyboard(
             date=date,
             lang=lang,
         )
+        # Resolve missing master name (try BookingDetails, then MasterRepo) and
+        # update the BookingDetails object so the canonical formatter uses it.
+        try:
+            placeholder_master = _t("master_label", "Мастер")
+            needs_resolve = (not master_name) or (master_name == placeholder_master)
+            if needs_resolve:
+                master_from_bd = getattr(bd, "master_name", None) if bd is not None else None
+                resolved_master_name = master_from_bd
+                if not resolved_master_name:
+                    try:
+                        from bot.app.services.master_services import MasterRepo as _MasterRepo
+
+                        mid = getattr(bd, "master_id", None) if bd is not None else None
+                        if mid:
+                            try:
+                                mn = await _MasterRepo.get_master_name(int(mid))
+                                resolved_master_name = mn or resolved_master_name
+                            except Exception:
+                                resolved_master_name = resolved_master_name
+                    except Exception:
+                        resolved_master_name = resolved_master_name
+                # Try to set the attribute/key on bd so format_booking_details_text picks it up
+                try:
+                    if resolved_master_name and bd is not None:
+                        if isinstance(bd, dict):
+                            bd["master_name"] = resolved_master_name
+                        else:
+                            try:
+                                setattr(bd, "master_name", resolved_master_name)
+                            except Exception:
+                                pass
+                        master_name = resolved_master_name
+                except Exception:
+                    # Ignore errors while trying to set master_name on BookingDetails
+                    pass
+        except Exception:
+            pass
+        # Now build the canonical header text from the (possibly updated) BookingDetails
         header = format_booking_details_text(bd, lang)
-        # Append payment prompt
+        # Try to surface the effective duration explicitly in payment header
+        duration_minutes: int | None = None
+        try:
+            # BookingDetails object may provide starts_at/ends_at or duration_minutes
+            starts = getattr(bd, "starts_at", None)
+            ends = getattr(bd, "ends_at", None)
+            if starts and ends:
+                try:
+                    duration_minutes = int((ends - starts).total_seconds() // 60)
+                except Exception:
+                    duration_minutes = None
+            if duration_minutes is None:
+                duration_minutes = getattr(bd, "duration_minutes", None)
+            # Also surface the booking start time if available
+            start_time_str: str | None = None
+            try:
+                starts = getattr(bd, "starts_at", None)
+                if starts:
+                    # Use shared formatter which converts to LOCAL_TZ before formatting
+                    from bot.app.services.shared_services import format_date
+                    try:
+                        start_time_str = format_date(starts, fmt="%H:%M")
+                    except Exception:
+                        # Fallback to naive strftime if shared formatter fails
+                        try:
+                            start_time_str = starts.strftime("%H:%M")
+                        except Exception:
+                            start_time_str = None
+            except Exception:
+                start_time_str = None
+        except Exception:
+            duration_minutes = None
+        # Append payment prompt (with duration if available)
         choose_txt = _t("choose_payment_label", "Оберіть спосіб оплати")
-        header = header + "\n\n" + choose_txt + ":"
+        # Build extra info lines (time, duration) and append above payment prompt
+        extra_lines: list[str] = []
+        try:
+            if start_time_str:
+                extra_lines.append(f"{_t('time_label', 'Час')}: {start_time_str}")
+        except Exception:
+            pass
+        try:
+            # Avoid duplicating duration if the canonical header already includes it
+            slot_label = _t('slot_duration_label', 'Тривалість')
+            if not slot_label or slot_label not in header:
+                if duration_minutes and int(duration_minutes) > 0:
+                    extra_lines.append(f"{slot_label}: {int(duration_minutes)} {_t('minutes_short', 'хв')}")
+        except Exception:
+            pass
+        if extra_lines:
+            # Keep a blank line after the Time/Dur block before the payment prompt
+            header = header + "\n" + "\n".join(extra_lines) + "\n\n" + choose_txt + ":"
+        else:
+            header = header + "\n" + choose_txt + ":"
     except Exception:
         # UI-only fallback: build a minimal header without DB access.
         try:
@@ -849,9 +1071,15 @@ async def get_payment_keyboard(
                 master = master_name or getattr(booking, "master_name", None) or getattr(booking, "master", None) or "—"
             # Try to obtain a human-friendly date string without timezone conversions.
             try:
-                booking_date = date or format_date(getattr(booking, "starts_at", None) or datetime.now(), fmt="%d.%m.%Y")
+                starts = getattr(booking, "starts_at", None) or local_now()
+                booking_date = date or format_date(starts, fmt="%d.%m.%Y")
+                try:
+                    booking_time = format_date(starts, fmt="%H:%M")
+                except Exception:
+                    booking_time = None
             except Exception:
                 booking_date = date or "—"
+                booking_time = None
             # Try to display a price if present on the booking object; avoid DB lookups.
             price_cents = None
             from collections.abc import Mapping
@@ -885,6 +1113,7 @@ async def get_payment_keyboard(
                 f"{_t('service_label', 'Послуга')}: <b>{svc or '—'}</b>\n"
                 f"{_t('master_label', 'Майстер')}: {master}\n"
                 f"{_t('date_label', 'Дата')}: <b>{booking_date}</b>\n"
+                f"{_t('time_label', 'Час')}: <b>{booking_time}</b>\n" if booking_time else ""
                 f"{_t('amount_label', 'Сума до оплати')}: {human_price}\n\n"
                 f"{_t('choose_payment_label', 'Оберіть спосіб оплати')}:"
             )

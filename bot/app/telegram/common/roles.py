@@ -26,7 +26,7 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
 
     Returns True if allowed; otherwise sends an access denied message/alert and returns False.
     """
-    uid = getattr(getattr(obj, "from_user", None), "id", None)
+    uid = obj.from_user.id
     allowed = False
     # Temporary debug: record attempts to run role checks so we can diagnose
     # routing problems where messages from admins are not accepted.
@@ -89,20 +89,14 @@ async def is_admin_user(obj: Message | CallbackQuery) -> bool:
     Useful when code needs to branch behavior for admins but should not
     notify/deny non-admins as a side-effect.
     """
-    try:
-        uid = getattr(getattr(obj, "from_user", None), "id", None)
-        return bool(uid) and bool(await is_admin(int(uid or 0)))
-    except Exception:
-        return False
+    uid = obj.from_user.id
+    return bool(uid) and bool(await is_admin(int(uid or 0)))
 
 
 async def is_master_user(obj: Message | CallbackQuery) -> bool:
     """Return True if the sender is a master without sending denial messages."""
-    try:
-        uid = getattr(getattr(obj, "from_user", None), "id", None)
-        return bool(uid) and bool(await is_master(int(uid or 0)))
-    except Exception:
-        return False
+    uid = obj.from_user.id
+    return bool(uid) and bool(await is_master(int(uid or 0)))
 
 
 # =====================================================
@@ -170,7 +164,7 @@ class AdminRoleFilter(BaseFilter):
 
     async def __call__(self, obj: Message | CallbackQuery) -> bool:
         try:
-            uid = getattr(getattr(obj, 'from_user', None), 'id', None)
+            uid = obj.from_user.id
             allowed = await ensure_admin(obj)
             logger.info("AdminRoleFilter: uid=%s allowed=%s", uid, allowed)
             return allowed
@@ -186,7 +180,7 @@ class MasterRoleFilter(BaseFilter):
 
     async def __call__(self, obj: Message | CallbackQuery) -> bool:
         try:
-            uid = getattr(getattr(obj, 'from_user', None), 'id', None)
+            uid = obj.from_user.id
             allowed = await ensure_master(obj)
             logger.info("MasterRoleFilter: uid=%s allowed=%s", uid, allowed)
             return allowed

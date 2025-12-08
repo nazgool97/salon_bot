@@ -92,7 +92,8 @@ async def _show_master_menu(obj, state: FSMContext, locale: str | None = None) -
 	try:
 		await nav_reset(state)
 	except Exception:
-		pass
+		logger.exception("_show_master_menu: nav_reset failed for state")
+		raise
 	try:
 		await state.update_data(preferred_role="master")
 	except Exception:
@@ -108,13 +109,12 @@ async def _show_master_menu(obj, state: FSMContext, locale: str | None = None) -
 	kb = get_master_main_menu(lang)
 	text = header
 	try:
-		master_id = getattr(getattr(obj, 'from_user', None), 'id', None)
-		if master_id is not None:
-			try:
-				summary = await master_services.get_master_dashboard_summary(int(master_id), lang=lang)
-				text = f"{summary}\n\n{header}"
-			except Exception as e:
-				logger.error("ОШИБКА СБОРКИ ДАШБОРДА МАСТЕРА: %s", e)
+		master_id = obj.from_user.id
+		try:
+			summary = await master_services.get_master_dashboard_summary(int(master_id), lang=lang)
+			text = f"{summary}\n\n{header}"
+		except Exception as e:
+			logger.error("ОШИБКА СБОРКИ ДАШБОРДА МАСТЕРА: %s", e)
 	except Exception:
 		logger.exception("_show_master_menu: failed to read master_id or dashboard summary")
 	await show_master_menu_ui(obj, state, lang or default_language(), text, kb)
@@ -140,13 +140,14 @@ async def show_master_menu_ui(obj, state: FSMContext, lang: str, text: str, kb: 
 		kb = get_master_main_menu(lang)
 	try:
 		await safe_edit(obj, text=text, reply_markup=kb)
-	except Exception as e:
-		logger.exception("safe_edit failed in show_master_menu_ui: %s", e)
+	except Exception:
+		logger.exception("safe_edit failed in show_master_menu_ui")
 		try:
 			if hasattr(obj, "answer"):
 				await obj.answer(t("error", lang), show_alert=True)
 		except Exception:
-			pass
+			logger.exception("show_master_menu_ui: fallback obj.answer failed")
+		raise
 	try:
 		header_title = tr("master_menu_header", lang=lang)
 		await nav_replace(state, header_title, kb, lang=lang)
@@ -182,7 +183,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 	master check is necessary here.
 	"""
 	text = (msg.text or "").strip()
-	logger.info("master_edit_note_fallback: entered state with text_len=%s from_user=%s", len(text), getattr(getattr(msg, 'from_user', None), 'id', None))
+	logger.info("master_edit_note_fallback: entered state with text_len=%s from_user=%s", len(text), msg.from_user.id)
 
 	# Prefer middleware-injected `locale` as the canonical source of truth
 	lang = locale or default_language()
@@ -210,7 +211,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 		# Try to restore appropriate UI where possible (booking card or client history)
 		booking_id_raw = data.get("client_note_booking_id")
 		client_user_raw = data.get("client_note_user_id")
-		master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
+		master_id = msg.from_user.id
 		try:
 			if booking_id_raw:
 				booking_id = int(booking_id_raw)
@@ -261,7 +262,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 			ok = await master_services.MasterRepo.upsert_client_note(booking_id, text)
 			logger.info("master_edit_note_fallback: upsert_client_note result=%s for booking_id=%s", ok, booking_id)
 		elif user_id:
-			master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
+			master_id = msg.from_user.id
 			if master_id:
 				logger.info("master_edit_note_fallback: attempting upsert_client_note_for_user master_id=%s user_id=%s", master_id, user_id)
 				ok = await master_services.MasterRepo.upsert_client_note_for_user(int(master_id), int(user_id), text)
@@ -280,7 +281,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 			
 			# Redirect to My Clients (Page 1)
 			try:
-				master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
+				master_id = msg.from_user.id
 				if master_id:
 					clients = await master_services.MasterRepo.get_clients_for_master(int(master_id))
 				else:
@@ -304,27 +305,27 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 
 			total = len(clients)
 			total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-			start = 0
-			end = PAGE_SIZE
-			page_clients = clients[start:end]
-
-			for uid, name, username in page_clients:
-				label = name or f"#{uid}"
-				if username:
-					label = f"{label} (@{username})"
-				builder.button(text=label, callback_data=pack_cb(ClientInfoCB, user_id=int(uid)))
-
-			if total_pages > 1:
-				builder.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
-				builder.button(text=t("page_next", lang), callback_data=pack_cb(MasterMenuCB, act="my_clients", page=2))
-			else:
-				builder.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
-
-			sizes = [1] * len(page_clients)
-			sizes.append(2 if total_pages > 1 else 1)
-			builder.adjust(*sizes)
-			kb = builder.as_markup()
-			title = t("master_my_clients_header", lang)
+			try:
+				if booking_id_raw:
+					booking_id = int(booking_id_raw)
+					res = await master_services.handle_cancel_note(booking_id, lang)
+					if res:
+						text_card, markup = res
+						await msg.answer(text=text_card, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
+				elif client_user_raw and master_id:
+					user_id = int(client_user_raw)
+					hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
+					text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
+					from aiogram.utils.keyboard import InlineKeyboardBuilder
+					from bot.app.telegram.common.callbacks import pack_cb, MasterClientNoteCB, MasterMenuCB
+					builder = InlineKeyboardBuilder()
+					builder.button(text=t("edit_note_button", lang), callback_data=pack_cb(MasterClientNoteCB, action="edit", user_id=int(user_id)))
+					builder.button(text=t("back", lang), callback_data=pack_cb(callbacks_mod.MasterMenuCB, act="my_clients"))
+					builder.adjust(2)
+					kb = builder.as_markup()
+					await msg.answer(text_card, reply_markup=kb)
+			except Exception:
+				logger.exception("Error during note cancellation fallback UI restore")
 			try:
 				await msg.answer(text=title, reply_markup=kb)
 			except Exception:
@@ -339,7 +340,7 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 			# try to render updated card if we have user-scoped flow
 			if user_id:
 				try:
-					master_id = getattr(getattr(msg, 'from_user', None), 'id', None)
+					master_id = msg.from_user.id
 					if master_id:
 						hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
 						text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
@@ -362,8 +363,9 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 	finally:
 		try:
 			await state.clear()
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("master_cmd_start: state.clear failed: %s", e)
+			raise
 
 
 
@@ -376,8 +378,9 @@ async def handle_master_menu_entry(cb: CallbackQuery, state: FSMContext, locale:
 	lang = locale or default_language()
 	# Build text in handler and call UI-only renderer
 	header = tr("master_menu_header", lang=lang)
+	# Directly access `from_user.id`; let exceptions surface for visibility.
 	try:
-		master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+		master_id = cb.from_user.id
 	except Exception:
 		master_id = None
 	text = header
@@ -391,8 +394,9 @@ async def handle_master_menu_entry(cb: CallbackQuery, state: FSMContext, locale:
 	await show_master_menu_ui(cb, state, lang, text, kb)
 	try:
 		await cb.answer()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("handle_master_menu_entry: cb.answer failed: %s", e)
+		raise
 
 
 
@@ -404,7 +408,7 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 	"""
 	# Prefer middleware-provided `locale`; fall back to default when missing
 	lang = locale or default_language()
-	master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		try:
 			await cb.answer()
@@ -433,11 +437,13 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 			await safe_edit(cb.message, text=t("master_no_clients", lang), reply_markup=get_master_main_menu(lang))
 			await nav_push(state, t("master_no_clients", lang), get_master_main_menu(lang), lang=lang)
 		except Exception:
-			pass
+			logger.exception("master: failed to show 'no clients' UI")
+			raise
 		try:
 			await cb.answer()
 		except Exception:
-			pass
+			logger.exception("master: cb.answer failed after no-clients UI")
+			raise
 		return
 
 	total = len(clients)
@@ -478,12 +484,14 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 	try:
 		await safe_edit(cb.message, text=title, reply_markup=kb)
 		await nav_push(state, title, kb, lang=lang)
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("show_my_clients_ui: safe_edit/nav_push failed: %s", e)
+		raise
 	try:
 		await cb.answer()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("show_my_clients_ui: cb.answer failed: %s", e)
+		raise
 
 
 @master_router.callback_query(ClientInfoCB.filter())
@@ -493,11 +501,11 @@ async def master_client_info(cb: CallbackQuery, callback_data, state: FSMContext
 		lang = locale or default_language()
 	except Exception:
 		lang = (locale or default_language())
-	master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+	master_id = cb.from_user.id
 	if not callback_data:
 		await cb.answer()
 		return
-	user_id = int(getattr(callback_data, 'user_id', 0) or 0)
+	user_id = int(callback_data.user_id)
 	if not user_id or master_id is None:
 		await cb.answer()
 		return
@@ -521,12 +529,14 @@ async def master_client_info(cb: CallbackQuery, callback_data, state: FSMContext
 	try:
 		await safe_edit(cb.message, text=text, reply_markup=kb)
 		await nav_push(state, text, kb, lang=lang)
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("master_client_note_edit: safe_edit/nav_push failed: %s", e)
+		raise
 	try:
 		await cb.answer()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("master_client_note_edit: cb.answer failed: %s", e)
+		raise
 
 
 @master_router.callback_query(MasterClientNoteCB.filter(F.action == "edit"))
@@ -540,7 +550,7 @@ async def master_client_note_edit(cb: CallbackQuery, callback_data, state: FSMCo
 	if not callback_data:
 		await cb.answer()
 		return
-	user_id = int(getattr(callback_data, 'user_id', 0) or 0)
+	user_id = int(callback_data.user_id)
 	if not user_id:
 		await cb.answer()
 		return
@@ -552,12 +562,13 @@ async def master_client_note_edit(cb: CallbackQuery, callback_data, state: FSMCo
 		# fetch existing note for prompt
 		existing = ""
 		try:
-						master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
-						if master_id:
-							hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
-							existing = hist.get("note", "") if hist else ""
-		except Exception:
-			existing = ""
+			master_id = cb.from_user.id
+			if master_id:
+				hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
+				existing = hist.get("note", "") if hist else ""
+		except Exception as e:
+			logger.exception("master_client_note_edit: failed to load existing note: %s", e)
+			raise
 
 		if existing:
 			prompt = f"{t('master_enter_note', lang)}\n\n{t('master_current_note_prefix', lang)}: {existing}"
@@ -591,8 +602,9 @@ async def master_client_note_cancel(cb: CallbackQuery, callback_data, state: FSM
 	"""Cancel edit note and return to client card."""
 	try:
 		await state.clear()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("master_client_note_cancel: state.clear failed: %s", e)
+		raise
 	await master_client_info(cb, callback_data, state, locale)
 
 
@@ -600,8 +612,8 @@ async def master_client_note_cancel(cb: CallbackQuery, callback_data, state: FSM
 @master_router.callback_query(MasterMenuCB.filter(F.act == "schedule"))
 async def show_schedule(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	"""Show weekly schedule (placeholder)."""
-	logger.debug("show_schedule invoked by user=%s data=%s", getattr(getattr(cb, 'from_user', None), 'id', None), getattr(cb, 'data', None))
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	logger.debug("show_schedule invoked by user=%s data=%s", cb.from_user.id, getattr(cb, 'data', None))
+	master_id = cb.from_user.id
 	if master_id is None:
 		raise ValueError("missing master id")
 	# Resolve lang preferring nav stack, then middleware locale
@@ -638,8 +650,9 @@ async def schedule_pick_start(cb: CallbackQuery, callback_data, state: FSMContex
 	finally:
 		try:
 			await cb.answer()
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("schedule_pick_end: cb.answer failed: %s", e)
+			raise
 
 
 async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
@@ -678,7 +691,7 @@ async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, l
 		await cb.answer()
 		return
 
-	master_id_raw = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id_raw = cb.from_user.id
 	if master_id_raw is None:
 		await cb.answer(t("error_retry", lang))
 		return
@@ -692,20 +705,23 @@ async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, l
 		logger.exception("pick_window_end failed: %s", e)
 		try:
 			await cb.answer(t("error_retry", lang))
-		except Exception:
-			pass
+		except Exception as e2:
+			logger.exception("pick_window_end: cb.answer failed: %s", e2)
+			raise
 		return
 
 	# success: clear ephemeral state and refresh day UI
 	try:
 		await state.update_data(chosen_start=None)
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("pick_window_end: state.update_data failed: %s", e)
+		raise
 
 	try:
 		await cb.answer(t("toast_window_added", lang))
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("pick_window_end: cb.answer toast failed: %s", e)
+		raise
 
 	try:
 		text, kb = await _show_day_actions(cb.message, master_id, int(day), lang=lang)
@@ -739,7 +755,7 @@ async def schedule_pick_end(cb: CallbackQuery, callback_data, state: FSMContext,
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "clear_day"))
 async def schedule_clear_day(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -752,7 +768,7 @@ async def schedule_clear_day(cb: CallbackQuery, callback_data, state: FSMContext
 		day = None
 	if master_id is None or day is None:
 		try:
-			await cb.answer(t("error_retry"), show_alert=True)
+			await cb.answer(t("error_retry"), show_alert=False)
 		except Exception:
 			pass
 		return
@@ -778,10 +794,10 @@ async def schedule_remove_window(cb: CallbackQuery, callback_data, state: FSMCon
 					return f"{p[:2]}:{p[2:]}"
 				start_val = _fmt(parts[0])
 				end_val = _fmt(parts[1])
-		except Exception:
-			start_val = None
-			end_val = None
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+		except Exception as e:
+			logger.exception("schedule_clear_day: failed to parse time_token: %s", e)
+			raise
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -790,11 +806,12 @@ async def schedule_remove_window(cb: CallbackQuery, callback_data, state: FSMCon
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_clear_day: failed to normalize day value: %s", e)
+		raise
 	if day is None or master_id is None:
 		try:
-			await cb.answer(t("error_retry"), show_alert=False)
+			await cb.answer(t("error_retry"), show_alert=True)
 		except Exception:
 			pass
 		return
@@ -855,9 +872,10 @@ async def schedule_remove_window(cb: CallbackQuery, callback_data, state: FSMCon
 async def schedule_cancel(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
 	try:
 		await state.clear()
-	except AttributeError:
-		pass
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	except AttributeError as e:
+		logger.exception("schedule_cancel: state.clear AttributeError: %s", e)
+		raise
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -866,8 +884,9 @@ async def schedule_cancel(cb: CallbackQuery, callback_data, state: FSMContext, l
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_cancel: failed to normalize day value: %s", e)
+		raise
 	if day is None:
 		await show_schedule(cb, state, locale)
 		return
@@ -879,7 +898,7 @@ async def schedule_cancel(cb: CallbackQuery, callback_data, state: FSMContext, l
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "make_off"))
 async def schedule_make_off(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -888,13 +907,15 @@ async def schedule_make_off(cb: CallbackQuery, callback_data, state: FSMContext,
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_make_off: failed to normalize day value: %s", e)
+		raise
 	if master_id is None or day is None:
 		try:
 			await cb.answer(t("error_retry"), show_alert=True)
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("schedule_make_off: cb.answer failed: %s", e)
+			raise
 		return
 	await _check_and_confirm_day_clear(cb, int(day), off_mode=True)
 	return
@@ -906,12 +927,13 @@ async def _check_and_confirm_day_clear(cb: CallbackQuery, day: int, clear_mode: 
 	Only one of clear_mode/off_mode should be True to determine messages.
 	Extracts master_id from callback; shows confirmation if conflicts exist.
 	"""
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	if master_id is None or day is None:
 		try:
 			await cb.answer(t("error_retry"), show_alert=True)
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("_check_and_confirm_day_clear: cb.answer failed: %s", e)
+			raise
 		return
 	try:
 		# Single conflict query (request only IDs and derive count)
@@ -925,8 +947,9 @@ async def _check_and_confirm_day_clear(cb: CallbackQuery, day: int, clear_mode: 
 			kb.adjust(2)
 			try:
 				await cb.answer()
-			except Exception:
-				pass
+			except Exception as e:
+				logger.exception("_check_and_confirm_day_clear: cb.answer failed: %s", e)
+				raise
 			await safe_edit(cb.message, text=tr("master_clear_confirm_with_conflicts", count=count), reply_markup=kb.as_markup())
 			return
 
@@ -936,8 +959,9 @@ async def _check_and_confirm_day_clear(cb: CallbackQuery, day: int, clear_mode: 
 				await cb.answer(t("toast_day_off_marked"))
 			else:
 				await cb.answer(t("toast_day_cleared"))
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("_check_and_confirm_day_clear: cb.answer toast failed: %s", e)
+			raise
 		try:
 			if off_mode:
 				await safe_edit(cb.message, text=t("master_day_marked_off"))
@@ -968,7 +992,7 @@ async def schedule_back_to_choose(cb: CallbackQuery, callback_data, state: FSMCo
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "edit_day"))
 async def schedule_edit_day(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -1001,7 +1025,7 @@ async def schedule_edit_day(cb: CallbackQuery, callback_data, state: FSMContext,
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "noop"))
 async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -1010,13 +1034,15 @@ async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, loc
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_noop: failed to normalize day value: %s", e)
+		raise
 	if master_id is None or day is None:
 		try:
 			await cb.answer()
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("schedule_noop: cb.answer failed: %s", e)
+			raise
 		return
 	lang = locale or default_language()
 	text, kb = await _show_day_actions(cb.message, int(master_id), int(day), lang=lang)
@@ -1026,7 +1052,7 @@ async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "add_time"))
 async def schedule_add_time(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -1035,13 +1061,15 @@ async def schedule_add_time(cb: CallbackQuery, callback_data, state: FSMContext,
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_add_time: failed to normalize day value: %s", e)
+		raise
 	if master_id is None or day is None:
 		try:
 			await cb.answer(t("error_retry"), show_alert=True)
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("schedule_add_time: cb.answer failed: %s", e)
+			raise
 		return
 	try:
 		await state.set_state(MasterScheduleStates.schedule_adding_window)
@@ -1064,7 +1092,7 @@ async def schedule_refresh(cb: CallbackQuery, callback_data, state: FSMContext, 
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "confirm_clear_day"))
 async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
 		if isinstance(day, str) and day.isdigit():
@@ -1073,13 +1101,15 @@ async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FS
 			pass
 		else:
 			day = None
-	except Exception:
-		day = None
+	except Exception as e:
+		logger.exception("schedule_confirm_clear_day: failed to normalize day value: %s", e)
+		raise
 	if master_id is None or day is None:
 		try:
 			await cb.answer(t("error_retry"), show_alert=True)
-		except Exception:
-			pass
+		except Exception as e:
+			logger.exception("schedule_confirm_clear_day: cb.answer failed: %s", e)
+			raise
 		return
 	try:
 		ids = await master_services.check_future_booking_conflicts(int(master_id), day_to_clear=int(day), horizon_days=365, return_ids=True)
@@ -1124,8 +1154,9 @@ async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FS
 		return
 	try:
 		await cb.answer(t("toast_day_off_marked"))
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("schedule_confirm_clear_day: cb.answer toast failed: %s", e)
+		raise
 	try:
 		lang = locale or default_language()
 	except Exception:
@@ -1140,7 +1171,7 @@ async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FS
 @master_router.callback_query(MasterScheduleCB.filter())
 async def schedule_fallback(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
 	raw = getattr(cb, "data", None)
-	uid = getattr(getattr(cb, "from_user", None), "id", None)
+	uid = cb.from_user.id
 	logger.warning("Unhandled MasterSchedule action — raw callback=%s user=%s", raw, uid)
 	await safe_edit(cb.message, text=t("unknown"))
 
@@ -1209,7 +1240,7 @@ async def _show_day_actions(msg_obj, master_id: int, day: int, *, lang: str | No
 @master_router.callback_query(MasterMenuCB.filter(F.act == "bookings"))
 async def show_bookings_menu(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	# Dashboard-first: render upcoming bookings page and present dashboard KB.
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await safe_edit(cb.message, text=t("error_retry"))
 		return
@@ -1360,15 +1391,18 @@ async def master_cmd_start(message: Message, state: FSMContext, locale: str) -> 
 	"""Handle /start for masters: clear FSM state and show master menu."""
 	try:
 		await state.clear()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("booking_cancel_flow: state.clear failed: %s", e)
+		raise
 	try:
 		await _show_master_menu(message, state, locale)
-	except Exception:
+	except Exception as e:
+		logger.exception("master_cmd_start: _show_master_menu failed: %s", e)
 		try:
 			await message.answer(t("master_menu_header", locale))
-		except Exception:
-			pass
+		except Exception as e2:
+			logger.exception("master_cmd_start: fallback message.answer failed: %s", e2)
+			raise
 
 
 @master_router.message(F.text.regexp(r"^/start(?:@[A-Za-z0-9_]+)?(?:\s|$)"))
@@ -1384,7 +1418,7 @@ async def master_cmd_start_plaintext(message: Message, state: FSMContext, locale
 @master_router.callback_query(MasterMenuCB.filter(F.act == "clear_all_confirm"))
 async def do_clear_all(cb: CallbackQuery, locale: str) -> None:
 	"""Perform clearing of the weekly schedule using service layer only."""
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await cb.answer(t("error_retry"), show_alert=True)
 		return
@@ -1423,7 +1457,7 @@ async def do_clear_all(cb: CallbackQuery, locale: str) -> None:
 @master_router.callback_query(MasterMenuCB.filter(F.act == "confirm_clear_all_exec"))
 async def exec_clear_all_with_conflicts(cb: CallbackQuery, locale: str) -> None:
 	"""User confirmed clearing all: cancel conflicting bookings (notify clients) and clear the weekly schedule."""
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await cb.answer(t("error_retry"), show_alert=True)
 		return
@@ -1481,8 +1515,9 @@ async def exec_clear_all_with_conflicts(cb: CallbackQuery, locale: str) -> None:
 
 	try:
 		await cb.answer(t("toast_schedule_cleared"))
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("clear_all: cb.answer toast_schedule_cleared failed: %s", e)
+		raise
 
 	# Localize post-operation summary
 	try:
@@ -1552,11 +1587,10 @@ async def pick_window_start(cb: CallbackQuery, callback_data, state: FSMContext,
 async def master_service_durations_menu(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	lang = locale or default_language()
 	try:
-		master_id = getattr(getattr(cb, "from_user", None), "id", None)
+		master_id = cb.from_user.id
 		if not master_id:
 			await cb.answer()
 			return
-
 
 		rows = await master_services.MasterRepo.get_services_with_durations_for_master(int(master_id))
 		from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -1576,8 +1610,9 @@ async def master_service_durations_menu(cb: CallbackQuery, state: FSMContext, lo
 		logger.exception("master_service_durations_menu failed: %s", e)
 		try:
 			await cb.answer(t("error_retry", lang))
-		except Exception:
-			pass
+		except Exception as e2:
+			logger.exception("master_service_durations_menu: cb.answer failed: %s", e2)
+			raise
 	return
 
 
@@ -1601,7 +1636,7 @@ async def master_set_service_duration(cb: CallbackQuery, callback_data, state: F
 	# Build selection of common durations
 	options = [15, 30, 45, 60, 75, 90, 105, 120]
 	try:
-		master_id = getattr(getattr(cb, "from_user", None), "id", None)
+		master_id = cb.from_user.id
 		if not master_id:
 			await cb.answer()
 			return
@@ -1618,8 +1653,13 @@ async def master_set_service_duration(cb: CallbackQuery, callback_data, state: F
 		header = t("master_pick_duration_header", lang) if t("master_pick_duration_header", lang) != "master_pick_duration_header" else "Выберите длительность:" 
 		await safe_edit(cb.message, text=header, reply_markup=kb.as_markup())
 		await cb.answer()
-	except Exception:
-		await cb.answer()
+	except Exception as e:
+		logger.exception("master_set_service_duration: failed to render durations: %s", e)
+		try:
+			await cb.answer(t("error_retry", lang))
+		except Exception as e2:
+			logger.exception("master_set_service_duration: cb.answer failed: %s", e2)
+			raise
 	return
 
 
@@ -1633,11 +1673,9 @@ async def master_save_service_duration(cb: CallbackQuery, state: FSMContext, loc
 	if not service_id or not minutes:
 		await cb.answer(t("error_retry", lang))
 		return
+	# Directly read master id; let exceptions surface if missing (aiogram ensures from_user exists).
+	master_id = cb.from_user.id
 	try:
-		master_id = getattr(getattr(cb, "from_user", None), "id", None)
-		if master_id is None:
-			await cb.answer()
-			return
 		ok = await master_services.MasterRepo.set_master_service_duration(int(master_id), str(service_id), int(minutes))
 		await cb.answer(t("master_service_duration_set_success", lang) if t("master_service_duration_set_success", lang) != "master_service_duration_set_success" else "Готово")
 		# Re-render list
@@ -1676,9 +1714,9 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
 	interval = f"{m.group(1)}-{m.group(2)}"
 	data = await state.get_data()
 	day = data.get("chosen_day")
-	# get raw master id and validate
-	master_id_raw = getattr(getattr(msg, "from_user", None), "id", None)
-	if day is None or master_id_raw is None:
+	# get raw master id and validate (direct access)
+	master_id = msg.from_user.id
+	if day is None or master_id is None:
 		await msg.answer(t("error_retry", lang))
 		# keep FSM so master can try again; clear ephemeral chosen_start
 		try:
@@ -1741,7 +1779,7 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 
 	Accepts MasterBookingsCB (mode switch) and BookingsPageCB (pagination).
 	"""
-	master_id = getattr(getattr(cb, "from_user", None), "id", None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await safe_edit(cb.message, text=t("error_retry", locale or default_language()))
 		return
@@ -1759,10 +1797,7 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 			# Pagination event: preserve current mode from state
 			data = await state.get_data() or {}
 			mode = data.get("bookings_mode", mode or "upcoming")
-			try:
-				page = int(page)
-			except Exception:
-				page = int(data.get("bookings_page", 1) or 1)
+			page = int(page)
 			await state.update_data(bookings_page=page)
 		elif mode is not None:
 			# Tab switch -> reset to first page
@@ -1772,10 +1807,7 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 			# Neither provided: fallback to state
 			data = await state.get_data() or {}
 			mode = data.get("bookings_mode", "upcoming")
-			try:
-				page = int(data.get("bookings_page", 1) or 1)
-			except Exception:
-				page = 1
+			page = int(data.get("bookings_page", 1) or 1)
 
 		# Use service-driven flow: fetch rows, prefetch maps, format and build UI-only keyboard
 		from bot.app.services.master_services import get_master_bookings
@@ -2160,8 +2192,9 @@ async def master_cancel_reason_text_input(msg: _MasterMsgType, state: FSMContext
 		await msg.answer(t("error_retry", lang))
 	try:
 		await state.clear()
-	except Exception:
-		pass
+	except Exception as e:
+		logger.exception("booking_cancel_flow: state.clear failed: %s", e)
+		raise
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "add_note"))
@@ -2178,7 +2211,7 @@ async def booking_add_note(cb: CallbackQuery, callback_data, state: FSMContext, 
 	await state.update_data(client_note_booking_id=booking_id)
 	await state.set_state(MasterStates.edit_note)
 	try:
-		logger.info("booking_add_note: invoked by master=%s booking_id=%s", getattr(getattr(cb, 'from_user', None), 'id', None), booking_id)
+		logger.info("booking_add_note: invoked by master=%s booking_id=%s", cb.from_user.id, booking_id)
 		res = await master_services.handle_add_note(booking_id, locale)
 		if res:
 			prompt, kb = res
@@ -2250,7 +2283,7 @@ async def show_stats(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	lang = locale or default_language()
 
 	# Build a compact summary for both week and month, then show main menu keyboard
-	master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await safe_edit(cb.message, text=t("error_retry", lang))
 		return
@@ -2292,7 +2325,7 @@ async def show_stats(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 async def stats_week(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	# Prefer middleware-provided `locale`; fall back to default when missing
 	lang = locale or default_language()
-	master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await safe_edit(cb.message, text=t("error_retry", lang))
 		return
@@ -2313,7 +2346,7 @@ async def stats_week(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 async def stats_month(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	# Prefer middleware-provided `locale`; fall back to default when missing
 	lang = locale or default_language()
-	master_id = getattr(getattr(cb, 'from_user', None), 'id', None)
+	master_id = cb.from_user.id
 	if master_id is None:
 		await safe_edit(cb.message, text=t("error_retry", lang))
 		return

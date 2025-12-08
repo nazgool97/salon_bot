@@ -21,11 +21,11 @@ status_label_map: dict[Any, str] = {
     getattr(BookingStatus, "PENDING_PAYMENT", object()): "Очікує оплати",
     getattr(BookingStatus, "RESERVED", object()): "Зарезервовано",
     getattr(BookingStatus, "CONFIRMED", object()): "Підтверджено",
-    getattr(BookingStatus, "AWAITING_CASH", object()): "Очікує готівку",
+    # legacy 'awaiting_cash' removed; use PENDING_PAYMENT instead
     getattr(BookingStatus, "CANCELLED", object()): "Скасовано",
     getattr(BookingStatus, "DONE", object()): "Завершено",
     getattr(BookingStatus, "NO_SHOW", object()): "Не з'явився",
-    getattr(BookingStatus, "ACTIVE", object()): "Активно",
+    # 'active' removed from BookingStatus (normalized enum); use other labels
 }
 
 
@@ -70,5 +70,5 @@ async def ensure_booking_owner(user_id: int, booking_id: int) -> Optional[object
 ACTIVE_BLOCKING_STATUSES = {
     BookingStatus.CONFIRMED,
     BookingStatus.PAID,
-    BookingStatus.ACTIVE,
+    BookingStatus.RESERVED,
 }

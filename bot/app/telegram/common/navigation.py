@@ -182,12 +182,10 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
 
     try:
         # Determine user id and target message
-        if isinstance(obj, CallbackQuery):
-            user_id = obj.from_user.id if obj.from_user else 0
-            target_msg = obj.message
-        else:
-            user_id = getattr(getattr(obj, "from_user", None), "id", 0)
-            target_msg = obj
+        # Both `Message` and `CallbackQuery` in aiogram expose `from_user` for user-originated updates.
+        # Use direct access so exceptions surface instead of silently continuing with a default.
+        user_id = obj.from_user.id
+        target_msg = obj.message if isinstance(obj, CallbackQuery) else obj
 
         # Reset navigation stack when explicitly requested by caller
         if state is not None:
@@ -229,12 +227,12 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
                 try:
                     await state.update_data(current_screen="main")
                 except Exception:
-                        logger.exception("show_main_client_menu: failed to update state.current_screen")
+                    logger.exception("show_main_client_menu: failed to update state.current_screen")
             except Exception:
                 logger.exception("show_main_client_menu: failed to nav_replace or update state")
     except Exception:
-            # Log unexpected exceptions; don't raise from helper
-            logger.exception("show_main_client_menu: unexpected error")
+        # Log unexpected exceptions; don't raise from helper
+        logger.exception("show_main_client_menu: unexpected error")
 
 
 async def nav_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
@@ -322,7 +320,7 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                 from bot.app.translations import tr
                 # Determine language for comparison (prefer stored lang)
                 if not cur_lang:
-                    user_id = obj.from_user.id if isinstance(obj, CallbackQuery) else getattr(getattr(obj, 'from_user', None), 'id', 0)
+                    user_id = obj.from_user.id
                     try:
                         cur_lang = await safe_get_locale(user_id)
                     except Exception:
@@ -335,7 +333,7 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                     await nav_root(obj, state)
                     return
             except Exception:
-                    logger.exception("nav_role_root: failed to detect current role titles")
+                logger.exception("nav_role_root: failed to detect current role titles")
 
         # Reset nav stack now (role root should be the new root)
         if state is not None:
@@ -371,7 +369,7 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                     from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
                     from bot.app.translations import tr
                     from bot.app.services.shared_services import safe_get_locale
-                    user_id = obj.from_user.id if isinstance(obj, CallbackQuery) else getattr(getattr(obj, 'from_user', None), 'id', 0)
+                    user_id = obj.from_user.id
                     lang = await safe_get_locale(user_id)
                     text = tr("admin_panel_title", lang=lang) or "Admin"
                     if isinstance(obj, CallbackQuery) and obj.message is not None:
@@ -406,7 +404,7 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
                     from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
                     from bot.app.translations import tr
                     from bot.app.services.shared_services import safe_get_locale
-                    user_id = obj.from_user.id if isinstance(obj, CallbackQuery) else getattr(getattr(obj, 'from_user', None), 'id', 0)
+                    user_id = obj.from_user.id
                     lang = await safe_get_locale(user_id)
                     text = tr("admin_panel_title", lang=lang) or "Admin"
                     if isinstance(obj, CallbackQuery) and obj.message is not None:

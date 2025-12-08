@@ -36,6 +36,7 @@ from bot.app.telegram.common.callbacks import (
     pack_cb,
 )
 from bot.app.telegram.common.callbacks import HoursViewCB, HourCB, CancelTimeCB
+from bot.app.telegram.common.callbacks import TimeAdjustCB
 from bot.app.telegram.common.callbacks import PayCB, BookingActionCB
 from bot.app.telegram.common.callbacks import MyBookingsCB
 from bot.app.telegram.common.callbacks import MasterMenuCB
@@ -73,9 +74,10 @@ from bot.app.telegram.client.client_keyboards import (
     get_time_slots_kb,
     get_hour_picker_kb,
     get_minute_picker_kb,
+    get_compact_time_picker_kb,
 )
 from bot.app.services.client_services import format_bookings_for_ui, format_booking_details_text
-from bot.app.services.shared_services import default_language, get_admin_ids, get_contact_info
+from bot.app.services.shared_services import default_language, get_admin_ids, get_contact_info, utc_now, format_date
 from bot.app.telegram.client.client_keyboards import get_back_button, get_simple_kb
 from bot.app.translations import t
 import bot.app.translations as i18n
@@ -146,6 +148,104 @@ def _get_message_user_id(message: Message) -> Optional[int]:
         return user.id
     except (AttributeError, TypeError):
         return None
+
+
+# Decorator to centralize extraction/validation of common IDs used by handlers.
+def require_ids(*, require_user: bool = False, require_master: bool = False, resolve_master: bool = True):
+    from functools import wraps
+
+    def _decorator(fn):
+        @wraps(fn)
+        async def _wrapped(*args, **kwargs):
+            # Try to find CallbackQuery in positional args or kwargs
+            cb = None
+            if args:
+                maybe = args[0]
+                from aiogram.types import CallbackQuery
+
+                if isinstance(maybe, CallbackQuery):
+                    cb = maybe
+            cb = cb or kwargs.get("cb") or kwargs.get("callback")
+
+            # try to find callback_data
+            callback_data = None
+            if len(args) >= 2:
+                callback_data = args[1]
+            else:
+                callback_data = kwargs.get("callback_data")
+
+            # extract user id
+            user_id = None
+            try:
+                if cb is not None and getattr(cb, "from_user", None) is not None:
+                    user_id = getattr(cb.from_user, "id", None)
+            except Exception:
+                user_id = None
+
+            if require_user and user_id is None:
+                try:
+                    if cb is not None:
+                        await cb.answer(t("error_retry", kwargs.get("locale") or ""), show_alert=True)
+                except Exception:
+                    logger.exception("require_ids: failed to answer invalid user")
+                return
+
+            # extract/resolve master id if needed
+            master_id = None
+            if require_master:
+                raw_mid = None
+                try:
+                    if callback_data is not None:
+                        raw_mid = getattr(callback_data, "master_id", None) or getattr(callback_data, "master", None)
+                    if raw_mid is None:
+                        raw_mid = kwargs.get("master_id")
+                    if raw_mid is None:
+                        if cb is not None:
+                            await cb.answer(t("invalid_data", kwargs.get("locale") or ""), show_alert=True)
+                        return
+                    mid_int = int(raw_mid)
+                except Exception:
+                    try:
+                        if cb is not None:
+                            await cb.answer(t("invalid_data", kwargs.get("locale") or ""), show_alert=True)
+                    except Exception:
+                        logger.exception("require_ids: failed to answer invalid master id")
+                    return
+
+                if resolve_master:
+                    try:
+                        resolved = await MasterRepo.resolve_master_id(mid_int)
+                        if not resolved:
+                            if cb is not None:
+                                await cb.answer(t("master_not_found", kwargs.get("locale") or ""), show_alert=True)
+                            return
+                        master_id = int(resolved)
+                    except Exception:
+                        logger.exception("require_ids: master resolution failed for %s", mid_int)
+                        if cb is not None:
+                            try:
+                                await cb.answer(t("invalid_data", kwargs.get("locale") or ""), show_alert=True)
+                            except Exception:
+                                logger.exception("require_ids: failed to answer")
+                        return
+                else:
+                    master_id = mid_int
+
+            # inject args if handler expects them
+            from inspect import signature
+
+            sig = signature(fn)
+            call_kwargs = dict(kwargs)
+            if "user_id" in sig.parameters:
+                call_kwargs["user_id"] = user_id
+            if "master_id" in sig.parameters:
+                call_kwargs["master_id"] = master_id
+
+            return await fn(*args, **call_kwargs)
+
+        return _wrapped
+
+    return _decorator
 
 # Определяем маршрутизатор один раз
 client_router = Router(name="client")
@@ -475,9 +575,8 @@ async def show_masters_catalog(cb: CallbackQuery, callback_data, state: FSMConte
             page = total_pages
         masters = await MasterRepo.get_masters_page(page=page, page_size=PAGE_SIZE)
     except Exception:
-        masters = []
-        total_pages = 1
-        page = 1
+        logger.exception("show_masters_catalog: failed to fetch masters page (page=%s)", page)
+        raise
     from bot.app.telegram.client.client_keyboards import get_masters_catalog_keyboard
     kb = await get_masters_catalog_keyboard(masters, page=page, total_pages=total_pages)
     lang = locale
@@ -492,13 +591,18 @@ async def show_masters_catalog(cb: CallbackQuery, callback_data, state: FSMConte
 @client_router.callback_query(MasterServicesCB.filter())
 async def show_services_for_master(cb: CallbackQuery, callback_data: HasMasterId, state: FSMContext, locale: str) -> None:
     """Показывает услуги, доступные у выбранного мастера, и включает форс-мастера для последующего шага."""
-    master_id = int(callback_data.master_id)
+    # Normalize incoming identifier to canonical surrogate id
     try:
-        from bot.app.services.master_services import MasterRepo
+        resolved_master = await MasterRepo.resolve_master_id(int(callback_data.master_id))
+        if not resolved_master:
+            if cb.message:
+                await cb.answer(t("no_services_for_master", locale), show_alert=True)
+            return
         # Use the repo helper that returns effective durations per-service
-        rows = await MasterRepo.get_services_with_durations_for_master(master_id)
+        rows = await MasterRepo.get_services_with_durations_for_master(resolved_master)
     except Exception:
-        rows = []
+        logger.exception("show_services_for_master: failed to resolve master or fetch services (master_id=%s)", getattr(callback_data, 'master_id', None))
+        raise
     services: dict[str, str] = {str(sid): str(name) for sid, name, _ in rows} if rows else {}
     if not services:
         if cb.message:
@@ -506,7 +610,7 @@ async def show_services_for_master(cb: CallbackQuery, callback_data: HasMasterId
         return
     # Remember forced master and show service selection limited to this master
     try:
-        await state.update_data(forced_master_id=int(master_id))
+        await state.update_data(forced_master_id=int(resolved_master))
     except Exception:
         pass
     from bot.app.telegram.client.client_keyboards import get_service_menu
@@ -547,7 +651,8 @@ async def show_services_for_master(cb: CallbackQuery, callback_data: HasMasterId
 
 
 @client_router.callback_query(MasterSelectCB.filter())
-async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+@require_ids(require_user=True, require_master=True)
+async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
     """Обрабатывает выбор мастера и показывает календарь.
 
     Args:
@@ -555,7 +660,9 @@ async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, loc
         callback_data: Данные callback'а с ID мастера и услуги.
         state: Контекст FSM для сохранения состояния.
     """
-    user_id = _get_cb_user_id(cb)
+    # `user_id` and `master_id` are injected by the decorator.
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
     if user_id is None:
         try:
             if cb.message:
@@ -565,7 +672,17 @@ async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, loc
         except (TelegramAPIError, RuntimeError):
             pass
         return
-    master_id = callback_data.master_id
+    if master_id is None:
+        try:
+            master_id = await MasterRepo.resolve_master_id(int(getattr(callback_data, "master_id", 0)))
+        except Exception:
+            master_id = None
+    if not master_id:
+        if cb.message:
+            await safe_edit(cb.message, text=t("error_retry", locale))
+        else:
+            await cb.answer(t("error_retry", locale))
+        return
     service_id = callback_data.service_id
     logger.info("Выбор мастера для пользователя %s, master_id=%s, service_id=%s", user_id, master_id, service_id)
     # Compute effective duration for the chosen service + master (respect master overrides)
@@ -582,8 +699,8 @@ async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, loc
     # Pre-fetch availability data from services and pass into keyboard (keyboards should NOT query DB)
     try:
         from bot.app.services.client_services import get_available_days_for_month
-        from datetime import datetime as _dt
-        now = _dt.now()
+        from bot.app.services.shared_services import local_now
+        now = local_now()
         year, month = now.year, now.month
         available_days = await get_available_days_for_month(master_id, year, month, service_duration_min=duration)
         sched = await MasterRepo.get_schedule(master_id)
@@ -598,10 +715,11 @@ async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, loc
     # Compute day states in handler to keep keyboards dumb
     try:
         from bot.app.services.client_services import compute_calendar_day_states
+        from bot.app.services.shared_services import local_now as _local_now
         day_states = compute_calendar_day_states(
             year,
             month,
-            today=datetime.now(),
+            today=_local_now(),
             allowed_weekdays=allowed_weekdays or [],
             available_days=available_days or set(),
         )
@@ -640,14 +758,17 @@ async def select_master(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
 
 @client_router.callback_query(CalendarCB.filter())
-async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+@require_ids(require_user=True, require_master=True)
+async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
     """Обрабатывает навигацию по месяцам в календаре.
 
     Args:
         cb: CallbackQuery с данными навигации.
         callback_data: Данные callback'а с годом и месяцем.
     """
-    user_id = _get_cb_user_id(cb)
+    # `user_id` and `master_id` injected by decorator; fall back when missing
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
     if user_id is None:
         try:
             if cb.message:
@@ -660,6 +781,16 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
     logger.info("Навигация по календарю для пользователя %s, year=%s, month=%s", user_id, callback_data.year, callback_data.month)
     # Compute effective duration for this calendar view using selected service(s) and master override.
     try:
+        if master_id is None:
+            resolved_master = await MasterRepo.resolve_master_id(int(getattr(callback_data, "master_id", 0)))
+        else:
+            resolved_master = master_id
+        if not resolved_master:
+            if cb.message:
+                await safe_edit(cb.message, text=t("error_retry", locale))
+            else:
+                await cb.answer(t("error_retry", locale))
+            return
         sid = str(getattr(callback_data, "service_id", ""))
         if "+" in sid:
             service_ids = [s for s in sid.split("+") if s]
@@ -668,7 +799,7 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
         if service_ids:
             try:
                 from bot.app.services.client_services import get_services_duration_and_price, get_available_days_for_month
-                totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=int(callback_data.master_id))
+                totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=int(resolved_master))
                 sd = int(totals.get("total_minutes") or DEFAULT_SERVICE_FALLBACK_DURATION)
                 # Persist multi_duration_min when multiple services are selected so subsequent flows reuse it
                 if "+" in sid:
@@ -681,8 +812,8 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
         else:
             sd = DEFAULT_SERVICE_FALLBACK_DURATION
 
-        available_days = await get_available_days_for_month(callback_data.master_id, callback_data.year, callback_data.month, sd)
-        sched = await MasterRepo.get_schedule(callback_data.master_id)
+        available_days = await get_available_days_for_month(resolved_master, callback_data.year, callback_data.month, sd)
+        sched = await MasterRepo.get_schedule(resolved_master)
         allowed_weekdays = sorted([int(k) for k, v in (sched or {}).items() if isinstance(v, list) and v]) if sched else []
     except (ImportError, AttributeError, TypeError, ValueError, SQLAlchemyError):
         available_days = set()
@@ -691,10 +822,11 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
     # Compute day states for requested month
     try:
         from bot.app.services.client_services import compute_calendar_day_states
+        from bot.app.services.shared_services import local_now as _local_now
         day_states = compute_calendar_day_states(
             callback_data.year,
             callback_data.month,
-            today=datetime.now(),
+            today=_local_now(),
             allowed_weekdays=allowed_weekdays or [],
             available_days=available_days or set(),
         )
@@ -704,7 +836,7 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
 
     kb = await get_calendar_keyboard(
         service_id=callback_data.service_id,
-        master_id=callback_data.master_id,
+        master_id=resolved_master,
         year=callback_data.year,
         month=callback_data.month,
         service_duration_min=int(sd or DEFAULT_SERVICE_FALLBACK_DURATION),
@@ -729,10 +861,12 @@ async def navigate_calendar(cb: CallbackQuery, callback_data, state: FSMContext,
 
 
 @client_router.callback_query(DateCB.filter())
-async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+@require_ids(require_user=True, require_master=True)
+async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
     """Обрабатывает выбор даты из календаря и показывает доступные временные слоты."""
     cur_state = await state.get_state()
-    user_id = _get_cb_user_id(cb)
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
     if user_id is None:
         try:
             if cb.message:
@@ -749,6 +883,18 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
     # Determine slot duration: always compute via get_services_duration_and_price
     # so per-master overrides are respected (single and multi-service flows).
     try:
+        # master_id may be injected by decorator; resolve when missing
+        if master_id is None:
+            resolved_master = await MasterRepo.resolve_master_id(int(getattr(callback_data, "master_id", 0)))
+        else:
+            resolved_master = master_id
+        if not resolved_master:
+            if cb.message:
+                await safe_edit(cb.message, text=t("error_retry", locale))
+            else:
+                await cb.answer(t("error_retry", locale))
+            return
+
         sid = str(getattr(callback_data, "service_id", ""))
         # Build list of service ids for the aggregator
         if "+" in sid:
@@ -757,7 +903,7 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
             service_ids = [sid] if sid else []
         if service_ids:
             try:
-                totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=int(getattr(callback_data, "master_id", 0)))
+                totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=int(resolved_master))
                 duration = int(totals.get("total_minutes") or slot_default)
             except Exception:
                 duration = slot_default
@@ -774,10 +920,10 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         await cb.answer(t("invalid_date", lang))
         return
 
-    slots = await get_available_time_slots_for_services(base_dt, callback_data.master_id, [duration])
+    slots = await get_available_time_slots_for_services(base_dt, resolved_master, [duration])
     # Debug: log returned slots for diagnosis
     try:
-        logger.info("select_date: fetched %d slots for %s (master=%s)", len(slots), selected_date, callback_data.master_id)
+        logger.info("select_date: fetched %d slots for %s (master=%s)", len(slots), selected_date, resolved_master)
         if slots:
             # show first up to 8 compact samples
             try:
@@ -821,31 +967,37 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
         master_id_value = 0
 
     service_id_for_payload = str(getattr(callback_data, "service_id", ""))
-    # Instead of showing the full slots list first, present the hour-picker
-    # immediately so the user picks an hour first (then minutes). This keeps
-    # the caching of compact slots in state so subsequent handlers reuse it.
-    # Derive available hours from returned slots (support both datetime objects
-    # and compact string representations cached earlier).
-    if slots and isinstance(slots[0], str):
-        hours = sorted({int(s[:2]) for s in slots})
-    else:
-        hours = sorted({s.hour for s in slots})
+    # Default to compact +/- picker: determine initial hour/minute from slots
+    ih = 0
+    im = 0
+    try:
+        if slots:
+            first = slots[0]
+            if isinstance(first, str):
+                ih = int(first[:2])
+                im = int(first[2:4])
+            else:
+                ih = int(getattr(first, "hour", 0) or 0)
+                im = int(getattr(first, "minute", 0) or 0)
+    except Exception:
+        ih = 0
+        im = 0
 
-    kb = await get_hour_picker_kb(hours, service_id=service_id_for_payload, master_id=master_id_value, date=selected_date, lang=lang)
+    kb = await get_compact_time_picker_kb(hour=ih, minute=im, service_id=service_id_for_payload, master_id=master_id_value, date=selected_date, lang=lang)
 
     if cb.message:
-        # Include the selected date in the hour-picking prompt (same style as minutes header)
+        # Include the selected date in the picker prompt
         try:
-            date_label = datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')
+            date_label = format_date(datetime.fromisoformat(selected_date), "%d.%m.%Y")
         except Exception:
             date_label = selected_date or ""
-        prompt = t("choose_time_by_hour_title", lang) if t("choose_time_by_hour_title", lang) != "choose_time_by_hour_title" else f"{t('choose_time', lang)} {date_label}"
+        prompt = t("choose_time", lang) if t("choose_time", lang) != "choose_time" else f"{t('choose_time', lang)} {date_label}"
         await nav_push(state, prompt, kb)
         await safe_edit(cb.message, prompt, reply_markup=kb)
     await cb.answer()
 
     # For reschedule flows keep the reschedule state so downstream handlers
-    # recognize the flow; otherwise set chosen-date metadata and choosing_hour.
+    # recognize the flow; otherwise set chosen-date metadata and choosing_minute.
     if cur_state and "reschedule_select_date" in str(cur_state):
         await state.set_state(BookingStates.reschedule_select_time)
     else:
@@ -853,14 +1005,16 @@ async def select_date(cb: CallbackQuery, callback_data, state: FSMContext, local
             await state.update_data(selected_date=selected_date)
         except Exception:
             pass
-        await state.set_state(BookingStates.choosing_hour)
-    logger.info("Временные слоты (часы) показаны для пользователя %s на %s", user_id, selected_date)
+        await state.set_state(BookingStates.choosing_minute)
+    logger.info("Compact time picker shown for user %s on %s", user_id, selected_date)
 
 
 @client_router.callback_query(HoursViewCB.filter())
-async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+@require_ids(require_user=True, require_master=True)
+async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
     """Show available hours for a selected date (stepwise picker entry)."""
-    user_id = _get_cb_user_id(cb)
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
     if user_id is None:
         try:
             if cb.message:
@@ -872,7 +1026,8 @@ async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext
         return
 
     selected_date = getattr(callback_data, "date", None)
-    master_id = int(getattr(callback_data, "master_id", 0) or 0)
+    if master_id is None:
+        master_id = int(getattr(callback_data, "master_id", 0) or 0)
     service_id = str(getattr(callback_data, "service_id", "") or "")
 
     # Try to retrieve cached slots for the date from state; fallback to recomputing
@@ -915,37 +1070,49 @@ async def hours_view_handler(cb: CallbackQuery, callback_data, state: FSMContext
         await cb.answer()
         return
 
-    # Derive available hours
-    # Support cached compact strings or datetime objects
-    if slots and isinstance(slots[0], str):
-        hours = sorted({int(s[:2]) for s in slots})
-    else:
-        hours = sorted({s.hour for s in slots})
-    logger.info("hours_view_handler: derived hours=%s from slots_count=%d", hours, len(slots) if slots else 0)
-    kb = await get_hour_picker_kb(hours, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
+    # Default to compact +/- picker: determine initial hour/minute from slots
+    ih = 0
+    im = 0
+    try:
+        if slots:
+            first = slots[0]
+            if isinstance(first, str):
+                ih = int(first[:2])
+                im = int(first[2:4])
+            else:
+                ih = int(getattr(first, "hour", 0) or 0)
+                im = int(getattr(first, "minute", 0) or 0)
+    except Exception:
+        ih = 0
+        im = 0
+
+    kb = await get_compact_time_picker_kb(hour=ih, minute=im, service_id=service_id, master_id=master_id, date=selected_date, lang=locale)
     if cb.message:
-        # Include the selected date in the hour-picking prompt so it matches minutes view
         try:
-            date_label = datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')
+            date_label = format_date(datetime.fromisoformat(selected_date), "%d.%m.%Y")
         except Exception:
             date_label = selected_date or ""
-        prompt = t("choose_time_by_hour_title", locale) if t("choose_time_by_hour_title", locale) != "choose_time_by_hour_title" else f"{t('choose_time', locale)} {date_label}"
+        prompt = t("choose_time", locale) if t("choose_time", locale) != "choose_time" else f"{t('choose_time', locale)} {date_label}"
         await nav_push(state, prompt, kb)
         await safe_edit(cb.message, prompt, reply_markup=kb)
-    await state.set_state(BookingStates.choosing_hour)
+    # Compact picker is effectively a minute-level chooser
+    await state.set_state(BookingStates.choosing_minute)
     await cb.answer()
 
 
 @client_router.callback_query(HourCB.filter())
-async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+@require_ids(require_user=True, require_master=True)
+async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
     """Show minutes available for the chosen hour."""
-    user_id = _get_cb_user_id(cb)
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
     if user_id is None:
         await cb.answer()
         return
 
     selected_date = getattr(callback_data, "date", None)
-    master_id = int(getattr(callback_data, "master_id", 0) or 0)
+    if master_id is None:
+        master_id = int(getattr(callback_data, "master_id", 0) or 0)
     service_id = str(getattr(callback_data, "service_id", "") or "")
     try:
         hour = int(getattr(callback_data, "hour", 0))
@@ -1071,10 +1238,206 @@ async def hour_chosen_handler(cb: CallbackQuery, callback_data, state: FSMContex
 
     kb = await get_minute_picker_kb(minutes, service_id=service_id, master_id=master_id, date=selected_date, hour=hour, lang=locale, action=action, booking_id=booking_id)
     if cb.message:
-        header = f"{t('choose_time_on_date_prefix', locale)} {datetime.fromisoformat(selected_date).strftime('%d.%m.%Y')} — {hour:02d}:"
+        header = f"{t('choose_time_on_date_prefix', locale)} {format_date(datetime.fromisoformat(selected_date), '%d.%m.%Y')} — {hour:02d}:"
         await nav_push(state, header, kb)
         await safe_edit(cb.message, header, reply_markup=kb)
     await state.set_state(BookingStates.choosing_minute)
+    await cb.answer()
+
+
+@client_router.callback_query(TimeAdjustCB.filter())
+@require_ids(require_user=True, require_master=True)
+async def compact_time_adjust_handler(cb: CallbackQuery, callback_data, state: FSMContext, locale: str, user_id: int | None = None, master_id: int | None = None) -> None:
+    """Handle +/- interactions for compact time picker.
+
+    Recomputes hour/minute based on op and edits the message with a rebuilt keyboard.
+    """
+    if user_id is None:
+        user_id = _get_cb_user_id(cb)
+    if user_id is None:
+        await cb.answer()
+        return
+
+    try:
+        op = getattr(callback_data, "op", "noop") or "noop"
+        hour = int(getattr(callback_data, "hour", 0) or 0)
+        minute = int(getattr(callback_data, "minute", 0) or 0)
+        service_id = str(getattr(callback_data, "service_id", "") or "")
+        date = str(getattr(callback_data, "date", "") or "")
+    except Exception:
+        await cb.answer()
+        return
+
+    # ensure master_id available (may be injected by decorator)
+    if master_id is None:
+        try:
+            master_id = int(getattr(callback_data, "master_id", 0) or 0)
+        except Exception:
+            master_id = 0
+
+    # Determine minute step from settings if available
+    try:
+        tick = await SettingsRepo.get_slot_tick_minutes()
+        tick = int(tick or 15)
+    except Exception:
+        tick = 15
+
+    # Prefer stepping through available slots cached in FSM for this date.
+    try:
+        data = await state.get_data()
+        slots_map = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
+        cached_for_date = None
+        if isinstance(slots_map, dict):
+            cached_for_date = slots_map.get(date) or None
+        if cached_for_date and isinstance(cached_for_date, list) and len(cached_for_date) > 0:
+            # cached slot strings like '0900', '0945'
+            slots_int = []
+            for s in cached_for_date:
+                try:
+                    slots_int.append(int(s))
+                except Exception:
+                    continue
+            slots_int = sorted(set(slots_int))
+            # build hour->minutes map
+            hours_map: dict[int, list[int]] = {}
+            for v in slots_int:
+                h = v // 100
+                m = v % 100
+                hours_map.setdefault(h, []).append(m)
+            for h in hours_map:
+                hours_map[h] = sorted(set(hours_map[h]))
+            hours_list = sorted(hours_map.keys())
+
+            cur_h = int(hour)
+            cur_m = int(minute)
+
+            if op == "hour_inc":
+                # Move to the next available hour only; do not automatically change minute
+                nxt = None
+                for hh in hours_list:
+                    if hh > cur_h:
+                        nxt = hh
+                        break
+                if nxt is not None:
+                    # If the same minute exists in the target hour, keep it; otherwise
+                    # snap to the closest available minute in that hour so the selection
+                    # remains valid (prevents choosing unavailable starts).
+                    if cur_m in hours_map.get(nxt, []):
+                        hour = nxt
+                    else:
+                        candidates = hours_map.get(nxt, [])
+                        if candidates:
+                            # pick nearest minute to current minute
+                            minute = min(candidates, key=lambda x: abs(x - cur_m))
+                            hour = nxt
+                # else: keep current hour/minute (ignore)
+            elif op == "hour_dec":
+                prev = None
+                for hh in reversed(hours_list):
+                    if hh < cur_h:
+                        prev = hh
+                        break
+                if prev is not None:
+                    if cur_m in hours_map.get(prev, []):
+                        hour = prev
+                    else:
+                        candidates = hours_map.get(prev, [])
+                        if candidates:
+                            minute = min(candidates, key=lambda x: abs(x - cur_m))
+                            hour = prev
+                # else: keep current hour/minute (ignore)
+            elif op == "min_inc":
+                # Move forward by tick across available slots (may cross to next hour).
+                # Build flattened minutes-since-midnight list and find first slot >= target.
+                slots_minutes = []
+                for v in slots_int:
+                    try:
+                        h = v // 100
+                        m = v % 100
+                        slots_minutes.append(h * 60 + m)
+                    except Exception:
+                        continue
+                slots_minutes = sorted(set(slots_minutes))
+                target = cur_h * 60 + cur_m + tick
+                nxt_total = None
+                for tot in slots_minutes:
+                    if tot >= target:
+                        nxt_total = tot
+                        break
+                if nxt_total is not None:
+                    hour = nxt_total // 60
+                    minute = nxt_total % 60
+                # else: no later slot on that day -> ignore (no wrap)
+            elif op == "min_dec":
+                # Move backward by tick across available slots (may cross to previous hour).
+                slots_minutes = []
+                for v in slots_int:
+                    try:
+                        h = v // 100
+                        m = v % 100
+                        slots_minutes.append(h * 60 + m)
+                    except Exception:
+                        continue
+                slots_minutes = sorted(set(slots_minutes))
+                target = cur_h * 60 + cur_m - tick
+                prev_total = None
+                for tot in reversed(slots_minutes):
+                    if tot <= target:
+                        prev_total = tot
+                        break
+                if prev_total is not None:
+                    hour = prev_total // 60
+                    minute = prev_total % 60
+                # else: no earlier slot on that day -> ignore
+            # ensure ints
+            hour = int(hour)
+            minute = int(minute)
+        else:
+            # Fallback to tick-based adjustment when no cached slots exist.
+            # Use non-wrapping behavior: clamp hours to [0,23], minutes to [0,59].
+            if op == "hour_inc":
+                hour = min(int(hour) + 1, 23)
+            elif op == "hour_dec":
+                hour = max(int(hour) - 1, 0)
+            elif op == "min_inc":
+                if int(minute) + tick < 60:
+                    minute = int(minute) + tick
+                # else: ignore (do not wrap or change hour)
+            elif op == "min_dec":
+                if int(minute) - tick >= 0:
+                    minute = int(minute) - tick
+                # else: ignore
+    except Exception:
+        # On any error fallback to simple step behavior
+        if op == "hour_inc":
+            hour = min(int(hour) + 1, 23)
+        elif op == "hour_dec":
+            hour = max(int(hour) - 1, 0)
+        elif op == "min_inc":
+            if int(minute) + tick < 60:
+                minute = int(minute) + tick
+        elif op == "min_dec":
+            if int(minute) - tick >= 0:
+                minute = int(minute) - tick
+    # noop or other -> no change
+
+    # Rebuild keyboard and edit message
+    try:
+        kb = await get_compact_time_picker_kb(hour, minute, service_id=service_id, master_id=master_id, date=date, lang=locale, minute_step=tick)
+    except Exception:
+        await cb.answer()
+        return
+
+    if cb.message:
+        try:
+            header = f"{t('choose_time', locale)} {date} — {hour:02d}:{minute:02d}"
+        except Exception:
+            header = f"{date} — {hour:02d}:{minute:02d}"
+        try:
+            await safe_edit(cb.message, header, reply_markup=kb)
+        except Exception:
+            # Fallback: answer and do nothing
+            logger.exception("compact_time_adjust_handler: failed to edit message")
     await cb.answer()
 
 
@@ -1330,7 +1693,11 @@ async def svc_done(cb: CallbackQuery, callback_data, state: FSMContext, locale: 
 @client_router.callback_query(MasterMultiCB.filter())
 async def master_multi(cb: CallbackQuery, callback_data: HasMasterId, state: FSMContext, locale: str) -> None:
     """Proceed to calendar for multi-service booking with combined duration."""
-    master_id = int(callback_data.master_id)
+    # Resolve to canonical surrogate id
+    master_id = await MasterRepo.resolve_master_id(int(callback_data.master_id))
+    if not master_id:
+        await cb.answer(i18n.t("invalid_data", locale), show_alert=True)
+        return
     data = await state.get_data()
     selected = list(data.get("multi_selected") or [])
     if not selected:
@@ -1351,8 +1718,8 @@ async def master_multi(cb: CallbackQuery, callback_data: HasMasterId, state: FSM
     service_id = "+".join(selected)
     try:
         from bot.app.services.client_services import get_available_days_for_month
-        from datetime import datetime as _dt
-        now = _dt.now()
+        from bot.app.services.shared_services import local_now
+        now = local_now()
         year, month = now.year, now.month
         available_days = await get_available_days_for_month(master_id, year, month, service_duration_min=total_min)
         sched = await MasterRepo.get_schedule(master_id)
@@ -1365,10 +1732,11 @@ async def master_multi(cb: CallbackQuery, callback_data: HasMasterId, state: FSM
     # Compute day states for current month
     try:
         from bot.app.services.client_services import compute_calendar_day_states
+        from bot.app.services.shared_services import local_now as _local_now
         day_states = compute_calendar_day_states(
             year,
             month,
-            today=datetime.now(),
+            today=_local_now(),
             allowed_weekdays=allowed_weekdays or [],
             available_days=available_days or set(),
         )
@@ -1421,7 +1789,11 @@ async def select_time_and_create_booking(cb: CallbackQuery, callback_data, state
         return
     # Delegate booking creation to service layer (book_slot)
     service_id = callback_data.service_id
-    master_id = int(callback_data.master_id)
+    # Normalize master id to surrogate id before attempting booking
+    master_id = await MasterRepo.resolve_master_id(int(callback_data.master_id))
+    if not master_id:
+        await cb.answer(t("invalid_data", locale), show_alert=True)
+        return
     date_str = callback_data.date
     time_compact = callback_data.time
     result = await book_slot(user_id, master_id, service_id, date_str, time_compact, locale)
@@ -1459,7 +1831,58 @@ async def pay_cash_prepare(cb: CallbackQuery, callback_data: HasBookingId, local
     booking_id = int(callback_data.booking_id)
     details_obj = booking_details
     details = format_booking_details_text(details_obj, lang)
-    header = f"{details}\n\n{t('confirm', lang)}?"
+    # Append start time and duration lines to match payment preview formatting
+    header = details
+    try:
+        duration_minutes = None
+        start_time_str = None
+        try:
+            starts = getattr(details_obj, "starts_at", None)
+            ends = getattr(details_obj, "ends_at", None)
+            if starts and ends:
+                try:
+                    duration_minutes = int((ends - starts).total_seconds() // 60)
+                except Exception:
+                    duration_minutes = None
+            if duration_minutes is None:
+                duration_minutes = getattr(details_obj, "duration_minutes", None)
+        except Exception:
+            duration_minutes = None
+        try:
+            if getattr(details_obj, "starts_at", None):
+                from bot.app.services.shared_services import format_date
+
+                try:
+                    start_time_str = format_date(getattr(details_obj, "starts_at", None), fmt="%H:%M")
+                except Exception:
+                    try:
+                        start_time_str = getattr(details_obj, "starts_at").strftime("%H:%M")
+                    except Exception:
+                        start_time_str = None
+        except Exception:
+            start_time_str = None
+
+        extra_lines = []
+        try:
+            if start_time_str:
+                extra_lines.append(f"{t('time_label', lang)}: {start_time_str}")
+        except Exception:
+            pass
+        try:
+            slot_label = t('slot_duration_label', lang)
+            # Only append duration if canonical details text doesn't already include it
+            if (not slot_label) or (slot_label not in details):
+                if duration_minutes and int(duration_minutes) > 0:
+                    extra_lines.append(f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}")
+        except Exception:
+            pass
+        if extra_lines:
+            # Blank line after title, then details, then Time/Dur block, then blank line, then confirm
+            header = f"<b>{t('pay_cash_confirm_title', lang)}</b>\n\n" + header + "\n" + "\n".join(extra_lines) + "\n\n" + f"{t('confirm', lang)}?"
+        else:
+            header = f"<b>{t('pay_cash_confirm_title', lang)}</b>\n\n" + header + "\n" + f"{t('confirm', lang)}?"
+    except Exception:
+        header = f"{details}\n\n{t('confirm', lang)}?"
 
     kb = get_simple_kb([
         (t("confirm", lang), pack_cb(PayCB, action="conf_cash", booking_id=int(booking_id))),
@@ -1562,7 +1985,7 @@ async def my_bookings(cb: CallbackQuery, callback_data: HasModePage, state: FSMC
     user = await get_or_create_user(
         user_id, cb.from_user.full_name if cb.from_user else str(user_id)
     )
-    now = datetime.now(UTC)
+    now = utc_now()
 
     # Определяем новый фильтр и страницу из callback_data
     mode_val = getattr(callback_data, "mode", None)
@@ -1705,12 +2128,23 @@ async def cancel_booking_confirm(cb: CallbackQuery, callback_data, locale: str) 
     lang = await resolve_locale(None, locale, cb.from_user.id)
     lock_h = await _int_setting(SettingsRepo.get_client_cancel_lock_hours, 3)
     b = await BookingRepo.get(booking_id)
+    # If booking not found, inform user
+    if not b:
+        await cb.answer(t("booking_not_found", lang), show_alert=True)
+        return
+
     # Disallow showing confirmation for terminal bookings
     terminal_statuses = {"cancelled", "done", "no_show", "expired"}
-    if b and str(getattr(getattr(b, 'status', ''), 'value', getattr(b, 'status', ''))).lower() in terminal_statuses:
+    status_attr = getattr(b, 'status', None)
+    try:
+        status_val = status_attr.value
+    except Exception:
+        status_val = status_attr
+    if str(status_val).lower() in terminal_statuses:
         await cb.answer(t("booking_not_active", lang), show_alert=True)
         return
-    if b and (b.starts_at - datetime.now(UTC)).total_seconds() < lock_h * 3600:
+
+    if (b.starts_at - utc_now()).total_seconds() < lock_h * 3600:
         logger.info("analytics.cancel_too_close preconfirm user_id=%s booking_id=%s hours=%s", cb.from_user.id, booking_id, lock_h)
         await cb.answer(t("cancel_too_close", lang).format(hours=lock_h), show_alert=True)
         return
@@ -1744,10 +2178,16 @@ async def cancel_reservation_and_go_back(cb: CallbackQuery, callback_data, state
         return
 
     # Disallow cancelling terminal bookings
-    if getattr(b, "status", None) and str(getattr(getattr(b, 'status', ''), 'value', getattr(b, 'status', ''))).lower() in {"cancelled", "done", "no_show", "expired"}:
-        lang = await resolve_locale(state, locale, user_tg_id)
-        await cb.answer(t("booking_not_active", lang), show_alert=True)
-        return
+    if getattr(b, "status", None):
+        status_attr = getattr(b, 'status', None)
+        try:
+            status_val = status_attr.value
+        except Exception:
+            status_val = status_attr
+        if str(status_val).lower() in {"cancelled", "done", "no_show", "expired"}:
+            lang = await resolve_locale(state, locale, user_tg_id)
+            await cb.answer(t("booking_not_active", lang), show_alert=True)
+            return
 
     # Perform cancellation via service/repo
     await BookingRepo.set_cancelled(booking_id)
@@ -1788,7 +2228,15 @@ async def cancel_reservation_and_go_back(cb: CallbackQuery, callback_data, state
 @client_router.callback_query(MasterProfileCB.filter())
 async def master_profile_handler(cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
     """Обрабатывает переход в профиль мастера из меню выбора."""
-    master_id = int(callback_data.master_id)
+    # Resolve to canonical surrogate id before showing profile
+    try:
+        master_id = await MasterRepo.resolve_master_id(int(callback_data.master_id))
+        if not master_id:
+            await cb.answer(t("master_not_found", locale), show_alert=True)
+            return
+    except Exception:
+        await cb.answer(t("error_retry", locale), show_alert=True)
+        return
     service_id = callback_data.service_id
     await show_master_profile(cb, master_id, service_id, state, locale)
 
@@ -1950,10 +2398,11 @@ async def client_reschedule_start(cb: CallbackQuery, callback_data, state: FSMCo
     # Compute day states in handler to keep keyboards dumb
     try:
         from bot.app.services.client_services import compute_calendar_day_states
+        from bot.app.services.shared_services import local_now as _local_now
         day_states = compute_calendar_day_states(
             year,
             month,
-            today=datetime.now(),
+            today=_local_now(),
             allowed_weekdays=allowed_weekdays or [],
             available_days=available_days or set(),
         )
@@ -2099,7 +2548,7 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
     if cb.message:
         await cb.message.answer_invoice(
             title=t("invoice_title", locale),
-            description=f"{service_name} у {master_name} {booking.starts_at.strftime('%d.%m %H:%M')}",
+            description=f"{service_name} у {master_name} {format_date(getattr(booking, 'starts_at', None), '%d.%m %H:%M')}",
             payload=f"booking_{booking_id}",
             provider_token=provider_token,
             currency=currency,
@@ -2134,7 +2583,56 @@ async def pay_online_prepare(cb: CallbackQuery, callback_data, locale: str, lang
 
     # Build header from canonical formatter (client view)
     header = format_booking_details_text(bd, lang)
-    header = f"<b>{t('pay_online_confirm_title', lang)}</b>\n" + header + "\n\n" + f"{t('confirm', lang)}?"
+    # Append start time and duration lines to match payment preview formatting
+    try:
+        duration_minutes = None
+        start_time_str = None
+        try:
+            starts = getattr(bd, "starts_at", None)
+            ends = getattr(bd, "ends_at", None)
+            if starts and ends:
+                try:
+                    duration_minutes = int((ends - starts).total_seconds() // 60)
+                except Exception:
+                    duration_minutes = None
+            if duration_minutes is None:
+                duration_minutes = getattr(bd, "duration_minutes", None)
+        except Exception:
+            duration_minutes = None
+        try:
+            if getattr(bd, "starts_at", None):
+                from bot.app.services.shared_services import format_date
+
+                try:
+                    start_time_str = format_date(getattr(bd, "starts_at", None), fmt="%H:%M")
+                except Exception:
+                    try:
+                        start_time_str = getattr(bd, "starts_at").strftime("%H:%M")
+                    except Exception:
+                        start_time_str = None
+        except Exception:
+            start_time_str = None
+
+        extra_lines = []
+        try:
+            if start_time_str:
+                extra_lines.append(f"{t('time_label', lang)}: {start_time_str}")
+        except Exception:
+            pass
+        try:
+            slot_label = t('slot_duration_label', lang)
+            if (not slot_label) or (slot_label not in header):
+                if duration_minutes and int(duration_minutes) > 0:
+                    extra_lines.append(f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}")
+        except Exception:
+            pass
+        if extra_lines:
+            # Blank line after title, then details, then Time/Dur block, then blank line, then confirm
+            header = f"<b>{t('pay_online_confirm_title', lang)}</b>\n\n" + header + "\n" + "\n".join(extra_lines) + "\n\n" + f"{t('confirm', lang)}?"
+        else:
+            header = f"<b>{t('pay_online_confirm_title', lang)}</b>\n\n" + header + "\n" + f"{t('confirm', lang)}?"
+    except Exception:
+        header = f"<b>{t('pay_online_confirm_title', lang)}</b>\n\n" + header + "\n\n" + f"{t('confirm', lang)}?"
     if cb.message:
         await safe_edit(cb.message, header, reply_markup=kb)
     await cb.answer()
@@ -2227,7 +2725,7 @@ async def cancel_booking(cb: CallbackQuery, callback_data, state: FSMContext, lo
     booking_id = int(callback_data.booking_id)
     # Centralized cancel logic
     from bot.app.services.client_services import cancel_client_booking
-    bot = getattr(cb, "bot", None) or getattr(getattr(cb, "message", None), "bot", None)
+    bot = cb.bot or (cb.message.bot if getattr(cb, 'message', None) is not None else None)
     ok, msg_key, params = await cancel_client_booking(booking_id, user_tg_id, bot=bot)
     lang = await resolve_locale(state, locale, user_tg_id)
     if not ok:
@@ -2257,13 +2755,23 @@ async def master_info_handler(callback: CallbackQuery, callback_data: Any, local
         await callback.answer()
         return
 
-    master_id = int(callback_data.master_id)
+    # Resolve to canonical surrogate id before retrieving profile data
+    try:
+        master_id = await MasterRepo.resolve_master_id(int(callback_data.master_id))
+        if not master_id:
+            lang = await resolve_locale(None, locale, callback.from_user.id)
+            await callback.answer(t("master_not_found", lang), show_alert=True)
+            return
+    except Exception:
+        lang = await resolve_locale(None, locale, callback.from_user.id)
+        await callback.answer(t("error_retry", lang), show_alert=True)
+        return
+
     lang = await resolve_locale(None, locale, callback.from_user.id)
 
     # Prefer the centralized service + formatter
     try:
         from bot.app.services import master_services
-
         data = await master_services.get_master_profile_data(master_id)
         if not data:
             await callback.answer(t("master_not_found", lang), show_alert=True)

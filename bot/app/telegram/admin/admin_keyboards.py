@@ -296,6 +296,7 @@ def business_settings_kb(
     hold_min: int | None = None,
     cancel_h: int | None = None,
     reminder_min: int | None = None,
+    timezone: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Business logic: payments, hold/cancel menus, manage service prices."""
     kb = InlineKeyboardBuilder()
@@ -326,6 +327,13 @@ def business_settings_kb(
         kb.button(text=tr("reminder_lead_label", lang=lang).format(minutes=f"{hrs} {hr_label}"), callback_data=pack_cb(AdminMenuCB, act="settings_reminder"))
     else:
         kb.button(text=tr("reminder_lead_label", lang=lang).format(minutes=_rem), callback_data=pack_cb(AdminMenuCB, act="settings_reminder"))
+    # Timezone display / picker
+    tz_label = timezone or (tr("timezone_label", lang=lang) if tr("timezone_label", lang=lang) != "timezone_label" else "Timezone")
+    # Show current timezone value if provided
+    if timezone:
+        kb.button(text=f"🌐 {tz_label}", callback_data=pack_cb(AdminMenuCB, act="settings_timezone"))
+    else:
+        kb.button(text=(tr("timezone_label", lang=lang) or "Timezone"), callback_data=pack_cb(AdminMenuCB, act="settings_timezone"))
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1, 1, 1, 1, 1)
     return kb.as_markup()
@@ -339,6 +347,64 @@ def service_currency_picker_kb(service_id: str, lang: str = "uk") -> InlineKeybo
         kb.button(text=code, callback_data=pack_cb(AdminSetServiceCurrencyCB, service_id=str(service_id), code=code))
     kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def confirm_delete_service_kb(service_id: str, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Keyboard for confirming deletion of a service (admin flow).
+
+    Keeps UI centralized so handlers can reuse a single source of truth.
+    """
+    kb = InlineKeyboardBuilder()
+    from bot.app.telegram.common.callbacks import ExecDelServiceCB
+    kb.button(text=t("confirm_delete", lang), callback_data=pack_cb(ExecDelServiceCB, service_id=str(service_id)))
+    kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_service"))
+    kb.adjust(1, 1)
+    return kb.as_markup()
+
+
+def confirm_delete_master_kb(master_id: int, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Keyboard to confirm deletion of a master (admin flow).
+
+    Includes: Confirm delete, Cancel (returns to delete_master menu), and
+    an option to mass-cancel bookings for the master.
+    """
+    kb = InlineKeyboardBuilder()
+    from bot.app.telegram.common.callbacks import ExecDelMasterCB, ConfirmCancelAllMasterCB
+    kb.button(text=t("confirm_delete", lang), callback_data=pack_cb(ExecDelMasterCB, master_id=int(master_id)))
+    # Force delete entry: leads to a stronger confirmation dialog (destructive)
+    from bot.app.telegram.common.callbacks import ConfirmForceDelMasterCB
+    kb.button(text="⚠️ " + (tr("force_delete_label", lang=lang) if tr("force_delete_label", lang=lang) != "force_delete_label" else "Force delete"), callback_data=pack_cb(ConfirmForceDelMasterCB, master_id=int(master_id)))
+    kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_master"))
+    kb.button(text=t("cancel_all_bookings_button", lang), callback_data=pack_cb(ConfirmCancelAllMasterCB, master_id=int(master_id)))
+    kb.adjust(1, 1, 1)
+    return kb.as_markup()
+
+
+def confirm_force_delete_master_kb(master_id: int, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Strong confirmation keyboard for physical deletion (force delete).
+
+    This keyboard performs an explicit final confirmation before executing
+    the destructive `ExecForceDelMasterCB` callback.
+    """
+    kb = InlineKeyboardBuilder()
+    from bot.app.telegram.common.callbacks import ExecForceDelMasterCB
+    kb.button(text=(tr("confirm_force_delete", lang) if tr("confirm_force_delete", lang) != "confirm_force_delete" else "🔥 Delete permanently"), callback_data=pack_cb(ExecForceDelMasterCB, master_id=int(master_id)))
+    kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_master"))
+    kb.adjust(1, 1)
+    return kb.as_markup()
+
+
+def confirm_cancel_all_master_kb(master_id: int, linked_count: int | None = None, lang: str = "uk") -> InlineKeyboardMarkup:
+    """Keyboard to confirm cancelling all bookings for a master.
+
+    Shows a Confirm and Cancel button; UI-only helper, no DB access.
+    """
+    kb = InlineKeyboardBuilder()
+    from bot.app.telegram.common.callbacks import ExecCancelAllMasterCB
+    kb.button(text=t("confirm", lang), callback_data=pack_cb(ExecCancelAllMasterCB, master_id=int(master_id)))
+    kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_master"))
+    kb.adjust(2)
     return kb.as_markup()
 
 
@@ -450,6 +516,31 @@ def currency_picker_kb(lang: str = "uk") -> InlineKeyboardMarkup:
         kb.button(text=code, callback_data=pack_cb(AdminSetGlobalCurrencyCB, code=code))
     kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
     kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def timezone_picker_kb(lang: str = "uk") -> InlineKeyboardMarkup:
+    """Keyboard for picking a timezone from a small curated list."""
+    kb = InlineKeyboardBuilder()
+    from bot.app.telegram.common.callbacks import AdminSetTimezoneCB, NavCB
+    # Curated list of 10 common zones (UTC and regionals)
+    zones = [
+        "UTC",
+        "Europe/Kyiv",
+        "Europe/Moscow",
+        "Europe/Warsaw",
+        "Europe/Berlin",
+        "Asia/Kiev",
+        "Europe/London",
+        "Europe/Paris",
+        "America/New_York",
+        "Asia/Tbilisi",
+    ]
+    for z in zones:
+        kb.button(text=z, callback_data=pack_cb(AdminSetTimezoneCB, tz=z))
+    kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
+    # layout small rows
+    kb.adjust(3, 3, 3, 1)
     return kb.as_markup()
 
 

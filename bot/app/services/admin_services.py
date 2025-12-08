@@ -21,9 +21,12 @@ from bot.app.services.shared_services import (
     LOCAL_TZ,
     booking_info_from_mapping,
     format_booking_list_item,
+    format_date,
     format_money_cents,
     format_user_display_name,
     default_language,
+    local_now,
+    utc_now,
 )
 from bot.app.translations import tr, t
 
@@ -247,7 +250,7 @@ class ServiceRepo:
         from bot.app.domain.models import Booking, BookingStatus, BookingItem, Service
         from bot.app.core.db import get_session
 
-        now = datetime.now(UTC)
+        now = utc_now()
         async with get_session() as session:
             base_where: list[Any] = []  # Админ видит всё
 
@@ -325,32 +328,31 @@ class ServiceRepo:
                     .join(Service, Service.id == BookingItem.service_id)
                     .group_by(BookingItem.booking_id)
                 ).subquery()
-                service_name_expr = func.coalesce(
-                    service_items_subq.c.service_name,
-                    Service.name,
-                    func.cast(Booking.service_id, String),
-                ).label("service_name")
+                # Use aggregated booking item names; do not rely on the removed
+                # `Booking.service_id` column. Fall back to empty string when
+                # no booking items are present.
+                service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label("service_name")
                 stmt = (
                     select(
                         Booking,
                         User.name.label("client_name"),
                         Master.name.label("master_name"),
                         service_name_expr,
-                        Service.currency.label("currency"),
                     )
                     .where(*where_clause)
                     .order_by(order_expr)
                     .join(User, User.id == Booking.user_id, isouter=True)
                     .join(Master, Master.telegram_id == Booking.master_id, isouter=True)
                     .outerjoin(service_items_subq, service_items_subq.c.booking_id == Booking.id)
-                    .outerjoin(Service, Service.id == Booking.service_id)
                 )
                 if page_size:
                     stmt = stmt.limit(page_size).offset(offset)
                 result = await session.execute(stmt)
                 raw_rows = list(result.all())
                 norm_rows: list[dict[str, Any]] = []
-                for b, client_name, master_name, service_name, currency_val in raw_rows:
+                for b, client_name, master_name, service_name in raw_rows:
+                    # result rows do not include currency separately; derive from booking if present
+                    currency_val = getattr(b, "currency", None)
                     norm_rows.append({
                         "id": getattr(b, "id", None),
                         "master_id": getattr(b, "master_id", None),
@@ -378,21 +380,20 @@ class ServiceRepo:
                             Booking,
                             User.name.label("client_name"),
                             Master.name.label("master_name"),
-                            Service.currency.label("currency"),
                         )
                         .join(User, User.id == Booking.user_id, isouter=True)
                         .join(Master, Master.telegram_id == Booking.master_id, isouter=True)
-                        .outerjoin(Service, Service.id == Booking.service_id)
                         .where(Booking.id.in_(booking_ids))
                     )
                     core_rows = await session.execute(core_stmt)
                     core_map: dict[int, dict[str, Any]] = {}
-                    for b, client_name, master_name, currency_val in core_rows.all():
+                    for b, client_name, master_name in core_rows.all():
                         bid_raw = getattr(b, "id", 0)
                         try:
                             bid = int(bid_raw)
                         except Exception:
                             bid = 0
+                        currency_val = getattr(b, "currency", None)
                         core_map[bid] = {
                             "id": bid,
                             "master_id": getattr(b, "master_id", None),
@@ -501,10 +502,19 @@ class ServiceRepo:
     async def delete_service(service_id: str) -> bool:
         try:
             async with get_session() as session:
-                from bot.app.domain.models import Service
+                from bot.app.domain.models import Service, MasterService
+                from sqlalchemy import select, func
+
                 svc = await session.get(Service, service_id)
                 if not svc:
                     return False
+
+                # Check for referencing master_services rows to avoid FK violation
+                ref_count = int((await session.execute(select(func.count()).select_from(MasterService).where(MasterService.service_id == service_id))).scalar() or 0)
+                if ref_count > 0:
+                    logger.warning("ServiceRepo.delete_service: service %s is still referenced by %d master_services rows; refusing to delete", service_id, ref_count)
+                    return False
+
                 await session.delete(svc)
                 await session.commit()
             invalidate_services_cache()
@@ -512,6 +522,65 @@ class ServiceRepo:
         except Exception as e:
             logger.exception("ServiceRepo.delete_service failed for %s: %s", service_id, e)
             return False
+
+    @staticmethod
+    async def count_linked_masters(service_id: str) -> int:
+        """Return number of MasterService rows referencing `service_id`.
+
+        This is a lightweight helper used by admin UI to show how many
+        masters would be affected by removing a service.
+        """
+        try:
+            async with get_session() as session:
+                from bot.app.domain.models import MasterService
+                from sqlalchemy import select, func
+                cnt = int((await session.execute(select(func.count()).select_from(MasterService).where(MasterService.service_id == service_id))).scalar() or 0)
+                return cnt
+        except Exception as e:
+            logger.warning("ServiceRepo.count_linked_masters failed for %s: %s", service_id, e)
+            return 0
+
+    @staticmethod
+    async def unlink_from_all_and_delete(service_id: str) -> tuple[bool, int]:
+        """Atomically unlink `service_id` from all masters and delete the Service.
+
+        Returns: (deleted: bool, unlinked_count: int)
+        - deleted: True if the Service row existed and was deleted.
+        - unlinked_count: number of MasterService rows deleted.
+        """
+        try:
+            async with get_session() as session:
+                from bot.app.domain.models import MasterService, Service
+                from sqlalchemy import delete, select
+
+                # Count referencing rows first (rowcount may be unreliable on some drivers
+                # before execute), then issue delete statements inside the same transaction.
+                ref_stmt = select(MasterService.master_id).where(MasterService.service_id == service_id)
+                res = await session.execute(ref_stmt)
+                refs = [r[0] for r in res.fetchall()]
+                unlinked_count = len(refs)
+
+                if unlinked_count > 0:
+                    del_stmt = delete(MasterService).where(MasterService.service_id == service_id)
+                    await session.execute(del_stmt)
+
+                svc = await session.get(Service, service_id)
+                if not svc:
+                    # Nothing to delete
+                    await session.commit()
+                    return False, unlinked_count
+
+                await session.delete(svc)
+                await session.commit()
+            # Invalidate cache after successful commit
+            try:
+                invalidate_services_cache()
+            except Exception:
+                pass
+            return True, unlinked_count
+        except Exception as e:
+            logger.exception("ServiceRepo.unlink_from_all_and_delete failed for %s: %s", service_id, e)
+            return False, 0
 
     @staticmethod
     async def get_services_by_ids(ids: set[int]) -> dict[int, str]:
@@ -639,7 +708,7 @@ async def generate_bookings_csv(
     import tempfile
     try:
         # Prepare temp file for streaming writes
-        now_local = reference or datetime.now(LOCAL_TZ)
+        now_local = reference or local_now()
         file_name = f"bookings_{mode}_{now_local:%Y_%m}.csv"
         if in_memory:
             tmp = tempfile.SpooledTemporaryFile(max_size=2_000_000, mode="w+b")
@@ -761,7 +830,7 @@ async def load_settings_from_db() -> None:
             value = _parse_setting_value(getattr(setting, "value", None))
             if key:
                 _settings_cache[key] = value
-        _settings_last_checked = datetime.now(UTC)
+        _settings_last_checked = utc_now()
         logger.info(
             "Runtime settings loaded from DB: %s",
             {k: _settings_cache.get(k) for k in ("reservation_hold_minutes", "timezone") if k in _settings_cache},
@@ -793,23 +862,40 @@ class SettingsRepo:
         global _settings_cache, _settings_last_checked
         try:
             if _settings_cache is not None and _settings_last_checked is not None:
-                if (datetime.now(UTC) - _settings_last_checked) < timedelta(seconds=5):
+                if (utc_now() - _settings_last_checked) < timedelta(seconds=5):
                     return _parse_setting_value(_settings_cache.get(str(key), default))
         except Exception:
             pass
         try:
             async with get_session() as session:
                 row = await session.scalar(select(Setting).where(Setting.key == str(key)))
+
             if row is None:
                 return default
+
+            # Prefer JSON column when available; return as JSON string to keep
+            # backward compatibility with callers that expect a JSON string.
+            try:
+                json_val = getattr(row, "value_json", None)
+                if json_val is not None:
+                    try:
+                        return json.dumps(json_val, ensure_ascii=False)
+                    except Exception:
+                        # Fall back to text value if serialization fails
+                        pass
+            except Exception:
+                pass
+
             value = _parse_setting_value(getattr(row, "value", default))
+
             try:
                 if _settings_cache is None:
                     _settings_cache = {}
                 _settings_cache[str(key)] = value
-                _settings_last_checked = datetime.now(UTC)
+                _settings_last_checked = utc_now()
             except Exception:
                 pass
+
             return value
         except Exception:
             try:
@@ -1027,7 +1113,7 @@ class SettingsRepo:
                 _settings_cache = {}
             _settings_cache[str(key)] = value
 
-            _settings_last_checked = datetime.now(UTC)
+            _settings_last_checked = utc_now()
 
             # Persist to DB Setting table when available
             try:
@@ -1035,7 +1121,7 @@ class SettingsRepo:
                 async with get_session() as session:
                     from sqlalchemy import select
                     s = await session.scalar(select(Setting).where(Setting.key == str(key)))
-                    now_ts = datetime.now(UTC)
+                    now_ts = utc_now()
                     if s:
                         s.value = str(value)
                         try:
@@ -1044,6 +1130,7 @@ class SettingsRepo:
                             pass
                     else:
                         session.add(Setting(key=str(key), value=str(value), updated_at=now_ts))
+
                     await session.commit()
             except Exception as db_e:
                 logger.warning("SettingsRepo.update_setting: DB persist failed for %s: %s", key, db_e)
@@ -1298,10 +1385,12 @@ class AdminRepo:
             start, end = _range_bounds("month")
             async with get_session() as session:
                 from sqlalchemy import select, func
-                from bot.app.domain.models import Booking, Service
+                from bot.app.domain.models import Booking, BookingItem, Service
+                # Aggregate by services referenced from booking_items (normalized model)
                 stmt = (
                     select(Service.name.label("service"), func.count(Booking.id).label("count"))
-                    .join(Service, Booking.service_id == Service.id)
+                    .join(BookingItem, BookingItem.booking_id == Booking.id)
+                    .join(Service, BookingItem.service_id == Service.id)
                     .where(Booking.starts_at.between(start, end))
                     .group_by(Service.name)
                     .order_by(func.count(Booking.id).desc())
@@ -1367,10 +1456,12 @@ class AdminRepo:
             start, end = _range_bounds(kind)
             async with get_session() as session:
                 from sqlalchemy import select, func
-                from bot.app.domain.models import Booking, Service
+                from bot.app.domain.models import Booking, BookingItem, Service
+                # Revenue grouped by service using booking_items junction table
                 stmt = (
                     select(Service.name.label("service"), func.sum(_price_expr()).label("revenue_cents"), func.count(Booking.id).label("bookings"))
-                    .join(Service, Booking.service_id == Service.id)
+                    .join(BookingItem, BookingItem.booking_id == Booking.id)
+                    .join(Service, BookingItem.service_id == Service.id)
                     .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
                     .group_by(Service.name)
                     .order_by(func.sum(_price_expr()).desc())
@@ -1517,7 +1608,7 @@ async def get_admin_dashboard_summary(lang: str | None = None) -> str:
         l = lang or data.get("language") or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
         # Build localized text from data (keeps previous formatting)
         try:
-            date_label = datetime.now().strftime("%d %B")
+            date_label = format_date(local_now(), "%d %B")
             header_raw = tr("admin_dashboard_header", lang=l)
             header = header_raw.format(date=date_label) if "{date}" in header_raw else header_raw
 
@@ -1612,9 +1703,7 @@ _ACTIVE_FOR_NOSHOW_BASE = {
     BookingStatus.PAID,
     BookingStatus.DONE,
     BookingStatus.NO_SHOW,
-    BookingStatus.ACTIVE,
     BookingStatus.PENDING_PAYMENT,
-    BookingStatus.AWAITING_CASH,
     BookingStatus.CONFIRMED,
     BookingStatus.RESERVED,
 }

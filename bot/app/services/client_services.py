@@ -17,6 +17,7 @@ from bot.app.domain.models import (
     User,
     BookingRating,
     MasterProfile,
+    MasterSchedule,
     BookingItem,
     normalize_booking_status,
     TERMINAL_STATUSES,
@@ -40,6 +41,9 @@ from bot.app.services.shared_services import (
     format_booking_list_item,
     format_booking_details_text,
     format_date,
+    utc_now,
+    local_now,
+    get_service_duration,
 )
 from bot.app.services.admin_services import SettingsRepo
 from bot.app.services.admin_services import ServiceRepo
@@ -76,7 +80,7 @@ async def calculate_booking_permissions(obj: dict | Any, lock_r_hours: int | Non
     try:
         starts_at_dt = obj.get("starts_at") if isinstance(obj, dict) else getattr(obj, "starts_at", None)
         if starts_at_dt:
-            now_utc = datetime.now(UTC)
+            now_utc = utc_now()
             try:
                 starts_utc = starts_at_dt.astimezone(UTC)
             except Exception:
@@ -231,8 +235,10 @@ class BookingDetails:
     price_cents: int = 0
     currency: str = "UAH"
     starts_at: datetime | None = None
+    ends_at: datetime | None = None
     date_str: str | None = None
     client_id: int | None = None
+    duration_minutes: int | None = None
     raw: Any | None = None
     status: str | None = None
     client_name: str | None = None
@@ -588,7 +594,7 @@ class BookingRepo:
                 return False
             b.status = BookingStatus.PAID
             try:
-                b.paid_at = datetime.now(UTC)
+                b.paid_at = utc_now()
                 b.cash_hold_expires_at = None
             except Exception:
                 pass
@@ -616,7 +622,7 @@ class BookingRepo:
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import Booking, BookingStatus
-                now = datetime.now(UTC)
+                now = utc_now()
                 stmt = (
                     select(Booking)
                     .where(
@@ -646,7 +652,7 @@ class BookingRepo:
             except Exception:
                 hold_min = 5
             try:
-                b.cash_hold_expires_at = datetime.now(UTC) + timedelta(minutes=max(1, int(hold_min or 0)))
+                b.cash_hold_expires_at = utc_now() + timedelta(minutes=max(1, int(hold_min or 0)))
             except Exception:
                 pass
             await session.commit()
@@ -677,14 +683,14 @@ class BookingRepo:
             if mode == "paid":
                 stmt = stmt.where(Booking.status == BookingStatus.PAID)
             elif mode == "awaiting":
-                stmt = stmt.where(Booking.status.in_([
-                    getattr(BookingStatus, "AWAITING_CASH", BookingStatus.CONFIRMED),
-                    BookingStatus.PENDING_PAYMENT,
-                    BookingStatus.RESERVED,
-                ]))
+                # 'awaiting' groups pending/payment-like statuses. Legacy
+                # 'awaiting_cash' has been normalized to 'pending_payment'.
+                stmt = stmt.where(Booking.status.in_(
+                    [BookingStatus.CONFIRMED, BookingStatus.PENDING_PAYMENT, BookingStatus.RESERVED]
+                ))
             elif mode == "upcoming":
-                from zoneinfo import ZoneInfo
-                now_utc = datetime.now().astimezone(ZoneInfo("UTC"))
+                from bot.app.services.shared_services import utc_now
+                now_utc = utc_now()
                 stmt = stmt.where(Booking.starts_at >= now_utc)
             elif mode == "cancelled":
                 stmt = stmt.where(Booking.status == BookingStatus.CANCELLED)
@@ -806,7 +812,7 @@ class BookingRepo:
         """Return rows and metadata for client-facing booking lists."""
         from bot.app.domain.models import Booking, BookingStatus, Master, BookingItem, Service
 
-        now = datetime.now(UTC)
+        now = utc_now()
         service_items_subq = (
             select(
                 BookingItem.booking_id.label("booking_id"),
@@ -818,11 +824,8 @@ class BookingRepo:
             .join(Service, Service.id == BookingItem.service_id)
             .group_by(BookingItem.booking_id)
         ).subquery()
-        service_name_expr = func.coalesce(
-            service_items_subq.c.service_name,
-            Service.name,
-            func.cast(Booking.service_id, String),
-        ).label("service_name")
+        # Prefer aggregated booking item names; fall back to empty string when missing.
+        service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label("service_name")
         async with get_session() as session:
             base_where = [Booking.user_id == user_id]
             where_clause, order_expr, meta, total_pages, p, offset = await BookingRepo._prepare_pagination_context(
@@ -843,18 +846,17 @@ class BookingRepo:
                 select(
                     Booking.id,
                     Booking.master_id,
-                    Booking.service_id,
                     Booking.status,
                     Booking.starts_at,
                     Booking.original_price_cents,
                     Booking.final_price_cents,
-                    Service.currency.label("currency"),
                     Master.name.label("master_name"),
                     service_name_expr,
                 )
-                .join(Master, Master.telegram_id == Booking.master_id, isouter=True)
+                .join(Master, Master.id == Booking.master_id, isouter=True)
                 .outerjoin(service_items_subq, service_items_subq.c.booking_id == Booking.id)
-                .outerjoin(Service, Service.id == Booking.service_id)
+                # Do not join Service by the removed Booking.service_id column; aggregated names
+                # are provided by `service_items_subq` and are sufficient for listing.
                 .where(*where_clause)
                 .order_by(order_expr)
             )
@@ -868,26 +870,27 @@ class BookingRepo:
             for (
                 booking_id,
                 master_id,
-                service_id,
                 status,
                 starts_at,
                 original_price_cents,
                 final_price_cents,
-                currency_val,
                 master_name,
                 service_name,
             ) in raw_rows:
+                # `service_id` column was removed; keep `service_id` as None and
+                # use aggregated `service_name` for display. Currency is not
+                # available from Booking anymore so default to 'UAH' in mapper.
                 booking_infos.append(
                     booking_info_from_mapping(
                         {
                             "id": booking_id,
                             "master_id": master_id,
-                            "service_id": service_id,
+                            "service_id": None,
                             "status": status,
                             "starts_at": starts_at,
                             "original_price_cents": original_price_cents,
                             "final_price_cents": final_price_cents,
-                            "currency": currency_val or "UAH",
+                            "currency": "UAH",
                             "master_name": master_name,
                             "service_name": service_name,
                             "client_id": user_id,
@@ -911,7 +914,7 @@ class BookingRepo:
         """Return normalized rows and metadata for master-facing booking lists."""
         from bot.app.domain.models import Booking, BookingStatus, User, BookingItem, Service
 
-        now = datetime.now(UTC)
+        now = utc_now()
         service_items_subq = (
             select(
                 BookingItem.booking_id.label("booking_id"),
@@ -923,11 +926,7 @@ class BookingRepo:
             .join(Service, Service.id == BookingItem.service_id)
             .group_by(BookingItem.booking_id)
         ).subquery()
-        service_name_expr = func.coalesce(
-            service_items_subq.c.service_name,
-            Service.name,
-            func.cast(Booking.service_id, String),
-        ).label("service_name")
+        service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label("service_name")
         async with get_session() as session:
             base_where = [Booking.master_id == master_id]
             where_clause, order_expr, meta, total_pages, p, offset = await BookingRepo._prepare_pagination_context(
@@ -949,7 +948,7 @@ class BookingRepo:
                 .order_by(order_expr)
                 .join(User, User.id == Booking.user_id, isouter=True)
                 .outerjoin(service_items_subq, service_items_subq.c.booking_id == Booking.id)
-                .outerjoin(Service, Service.id == Booking.service_id)
+                # Do not join Service by Booking.service_id (column removed).
             )
             if page_size:
                 stmt = stmt.limit(page_size).offset(offset)
@@ -1135,6 +1134,8 @@ async def build_booking_details(
         price_cents=int(data.get("price_cents", 0) or 0),
         currency=data.get("currency", "UAH"),
         starts_at=data.get("starts_at"),
+        ends_at=data.get("ends_at"),
+        duration_minutes=(int(data.get("duration_minutes")) if data.get("duration_minutes") is not None else None),
         date_str=data.get("date_str"),
         client_id=data.get("client_id"),
         raw=data,
@@ -1163,12 +1164,41 @@ async def send_booking_notification(
         if not booking:
             return
         logger.info("send_booking_notification: booking=%s event=%s recipients=%s", booking_id, event_type, recipients)
+        from bot.app.services.master_services import MasterRepo
+        from bot.app.services.client_services import UserRepo
+
         for rid in recipients:
             try:
                 rid_int = int(rid)
             except Exception:
                 logger.warning("send_booking_notification: invalid recipient id, skipping: %r", rid)
                 continue
+
+            # Ensure recipient is a Telegram chat id. Some callers historically
+            # passed a surrogate master id (masters.id). Try to resolve that
+            # into a master.telegram_id when no user exists for `rid_int`.
+            try:
+                u = await UserRepo.get_by_telegram_id(rid_int)
+            except Exception:
+                u = None
+            if not u:
+                try:
+                    # Treat rid_int as surrogate master id and lookup telegram_id
+                    from bot.app.core.db import get_session
+                    from sqlalchemy import select
+                    async with get_session() as session:
+                        from bot.app.domain.models import Master
+                        res = await session.execute(select(Master.telegram_id).where(Master.id == int(rid_int)))
+                        tg = res.scalar_one_or_none()
+                        if tg:
+                            try:
+                                rid_int = int(tg)
+                            except Exception:
+                                logger.warning("send_booking_notification: invalid master.telegram_id for master %s: %r", rid, tg)
+                                continue
+                except Exception:
+                    # best-effort: continue with original rid_int (may fail below)
+                    pass
             lang = await safe_get_locale(rid_int)
             try:
                 bd = await build_booking_details(booking, user_id=rid_int, lang=lang)
@@ -1373,7 +1403,7 @@ async def get_available_time_slots_for_services(
         bookings_objs = result.scalars().all()
 
     hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
-    now_utc = datetime.now(UTC)
+    now_utc = utc_now()
     
     busy_intervals = []
     for b in bookings_objs:
@@ -1432,7 +1462,7 @@ async def get_available_time_slots_for_services(
     # 4. Filter and Collect Slots
     slots = []
     lead_min = await SettingsRepo.get_same_day_lead_minutes()
-    now_local = datetime.now(LOCAL_TZ)
+    now_local = local_now()
     is_today = (local_day_start.date() == now_local.date())
 
     for gap_start, gap_end in free_gaps:
@@ -1483,145 +1513,163 @@ async def get_available_time_slots_for_services(
 
 
 async def get_available_days_for_month(master_id: int, year: int, month: int, service_duration_min: int = 60) -> set[int]:
-    """Return set of day numbers (1..31) within the month that have at least one available slot.
-
-    This function loads the master's schedule and all bookings for the month in a single
-    DB query, then simulates slot generation in memory per day to decide whether the day
-    has at least one free slot. The goal is to avoid calling DB per-day.
+    """
+    Возвращает набор дней (числа месяца), в которые у мастера есть свободные слоты.
+    Использует SQL-таблицу master_schedules для получения графика работы.
     """
     try:
         from calendar import monthrange
+        from sqlalchemy import select, and_
 
         _, days_in_month = monthrange(year, month)
 
-        # Month start/end in local timezone -> convert to UTC for DB query
+        # 1. Определяем границы месяца
         month_start_local = datetime(year, month, 1).replace(tzinfo=LOCAL_TZ)
         if month == 12:
             next_month_local = datetime(year + 1, 1, 1).replace(tzinfo=LOCAL_TZ)
         else:
             next_month_local = datetime(year, month + 1, 1).replace(tzinfo=LOCAL_TZ)
+        
         month_start_utc = month_start_local.astimezone(UTC)
         next_month_utc = next_month_local.astimezone(UTC)
+        now_utc = utc_now()
 
-        now_utc = datetime.now(UTC)
-
-        # Load bookings for the whole month in one query
-        # Load bookings for the whole month in one query using canonical provider
-        
-        # Load bookings for the whole month directly for the master to avoid
-        # Avoid legacy client-focused wrapper; load master bookings directly.
         async with get_session() as session:
-            result = await session.execute(
-                select(Booking).where(
-                    Booking.master_id == master_id,
-                    Booking.starts_at >= month_start_utc,
-                    Booking.starts_at < next_month_utc,
-                ).order_by(Booking.starts_at)
-            )
-            bookings_raw_objs = result.scalars().all()
+            # 2. Загружаем все бронирования мастера за этот месяц (одним запросом)
+            # Используем master_id как есть (предполагаем, что это суррогатный ID, если нет - резолвим)
+            
+            # Резолвинг ID (на всякий случай, если передан telegram_id)
+            real_master_id = master_id
+            master_obj = await session.execute(select(Master.id).where(Master.telegram_id == master_id))
+            mid_row = master_obj.scalar_one_or_none()
+            if mid_row:
+                real_master_id = mid_row
+            
+            # Получаем брони
+            bookings_stmt = select(Booking).where(
+                Booking.master_id == real_master_id,
+                Booking.starts_at >= month_start_utc,
+                Booking.starts_at < next_month_utc,
+                Booking.status.notin_(tuple(TERMINAL_STATUSES)) # Игнорируем отмененные
+            ).order_by(Booking.starts_at)
+            
+            bookings_result = await session.execute(bookings_stmt)
+            bookings_raw_objs = bookings_result.scalars().all()
 
-        # Normalize bookings to intervals that still block slots
+            # 3. Загружаем расписание из SQL (master_schedules)
+            # Джойним через MasterProfile, так как расписание привязано к профилю
+            schedule_stmt = (
+                select(MasterSchedule)
+                .join(MasterProfile, MasterSchedule.master_profile_id == MasterProfile.id)
+                .where(MasterProfile.master_id == real_master_id)
+            )
+            schedule_result = await session.execute(schedule_stmt)
+            schedule_rows = schedule_result.scalars().all()
+
+        # 4. Преобразуем расписание в удобный словарь: {день_недели (0-6): [(start, end), ...]}
+        weekly_schedule = {}
+        for row in schedule_rows:
+            if row.start_time and row.end_time:
+                # В базе хранятся time объекты (напр. 09:00:00)
+                weekly_schedule.setdefault(row.day_of_week, []).append((row.start_time, row.end_time))
+
+        # 5. Подготавливаем интервалы занятости (брони)
         blocked_intervals: list[tuple[datetime, datetime]] = []
         hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
+        
         for b in bookings_raw_objs:
-            try:
-                starts_at = getattr(b, "starts_at", None)
-                if not starts_at:
-                    continue
-
-                if is_booking_slot_blocked(b, now_utc, hold_minutes):
-                    interval = _get_booking_interval(b, service_duration_min)
-                    if interval:
-                        blocked_intervals.append(interval)
-            except Exception:
-                continue
-
-        # Load master profile once for schedule/windows
-        from typing import Any
-        data: dict[str, Any] = {}
-        try:
-            async with get_session() as session:
-                prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_telegram_id == master_id))
-                if prof and getattr(prof, 'bio', None):
-                    try:
-                        import json
-                        data = json.loads(prof.bio or "{}") or {}
-                    except Exception:
-                        data = {}
-        except Exception:
-            data = {}
+            if is_booking_slot_blocked(b, now_utc, hold_minutes):
+                interval = _get_booking_interval(b, service_duration_min)
+                if interval:
+                    blocked_intervals.append(interval)
 
         available_days: set[int] = set()
-
         step = timedelta(minutes=service_duration_min)
-
-        # Same-day lead minutes
         lead_min = await SettingsRepo.get_same_day_lead_minutes()
-        now_local = datetime.now(LOCAL_TZ)
+        now_local = local_now()
 
-        # Evaluate each day in month
+        # 6. Проходим по каждому дню месяца
         for day in range(1, days_in_month + 1):
             day_date_local = datetime(year, month, day).replace(tzinfo=LOCAL_TZ)
-            wd = day_date_local.weekday()
+            weekday = day_date_local.weekday()
 
-            # Determine windows for this day using centralized parser from master_services.
-            windows_local = master_windows = master_services._parse_windows_from_bio(data, day_date_local)
+            # Получаем окна работы для этого дня недели из словаря
+            # Если для дня нет записей в БД -> день выходной
+            windows_time = weekly_schedule.get(weekday, [])
+            
+            if not windows_time:
+                continue # Выходной
 
-            # Gather bookings relevant to this day for overlap checks
-            # bookings are in UTC
-            day_start_local = day_date_local
-            day_end_local = (day_date_local + timedelta(days=1))
-            day_start_utc = day_start_local.astimezone(UTC)
-            day_end_utc = day_end_local.astimezone(UTC)
+            # Конвертируем окна (time) в полные datetime для текущего дня
+            windows_local = []
+            for start_t, end_t in windows_time:
+                w_start = datetime.combine(day_date_local.date(), start_t).replace(tzinfo=LOCAL_TZ)
+                w_end = datetime.combine(day_date_local.date(), end_t).replace(tzinfo=LOCAL_TZ)
+                windows_local.append((w_start, w_end))
+
+            # Фильтруем брони, относящиеся к этому дню (в UTC)
+            day_start_utc = day_date_local.astimezone(UTC)
+            day_end_utc = (day_date_local + timedelta(days=1)).astimezone(UTC)
+            
             bookings_for_day = [
                 (b_start, b_end)
                 for b_start, b_end in blocked_intervals
                 if b_start < day_end_utc and b_end > day_start_utc
             ]
 
-            # If same-day lead applied and day is today, compute now_local
             is_today = (day_date_local.date() == now_local.date())
+            any_slot_found = False
 
-            any_slot = False
-            for ws, we in windows_local:
-                work_start_local = datetime.combine(day_date_local.date(), ws).replace(tzinfo=LOCAL_TZ)
-                work_end_local = datetime.combine(day_date_local.date(), we).replace(tzinfo=LOCAL_TZ)
-                work_start_utc = work_start_local.astimezone(UTC)
-                work_end_utc = work_end_local.astimezone(UTC)
+            # Проверяем наличие слотов
+            for w_start_local, w_end_local in windows_local:
+                # Переводим окно работы в UTC для сравнения с бронями
+                current_utc = w_start_local.astimezone(UTC)
+                w_end_utc = w_end_local.astimezone(UTC)
 
-                current = work_start_utc
-                while current + step <= work_end_utc:
-                    slot_start = current
-                    slot_end = current + step
+                while current_utc + step <= w_end_utc:
+                    slot_start = current_utc
+                    slot_end = current_utc + step
 
-                    # same-day lead filter (use local now)
+                    # Проверка lead time (если сегодня)
                     if lead_min and is_today:
                         try:
+                            # Сравниваем в локальном времени
                             local_slot_dt = slot_start.astimezone(LOCAL_TZ)
-                            if (local_slot_dt - now_local) < timedelta(minutes=lead_min):
-                                current += step
+                            if (local_slot_dt - now_local).total_seconds() / 60 < lead_min:
+                                current_utc += step
                                 continue
                         except Exception:
                             pass
+                    
+                    # Проверка на прошедшее время
+                    if slot_start < now_utc:
+                         current_utc += step
+                         continue
 
+                    # Проверка пересечений с бронями
                     overlap = False
                     for b_start, b_end in bookings_for_day:
+                        # Стандартная проверка пересечения интервалов: max(start1, start2) < min(end1, end2)
                         if slot_start < b_end and slot_end > b_start:
                             overlap = True
                             break
+                    
                     if not overlap:
-                        any_slot = True
-                        break
-                    current += step
-                if any_slot:
+                        any_slot_found = True
+                        break # Нашли хотя бы один слот в этот день
+                    
+                    current_utc += step
+                
+                if any_slot_found:
                     break
 
-            if any_slot:
+            if any_slot_found:
                 available_days.add(day)
 
         return available_days
+
     except Exception as e:
-        logger.exception("Ошибка получения доступных дней для мастера %s %04d-%02d: %s", master_id, year, month, e)
+        logger.exception("Ошибка получения доступных дней (SQL) для мастера %s %04d-%02d: %s", master_id, year, month, e)
         return set()
 
 
@@ -1642,11 +1690,46 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
     """
     try:
         async with get_session() as session:
+            # Normalize provided master identifier into canonical surrogate id
+            # (Master.id). Callers may pass either the surrogate id or the
+            # legacy telegram_id — prefer surrogate id and fall back to
+            # telegram_id for compatibility. If resolution fails, raise so
+            # the calling flow can handle it.
+            try:
+                from sqlalchemy import select
+                from bot.app.domain.models import Master
+                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
+                if not mid:
+                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                if not mid:
+                    raise ValueError("master_not_found")
+                resolved_master_id = int(mid)
+            except ValueError:
+                raise
+            except Exception:
+                # If resolution failed due to DB error, log and re-raise to
+                # surface the failure to callers.
+                logger.exception("Failed to resolve master id for %s", master_id)
+                raise
+
+            # Acquire advisory lock for the specific (master_id, slot) pair to
+            # avoid races with the expiration worker. Use the two-int advisory
+            # lock variant; reduce the surrogate id and epoch to 32-bit space
+            # deterministically to avoid overflow.
+            try:
+                from sqlalchemy import text
+                k1 = int(resolved_master_id) % 2147483647
+                k2 = int(new_start.timestamp()) % 2147483647 if 'new_start' in locals() else int(slot.timestamp()) % 2147483647
+                await session.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
+            except Exception:
+                # Advisory locks are best-effort; if unavailable, continue and
+                # rely on existing row-level locking and unique-index checks.
+                pass
             # Application-level guard: delegate interval-overlap checks to BookingRepo
             try:
                 # Determine duration for the new booking (minutes) so we can compute new_end
                 try:
-                    totals = await get_services_duration_and_price([service_id], online_payment=False, master_id=master_id)
+                    totals = await get_services_duration_and_price([service_id], online_payment=False, master_id=resolved_master_id)
                     new_dur = int(totals.get("total_minutes") or 0)
                 except Exception:
                     new_dur = 0
@@ -1656,7 +1739,7 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
                 new_start = slot
                 new_end = new_start + timedelta(minutes=new_dur)
 
-                conflict = await BookingRepo.find_conflicting_booking(session, client_id, master_id, new_start, new_end, service_ids=[service_id])
+                conflict = await BookingRepo.find_conflicting_booking(session, client_id, resolved_master_id, new_start, new_end, service_ids=[service_id])
                 if conflict:
                     raise ValueError(conflict)
             except ValueError:
@@ -1671,7 +1754,7 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
                 from bot.app.domain.models import Booking as _B
                 await session.execute(
                     select(_B.id).where(
-                        _B.master_id == master_id,
+                        _B.master_id == resolved_master_id,
                         _B.starts_at < new_end,
                         _B.ends_at > new_start,
                     ).with_for_update()
@@ -1695,20 +1778,36 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
             # Snapshot service price at booking time and create booking via helper
             svc = await session.get(Service, service_id)
             svc_price = int(getattr(svc, "price_cents", 0) or 0)
-            booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=svc_price, hold_minutes=hold_minutes, service_id=service_id, duration_minutes=new_dur)
+            booking = await _create_booking_base(session, client_id, resolved_master_id, slot, price_cents=svc_price, hold_minutes=hold_minutes, service_id=service_id, duration_minutes=new_dur)
+
+            # Backfill booking_items for single-service bookings so booking_items
+            # remains the canonical composition source.
+            try:
+                await session.flush()
+                # Persist price snapshot for this booking item
+                session.add(BookingItem(booking_id=booking.id, service_id=str(service_id), price_cents=svc_price, position=0))
+            except IntegrityError as ie:
+                # Integrity errors during flush (e.g. exclusion constraint violation)
+                # leave the session in a rolled-back state and surface a friendly
+                # `slot_unavailable` error so callers can handle it.
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
+                logger.info("IntegrityError on flush while creating booking (slot likely taken): %s", ie)
+                raise ValueError("slot_unavailable") from ie
+            except Exception:
+                # If flush/add fails for non-integrity reasons, let commit surface the error.
+                pass
+
             try:
                 await session.commit()
             except IntegrityError as ie:
-                # Likely a DB-level unique index violation due to race; translate
-                # to a friendly error for callers. This can happen if two users
-                # attempt to reserve the same slot concurrently. We keep a short
-                # INFO-level log here because this is an expected collision and
-                # is handled by the application logic (user sees a friendly alert).
                 await session.rollback()
                 logger.info("IntegrityError on commit while creating booking (slot likely taken): %s", ie)
                 raise ValueError("slot_unavailable") from ie
             await session.refresh(booking)
-            logger.info("Создана запись №%s: client_id=%s, master_id=%s, service_id=%s, slot=%s, expires_at=%s", booking.id, client_id, master_id, service_id, slot, booking.cash_hold_expires_at)
+            logger.info("Создана запись №%s: client_id=%s, master_id=%s (resolved=%s), slot=%s, expires_at=%s", booking.id, client_id, master_id, resolved_master_id, slot, booking.cash_hold_expires_at)
             return booking
     except SQLAlchemyError as e:
         logger.error("Ошибка создания записи: client_id=%s, master_id=%s, service_id=%s, slot=%s, error=%s", client_id, master_id, service_id, slot, e)
@@ -1737,13 +1836,20 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
             profiles = {str(p.service_id): p for p in prof_rows.scalars().all()}
             overrides: dict[str, int] = {}
             if master_id is not None:
-                from bot.app.domain.models import MasterService
-                ms_rows = await session.execute(
-                    select(MasterService.service_id, MasterService.duration_minutes).where(
-                        MasterService.master_telegram_id == int(master_id),
-                        MasterService.service_id.in_(list(service_ids)),
+                from bot.app.domain.models import MasterService, Master
+                # Normalize master_id param: accept either surrogate id or telegram id
+                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
+                if not mid:
+                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                if mid:
+                    ms_rows = await session.execute(
+                        select(MasterService.service_id, MasterService.duration_minutes).where(
+                            MasterService.master_id == int(mid),
+                            MasterService.service_id.in_(list(service_ids)),
+                        )
                     )
-                )
+                else:
+                    ms_rows = []
                 for sid, dur in ms_rows.all():
                     try:
                         if dur and int(dur) > 0:
@@ -1793,6 +1899,17 @@ async def create_composite_booking(client_id: int, master_id: int, service_ids: 
             new_start = slot
             new_end = new_start + timedelta(minutes=new_dur)
 
+            # Acquire advisory lock for this (master_id, starts_at) pair to
+            # reduce race with expiration worker and other creators.
+            try:
+                from sqlalchemy import text
+                k1 = int(master_id) % 2147483647
+                k2 = int(new_start.timestamp()) % 2147483647
+                await session.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
+            except Exception:
+                # Best-effort only.
+                pass
+
             # Optional lightweight locking: lock existing potentially overlapping rows to reduce race window.
             try:
                 from bot.app.domain.models import Booking as _B
@@ -1819,10 +1936,13 @@ async def create_composite_booking(client_id: int, master_id: int, service_ids: 
             price_cents = int(totals.get("total_price_cents", 0) or 0) or None
             booking = await _create_booking_base(session, client_id, master_id, slot, price_cents=price_cents, hold_minutes=hold_minutes, service_id=str(service_ids[0]), duration_minutes=new_dur)
             await session.flush()
-            # add items
+            # Add items with per-item price snapshot. Load current service prices
+            svc_rows = await session.execute(select(Service.id, Service.price_cents).where(Service.id.in_(list(service_ids))))
+            svc_map = {str(r[0]): int(r[1] or 0) for r in svc_rows.all()}
             pos = 0
             for sid in service_ids:
-                session.add(BookingItem(booking_id=booking.id, service_id=str(sid), position=pos))
+                item_price = svc_map.get(str(sid), 0)
+                session.add(BookingItem(booking_id=booking.id, service_id=str(sid), price_cents=item_price, position=pos))
                 pos += 1
             try:
                 await session.commit()
@@ -1925,7 +2045,7 @@ async def book_slot(
 
         master_name = await MasterRepo.get_master_name(int(master_id))
         try:
-            formatted_date = datetime.fromisoformat(date_str).strftime("%d.%m.%Y")
+            formatted_date = format_date(datetime.fromisoformat(date_str), "%d.%m.%Y")
         except Exception:
             formatted_date = date_str
 
@@ -1978,10 +2098,9 @@ async def _create_booking_base(
     booking = Booking(
         user_id=client_id,
         master_id=master_id,
-        service_id=service_id,
         starts_at=slot,
         status=BookingStatus.RESERVED,
-        created_at=datetime.now(UTC),
+        created_at=utc_now(),
     )
     try:
         if price_cents is not None and price_cents > 0:
@@ -1990,31 +2109,15 @@ async def _create_booking_base(
     except Exception:
         pass
     _hold = hold_minutes if hold_minutes is not None else await SettingsRepo.get_reservation_hold_minutes()
-    booking.cash_hold_expires_at = datetime.now(UTC) + timedelta(minutes=max(1, _hold))
+    booking.cash_hold_expires_at = utc_now() + timedelta(minutes=max(1, _hold))
     # Determine and set ends_at for exclusion constraint correctness.
     try:
-        duration_min = duration_minutes
-        if not duration_min:
-            if service_id:
-                from bot.app.domain.models import ServiceProfile, MasterService
-                # Master-specific override first
-                try:
-                    ms_row = await session.scalar(
-                        select(MasterService).where(
-                            MasterService.master_telegram_id == int(master_id),
-                            MasterService.service_id == service_id,
-                        )
-                    )
-                    if ms_row and getattr(ms_row, "duration_minutes", None):
-                        duration_min = int(getattr(ms_row, "duration_minutes") or 0)
-                except Exception:
-                    duration_min = None
-                if not duration_min:
-                    sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
-                    duration_min = int(getattr(sp, "duration_minutes", 0) or 0)
-        if not duration_min:
-            duration_min = await SettingsRepo.get_slot_duration()
-        booking.ends_at = slot + timedelta(minutes=duration_min)
+        # Prefer explicit caller-provided duration; otherwise resolve via helper
+        if duration_minutes and int(duration_minutes) > 0:
+            duration_min = int(duration_minutes)
+        else:
+            duration_min = await get_service_duration(session, service_id, master_id)
+        booking.ends_at = slot + timedelta(minutes=int(duration_min))
     except Exception:
         # best-effort: if we can't compute ends_at, leave it None and rely
         # on DB-level checks (commit may fail). Prefer not to crash here.
@@ -2095,7 +2198,7 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
             return False, "booking_not_active", {}
 
         starts_at = getattr(b, "starts_at", None)
-        if starts_at and starts_at <= datetime.now(UTC):
+        if starts_at and starts_at <= utc_now():
             return False, "cannot_cancel_past", {}
 
         # Lock window
@@ -2103,7 +2206,7 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
             lock_h = int(await SettingsRepo.get_client_cancel_lock_hours())
         except Exception:
             lock_h = 3
-        if starts_at and (starts_at - datetime.now(UTC)).total_seconds() < lock_h * 3600:
+        if starts_at and (starts_at - utc_now()).total_seconds() < lock_h * 3600:
             return False, "cancel_too_close", {"hours": lock_h}
 
         # Perform cancellation
@@ -2111,12 +2214,22 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
         if not ok:
             return False, "error_retry", {}
 
-        # Optional notifications
+        # Optional notifications: only include master recipient when present
         if bot and b:
             try:
                 from bot.app.services.shared_services import get_admin_ids
-                recipients = [int(getattr(b, "master_id", 0))] + get_admin_ids()
-                await send_booking_notification(bot, int(booking_id), "cancelled", recipients)
+                recipients: list[int] = []
+                master_rec = getattr(b, "master_id", None)
+                if master_rec is not None:
+                    try:
+                        recipients.append(int(master_rec))
+                    except Exception:
+                        # ignore invalid master id
+                        pass
+                recipients.extend(get_admin_ids())
+                # Only send if we have at least one valid recipient
+                if recipients:
+                    await send_booking_notification(bot, int(booking_id), "cancelled", recipients)
             except Exception:
                 logger.exception("cancel_client_booking: notification failed for %s", booking_id)
         return True, "booking_cancelled_success", {}
@@ -2144,7 +2257,7 @@ async def can_client_reschedule(booking_id: int, user_telegram_id: int) -> tuple
         except Exception:
             lock_h = 3
         starts_at = getattr(b, "starts_at", None)
-        if starts_at and (starts_at - datetime.now(UTC)).total_seconds() < lock_h * 3600:
+        if starts_at and (starts_at - utc_now()).total_seconds() < lock_h * 3600:
             return False, "reschedule_too_close"
         return True, None
     except Exception:
