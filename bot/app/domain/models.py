@@ -120,7 +120,6 @@ class Service(Base):
     # Description migrated into services table in DB: keep on the model for direct access
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Duration in minutes stored on service row in DB (nullable for backward-compatibility)
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -132,18 +131,14 @@ class MasterService(Base):
     master_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("masters.id", ondelete="CASCADE"), primary_key=True
     )
-    # Provide a SQL expression property that returns the master's telegram_id
-    # based on the current `master_id` column. This keeps legacy code that
-    # filters by `master_telegram_id` working (e.g. `where(MasterService.master_telegram_id == X)`).
-    master_telegram_id: Mapped[int | None] = column_property(
-        select(Master.telegram_id).where(Master.id == Column("master_id")).scalar_subquery()
-    )
+    # NOTE: legacy `master_telegram_id` SQL expression removed for performance.
+    # Use `master_id` (surrogate PK referencing `masters.id`) for joins and filters.
     service_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("services.id", ondelete="CASCADE"), primary_key=True
     )
     # Optional индивидуальная длительность услуги для конкретного мастера (в минутах).
-    # Nullable для обратной совместимости: при NULL используется ServiceProfile.duration_minutes
-    # или глобальная длительность слота.
+    # Nullable для обратной совместимости: при NULL используется Service.duration_minutes
+    # или глобальная длительность слота из настроек.
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
@@ -206,26 +201,7 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: __import__('bot.app.services.shared_services', fromlist=['utc_now']).utc_now(), nullable=False)
 
 
-class MasterProfile(Base):
-    __tablename__ = "master_profiles"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # Reference to masters by surrogate id
-    master_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("masters.id", ondelete="CASCADE"))
-    # Expose legacy master_telegram_id as a SQL expression derived from masters
-    master_telegram_id: Mapped[int | None] = column_property(
-        select(Master.telegram_id).where(Master.id == Column("master_id")).scalar_subquery()
-    )
-    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
-class ServiceProfile(Base):
-    __tablename__ = "service_profiles"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    service_id: Mapped[str] = mapped_column(ForeignKey("services.id", ondelete="CASCADE"))
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Present since migration 0007; map for duration calculations
-    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
+# master_profiles table removed; bio now belongs to masters
 
 class BookingRating(Base):
     __tablename__ = "booking_ratings"
@@ -246,14 +222,34 @@ class BookingItem(Base):
     price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class BookingStatusHistory(Base):
+    __tablename__ = "booking_status_history"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    booking_id: Mapped[int] = mapped_column(ForeignKey("bookings.id", ondelete="CASCADE"))
+    old_status: Mapped[BookingStatus | None] = mapped_column(
+        Enum(
+            BookingStatus,
+            name="booking_status_normalized",
+            values_callable=lambda e: [m.value for m in e],
+            native_enum=True,
+        ),
+        nullable=True,
+    )
+    new_status: Mapped[BookingStatus] = mapped_column(
+        Enum(
+            BookingStatus,
+            name="booking_status_normalized",
+            values_callable=lambda e: [m.value for m in e],
+            native_enum=True,
+        ),
+    )
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: __import__('bot.app.services.shared_services', fromlist=['utc_now']).utc_now())
+
 class MasterClientNote(Base):
     __tablename__ = "master_client_notes"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     master_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("masters.id", ondelete="CASCADE"))
-    # Expose legacy telegram id via a SQL expression so existing filters work
-    master_telegram_id: Mapped[int | None] = column_property(
-        select(Master.telegram_id).where(Master.id == Column("master_id")).scalar_subquery()
-    )
+    # Legacy `master_telegram_id` expression removed; use `master_id` instead.
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     note: Mapped[str] = mapped_column(Text)
 
@@ -261,18 +257,13 @@ class MasterClientNote(Base):
 class MasterSchedule(Base):
     __tablename__ = "master_schedules"
     __table_args__ = (
-        Index("ix_master_schedules_master_profile_id_day_of_week", "master_profile_id", "day_of_week"),
+        Index("ix_master_schedules_master_id_day_of_week", "master_id", "day_of_week"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    # FK to master_profiles table
-    master_profile_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id", ondelete="CASCADE"))
-    # Day of week: Monday=0 .. Sunday=6
+    master_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("masters.id", ondelete="CASCADE"))
     day_of_week: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Stored as HH:MM:SS (Postgres TIME)
     start_time: Mapped[_time] = mapped_column(Time, nullable=False)
     end_time: Mapped[_time] = mapped_column(Time, nullable=False)
-    # Explicitly mark this day as a day off (do not treat as available)
-    # DB column exists as boolean default false; keep nullable False for ORM
     is_day_off: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: __import__('bot.app.services.shared_services', fromlist=['utc_now']).utc_now(), nullable=False)
 
@@ -280,10 +271,10 @@ class MasterSchedule(Base):
 class MasterScheduleException(Base):
     __tablename__ = "master_schedule_exceptions"
     __table_args__ = (
-        Index("ix_master_schedule_exceptions_master_profile_date", "master_profile_id", "exception_date"),
+        Index("ix_master_schedule_exceptions_master_id_date", "master_id", "exception_date"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    master_profile_id: Mapped[int] = mapped_column(ForeignKey("master_profiles.id", ondelete="CASCADE"))
+    master_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("masters.id", ondelete="CASCADE"))
     exception_date: Mapped[_date] = mapped_column(Date, nullable=False)
     start_time: Mapped[_time] = mapped_column(Time, nullable=False)
     end_time: Mapped[_time] = mapped_column(Time, nullable=False)
@@ -300,10 +291,10 @@ __all__ = [
     "BookingStatus",
     "Booking",
     "Setting",
-    "MasterProfile",
-    "ServiceProfile",
+    
     "BookingRating",
     "BookingItem",
+    "BookingStatusHistory",
     "MasterClientNote",
     "MasterSchedule",
     "MasterScheduleException",

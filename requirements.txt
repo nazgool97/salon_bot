@@ -8,3 +8,5 @@ pytest-cov>=5.0
 asyncpg>=0.28
 python-dotenv
 rich>=13.5
+psycopg2-binary>=2.9
+Babel>=2.15

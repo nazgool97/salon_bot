@@ -32,6 +32,7 @@ __all__ = [
     "RescheduleCB",
     "BackCB",
     "MasterScheduleCB",
+    "PricePageCB",
 ]
 
 def create_callback_data(prefix: str, **fields: Any) -> type[CallbackData]:
@@ -136,7 +137,6 @@ ClientMenuCB = create_callback_data("cmenu", act=str)
 AdminEditPriceCB = create_callback_data("admin_edit_price", service_id=str)
 AdminSetPriceCB = create_callback_data("admin_set_price", service_id=str)
 AdminPriceAdjCB = create_callback_data("admin_price_adj", service_id=str, delta=int)
-AdminSetCurrencyCB = create_callback_data("admin_set_currency", service_id=str)
 ConfirmDelServiceCB = create_callback_data("confirm_del_service", service_id=str)
 ExecDelServiceCB = create_callback_data("exec_del_service", service_id=str)
 # Paging and deletion/admin selections
@@ -155,6 +155,8 @@ MasterSetServiceDurationCB = create_callback_data("msdur_set", service_id=str, m
 # Admin bookings filter (used by admin bookings keyboard)
 # Include optional `page` so pagination buttons can use the same callback class.
 AdminBookingsCB = create_callback_data("admin_bookings", mode=str, page=int | None)
+# Admin manage prices pagination
+PricePageCB = create_callback_data("price_page", page=int)
 # Master bookings filter (mode: upcoming|done|no_show|all)
 # Include optional `page` so pagination buttons can use the same callback class.
 MasterBookingsCB = create_callback_data("master_bookings", mode=str, page=int | None)
@@ -187,29 +189,24 @@ ExecDelAdminCB = create_callback_data("exec_del_admin", admin_id=int)
 
 # Admin set options
 AdminSetHoldCB = create_callback_data("admin_set_hold", minutes=int)
-AdminSetCancelCB = create_callback_data("admin_set_cancel", hours=int)
+AdminSetCancelCB = create_callback_data("admin_set_cancel", minutes=int)
+# Admin reschedule lock (minutes)
+AdminSetRescheduleCB = create_callback_data("admin_set_reschedule", minutes=int)
 # Admin expiration check frequency (seconds)
 AdminSetExpireCB = create_callback_data("admin_set_expire", seconds=int)
 
 # Admin reminder lead-time (minutes)
 AdminSetReminderCB = create_callback_data("admin_set_reminder", minutes=int)
+# Admin same-day reminder (minutes)
+AdminSetReminderSameDayCB = create_callback_data("admin_set_reminder_same", minutes=int)
 
 # Global currency setter (admin) — pick from a fixed whitelist
 AdminSetGlobalCurrencyCB = create_callback_data("admin_set_currency_global", code=str)
 
-# Admin timezone setter (pick from a small whitelist of zones)
-AdminSetTimezoneCB = create_callback_data("admin_set_timezone", tz=str)
+# Callback for entering currency manually (global)
+AdminEnterCurrencyCB = create_callback_data("admin_enter_currency")
 
-# Working hours pickers: start hour, then end hour
-AdminSetWorkStartCB = create_callback_data("admin_set_work_start", hour=int)
-AdminSetWorkEndCB = create_callback_data("admin_set_work_end", start=int, hour=int)
-AdminWorkHoursDayCB = create_callback_data("admin_work_hours_day", day=int)
-AdminWorkHoursStartCB = create_callback_data("admin_work_hours_start", day=int, hour=int)
-AdminWorkHoursEndCB = create_callback_data("admin_work_hours_end", day=int, start=int, hour=int)
-AdminWorkHoursClosedCB = create_callback_data("admin_work_hours_closed", day=int)
-
-# Service-level currency set (picker buttons)
-AdminSetServiceCurrencyCB = create_callback_data("admin_set_service_currency", service_id=str, code=str)
+# Admin timezone setter removed — timezone is now fixed from environment
 
 # Client time-picker callbacks: hour/minute stepwise flow and cancel
 HoursViewCB = create_callback_data("hours", service_id=str, master_id=int, date=str)

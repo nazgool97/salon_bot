@@ -21,17 +21,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: salon_bot-migrations
     depends_on:
       db:
-        condition: service_healthy     # ждём, пока БД реально готова
+        condition: service_healthy
     env_file:
       - .env
-    command: >
-      sh -c "
-      echo 'Applying migrations...';
-      alembic upgrade head &&
-      echo 'Migrations completed successfully!'
-      "
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: ["alembic", "upgrade", "head"]
 
   bot:
     build:
@@ -40,7 +41,7 @@ services:
     container_name: salon_bot-bot
     depends_on:
       migrations:
-        condition: service_completed_successfully   # ЭТО САМОЕ ВАЖНОЕ!
+        condition: service_completed_successfully
       db:
         condition: service_healthy
     env_file:

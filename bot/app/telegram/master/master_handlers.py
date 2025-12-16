@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from datetime import datetime, timezone
-from bot.app.telegram.common.roles import MasterRoleFilter, ensure_master
+from bot.app.telegram.common.roles import MasterRoleFilter
 from bot.app.telegram.master.states import MasterScheduleStates, MasterStates
 
 from aiogram.types import InlineKeyboardMarkup
@@ -26,14 +26,14 @@ from bot.app.telegram.common.callbacks import (
 	MasterCancelReasonCB,
 	MasterSetServiceDurationCB,
 )
-from bot.app.services.shared_services import _decode_time, get_admin_ids
+from bot.app.services.shared_services import _decode_time, get_admin_ids, is_cancel_text
 from bot.app.services.client_services import BookingRepo, build_booking_details
 from bot.app.services.shared_services import format_booking_details_text
 from bot.app.telegram.client.client_keyboards import build_booking_card_kb
 from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramAPIError
-from bot.app.telegram.common.ui_fail_safe import safe_edit
-from bot.app.telegram.common.navigation import nav_back, nav_push, nav_replace, nav_reset, nav_get_lang
+from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler
+from bot.app.telegram.common.navigation import nav_back, nav_current, nav_push, nav_replace, nav_reset, nav_get_lang
 from bot.app.core.constants import DEFAULT_PAGE_SIZE
 from bot.app.telegram.master.master_keyboards import (
 	get_master_main_menu,
@@ -43,7 +43,7 @@ from bot.app.telegram.master.master_keyboards import (
 	get_time_end_kb,
 )
 
-# Removed direct DB/domain imports; handlers should rely on services only
+# Prefer services over direct DB/domain imports in handlers
 import json
 import re
 from bot.app.translations import t, tr
@@ -56,6 +56,7 @@ master_router = Router(name="master")
 # Apply master role filter and locale middleware so handlers receive `locale: str` from middleware
 from bot.app.telegram.common.locale_middleware import LocaleMiddleware
 from bot.app.telegram.common.errors import handle_telegram_error, handle_db_error
+from bot.app.telegram.common.ui_fail_safe import SafeUIMiddleware
 
 # 1. Ensure only masters reach these handlers (redundant if applied elsewhere)
 master_router.message.filter(MasterRoleFilter())
@@ -64,30 +65,63 @@ master_router.callback_query.filter(MasterRoleFilter())
 # 2. Attach LocaleMiddleware so callbacks/messages get `locale: str` injected
 master_router.message.middleware(LocaleMiddleware())
 master_router.callback_query.middleware(LocaleMiddleware())
+# Attach Safe UI middleware to centralize user checks and error handling
+master_router.message.middleware(SafeUIMiddleware())
+master_router.callback_query.middleware(SafeUIMiddleware())
 
-# Per DRY: handler-level guard removed; rely on master_router.errors handlers.
+# Rely on router-level error handlers (centralized in run_bot.py).
 
 
-# Error handlers centralized in run_bot.py; local registration removed.
-
-
-# Normalize any keyboard-like object into InlineKeyboardMarkup for strict call sites
-def _as_markup(kb: Any) -> InlineKeyboardMarkup | None:
+async def _load_master_bookings(
+	master_telegram_id: int,
+	*,
+	mode: str = "upcoming",
+	page: int = 1,
+	page_size: int = DEFAULT_PAGE_SIZE,
+	start: datetime | None = None,
+	end: datetime | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+	"""Resolve master id and fetch bookings via BookingRepo with safe defaults."""
+	default_meta = {
+		"total": 0,
+		"total_pages": 1,
+		"page": page,
+		"done_count": 0,
+		"cancelled_count": 0,
+		"noshow_count": 0,
+		"upcoming_count": 0,
+	}
 	try:
-		if isinstance(kb, InlineKeyboardMarkup):
-			return kb
-		if isinstance(kb, InlineKeyboardBuilder):
-			return kb.as_markup()
+		resolved_mid = await master_services.MasterRepo.resolve_master_id(int(master_telegram_id))
 	except Exception:
-		logger.exception("_as_markup: failed to normalize keyboard object")
-	return None
+		logger.exception("_load_master_bookings: resolve_master_id failed for %s", master_telegram_id)
+		resolved_mid = None
+	if not resolved_mid:
+		return [], default_meta
+	try:
+		from bot.app.services.client_services import BookingRepo
+
+		rows, meta = await BookingRepo.get_paginated_list(
+			master_id=resolved_mid,
+			mode=mode,
+			page=page,
+			page_size=page_size,
+			start=start,
+			end=end,
+		)
+		return list(rows or []), meta or default_meta
+	except Exception:
+		logger.exception(
+			"_load_master_bookings: BookingRepo.get_paginated_list failed for master=%s mode=%s page=%s",
+			master_telegram_id,
+			mode,
+			page,
+		)
+		return [], default_meta
 
 
-async def _show_master_menu(obj, state: FSMContext, locale: str | None = None) -> None:
-	"""
-	Legacy helper: builds and shows the master menu with a dashboard summary.
-	New code should compute text in the handler and call `show_master_menu_ui`.
-	"""
+async def show_master_menu(obj, state: FSMContext, locale: str | None = None) -> None:
+	"""Build and show the master menu with dashboard summary."""
 	# Reset navigation stack and mark preferred role for NavCB
 	try:
 		await nav_reset(state)
@@ -108,19 +142,10 @@ async def _show_master_menu(obj, state: FSMContext, locale: str | None = None) -
 	header = tr("master_menu_header", lang=lang)
 	kb = get_master_main_menu(lang)
 	text = header
-	try:
-		master_id = obj.from_user.id
-		try:
-			summary = await master_services.get_master_dashboard_summary(int(master_id), lang=lang)
-			text = f"{summary}\n\n{header}"
-		except Exception as e:
-			logger.error("ОШИБКА СБОРКИ ДАШБОРДА МАСТЕРА: %s", e)
-	except Exception:
-		logger.exception("_show_master_menu: failed to read master_id or dashboard summary")
+	master_id = obj.from_user.id
+	summary = await master_services.get_master_dashboard_summary(int(master_id), lang=lang)
+	text = f"{summary}\n\n{header}"
 	await show_master_menu_ui(obj, state, lang or default_language(), text, kb)
-
-# Public alias expected by other modules
-show_master_menu = _show_master_menu
 
 
 async def show_master_menu_ui(obj, state: FSMContext, lang: str, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
@@ -138,16 +163,7 @@ async def show_master_menu_ui(obj, state: FSMContext, lang: str, text: str, kb: 
 		logger.exception("show_master_menu_ui: failed to set preferred_role in state")
 	if kb is None:
 		kb = get_master_main_menu(lang)
-	try:
-		await safe_edit(obj, text=text, reply_markup=kb)
-	except Exception:
-		logger.exception("safe_edit failed in show_master_menu_ui")
-		try:
-			if hasattr(obj, "answer"):
-				await obj.answer(t("error", lang), show_alert=True)
-		except Exception:
-			logger.exception("show_master_menu_ui: fallback obj.answer failed")
-		raise
+	await safe_edit(obj, text=text, reply_markup=kb)
 	try:
 		header_title = tr("master_menu_header", lang=lang)
 		await nav_replace(state, header_title, kb, lang=lang)
@@ -185,191 +201,158 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 	text = (msg.text or "").strip()
 	logger.info("master_edit_note_fallback: entered state with text_len=%s from_user=%s", len(text), msg.from_user.id)
 
-	# Prefer middleware-injected `locale` as the canonical source of truth
 	lang = locale or default_language()
+	data = await state.get_data() or {}
+	parse_mode = data.get("current_parse_mode")
 
-	# Cancellation keywords (may be missing from translations)
-	raw_cancel_keywords = tr("cancel_keywords", lang=lang)
-	cancel_keywords = set()
-	if isinstance(raw_cancel_keywords, list):
-		cancel_keywords.update(kw.strip().lower() for kw in raw_cancel_keywords if kw)
-	elif raw_cancel_keywords:
-		cancel_keywords.add(str(raw_cancel_keywords).strip().lower())
-	if not cancel_keywords:
-		cancel_keywords = {"cancel"}
+	booking_id = None
+	user_id = None
+	try:
+		if data.get("client_note_booking_id"):
+			booking_id = int(data.get("client_note_booking_id"))
+	except Exception:
+		booking_id = None
+	try:
+		if data.get("client_note_user_id"):
+			user_id = int(data.get("client_note_user_id"))
+	except Exception:
+		user_id = None
 
-	normalized_text = text.lower().strip()
-	if normalized_text in cancel_keywords:
-		data = await state.get_data() or {}
-		await state.clear()
-		# Inform master that the action was cancelled
+	master_id = msg.from_user.id
+
+	async def _cleanup_note_state() -> None:
 		try:
-			await msg.answer(t("action_cancelled", lang))
+			await state.update_data(client_note_booking_id=None, client_note_user_id=None)
+			await state.set_state(None)
+		except Exception as e:
+			logger.exception("master_edit_note_fallback: failed to cleanup state: %s", e)
+
+	async def _restore_previous_screen() -> None:
+		try:
+			nav_text, nav_markup = await nav_current(state)
 		except Exception:
-			logger.exception("master_edit_note_fallback: failed to send action_cancelled to master")
+			nav_text, nav_markup = (None, None)
 
-		# Try to restore appropriate UI where possible (booking card or client history)
-		booking_id_raw = data.get("client_note_booking_id")
-		client_user_raw = data.get("client_note_user_id")
-		master_id = msg.from_user.id
-		try:
-			if booking_id_raw:
-				booking_id = int(booking_id_raw)
+		if nav_text or nav_markup:
+			try:
+				kwargs = {"reply_markup": nav_markup}
+				if parse_mode:
+					kwargs["parse_mode"] = parse_mode
+				await msg.answer(nav_text or "", **kwargs)
+				return
+			except Exception:
+				logger.exception("master_edit_note_fallback: nav_current restore failed")
+
+		if booking_id:
+			try:
 				res = await master_services.handle_cancel_note(booking_id, lang)
 				if res:
 					text_card, markup = res
 					await msg.answer(text=text_card, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
-			elif client_user_raw and master_id:
-				user_id = int(client_user_raw)
+					return
+			except Exception:
+				logger.exception("master_edit_note_fallback: handle_cancel_note fallback failed")
+
+		if user_id and master_id:
+			try:
 				hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
 				text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
-				from aiogram.utils.keyboard import InlineKeyboardBuilder
-				from bot.app.telegram.common.callbacks import pack_cb, MasterClientNoteCB, MasterMenuCB
+				builder = InlineKeyboardBuilder()
+				builder.button(text=t("edit_note_button", lang), callback_data=pack_cb(MasterClientNoteCB, action="edit", user_id=int(user_id)))
+				builder.button(text=t("back", lang), callback_data=pack_cb(callbacks_mod.MasterMenuCB, act="my_clients"))
+				builder.adjust(2)
+				await msg.answer(text_card, reply_markup=builder.as_markup())
+				return
+			except Exception:
+				logger.exception("master_edit_note_fallback: client history restore failed")
+
+		try:
+			await msg.answer(t("master_menu_header", lang), reply_markup=get_master_main_menu(lang))
+		except Exception:
+			pass
+
+	async def _show_updated_screen() -> bool:
+		"""Render freshly updated card/history so the new note is visible immediately."""
+		if booking_id:
+			try:
+				res = await master_services.handle_cancel_note(booking_id, lang)
+				if res:
+					text_card, markup = res
+					try:
+						await nav_replace(state, text_card, markup, lang=lang)
+					except Exception:
+						pass
+					await msg.answer(text=text_card, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
+					return True
+			except Exception:
+				logger.exception("master_edit_note_fallback: failed to show updated booking card")
+		if user_id and master_id:
+			try:
+				hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
+				text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
 				builder = InlineKeyboardBuilder()
 				builder.button(text=t("edit_note_button", lang), callback_data=pack_cb(MasterClientNoteCB, action="edit", user_id=int(user_id)))
 				builder.button(text=t("back", lang), callback_data=pack_cb(callbacks_mod.MasterMenuCB, act="my_clients"))
 				builder.adjust(2)
 				kb = builder.as_markup()
+				try:
+					await nav_replace(state, text_card, kb, lang=lang)
+				except Exception:
+					pass
 				await msg.answer(text_card, reply_markup=kb)
+				return True
+			except Exception:
+				logger.exception("master_edit_note_fallback: failed to show updated client history")
+		return False
+
+	# Cancellation intent: use shared helper to detect localized cancel keywords
+	if is_cancel_text(text, lang=lang):
+		try:
+			await msg.answer(t("action_cancelled", lang))
 		except Exception:
-			logger.exception("Error during note cancellation fallback UI restore")
+			logger.exception("master_edit_note_fallback: failed to send action_cancelled to master")
+		await _cleanup_note_state()
+		await _restore_previous_screen()
 		return
 
-	# --- End cancellation branch ---
-
-	data = await state.get_data() or {}
-	# Support two flows: booking-scoped note or user-scoped note
-	booking_id_raw = data.get("client_note_booking_id")
-	client_user_raw = data.get("client_note_user_id")
-
-	booking_id = None
-	user_id = None
-	if booking_id_raw:
-		try:
-			booking_id = int(booking_id_raw)
-		except Exception:
-			booking_id = None
-	if client_user_raw:
-		try:
-			user_id = int(client_user_raw)
-		except Exception:
-			user_id = None
-
+	ok = False
 	try:
-		ok = False
 		if booking_id:
 			logger.info("master_edit_note_fallback: attempting upsert_client_note booking_id=%s", booking_id)
 			ok = await master_services.MasterRepo.upsert_client_note(booking_id, text)
 			logger.info("master_edit_note_fallback: upsert_client_note result=%s for booking_id=%s", ok, booking_id)
-		elif user_id:
-			master_id = msg.from_user.id
-			if master_id:
-				logger.info("master_edit_note_fallback: attempting upsert_client_note_for_user master_id=%s user_id=%s", master_id, user_id)
-				ok = await master_services.MasterRepo.upsert_client_note_for_user(int(master_id), int(user_id), text)
-				logger.info("master_edit_note_fallback: upsert_client_note_for_user result=%s for master_id=%s user_id=%s", ok, master_id, user_id)
-			else:
-				ok = False
+		elif user_id and master_id:
+			logger.info("master_edit_note_fallback: attempting upsert_client_note_for_user master_id=%s user_id=%s", master_id, user_id)
+			ok = await master_services.MasterRepo.upsert_client_note_for_user(int(master_id), int(user_id), text)
+			logger.info("master_edit_note_fallback: upsert_client_note_for_user result=%s for master_id=%s user_id=%s", ok, master_id, user_id)
 		else:
 			ok = False
+	except Exception as e:
+		logger.exception("master_edit_note_fallback: failed to save note: %s", e)
+		ok = False
 
-		if ok:
-			# Send confirmation and show updated client card when possible
-			try:
-				await msg.answer(t("master_note_saved", lang))
-			except Exception:
-				pass
-			
-			# Redirect to My Clients (Page 1)
-			try:
-				master_id = msg.from_user.id
-				if master_id:
-					clients = await master_services.MasterRepo.get_clients_for_master(int(master_id))
-				else:
-					clients = []
-			except Exception:
-				clients = []
-
-			from aiogram.utils.keyboard import InlineKeyboardBuilder
-			from bot.app.telegram.common.callbacks import pack_cb, ClientInfoCB, MasterMenuCB
-
-			builder = InlineKeyboardBuilder()
-			PAGE_SIZE = 5
-			page = 1
-
-			if not clients:
-				try:
-					await msg.answer(text=t("master_no_clients", lang), reply_markup=get_master_main_menu(lang))
-				except Exception:
-					pass
-				return
-
-			total = len(clients)
-			total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-			try:
-				if booking_id_raw:
-					booking_id = int(booking_id_raw)
-					res = await master_services.handle_cancel_note(booking_id, lang)
-					if res:
-						text_card, markup = res
-						await msg.answer(text=text_card, reply_markup=markup, parse_mode="HTML", disable_web_page_preview=True)
-				elif client_user_raw and master_id:
-					user_id = int(client_user_raw)
-					hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
-					text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
-					from aiogram.utils.keyboard import InlineKeyboardBuilder
-					from bot.app.telegram.common.callbacks import pack_cb, MasterClientNoteCB, MasterMenuCB
-					builder = InlineKeyboardBuilder()
-					builder.button(text=t("edit_note_button", lang), callback_data=pack_cb(MasterClientNoteCB, action="edit", user_id=int(user_id)))
-					builder.button(text=t("back", lang), callback_data=pack_cb(callbacks_mod.MasterMenuCB, act="my_clients"))
-					builder.adjust(2)
-					kb = builder.as_markup()
-					await msg.answer(text_card, reply_markup=kb)
-			except Exception:
-				logger.exception("Error during note cancellation fallback UI restore")
-			try:
-				await msg.answer(text=title, reply_markup=kb)
-			except Exception:
-				pass
-			return
-		else:
-			# Inform master that saving the note failed so they aren't left wondering
-			try:
-				await msg.answer(t("error_retry", lang))
-			except Exception:
-				pass
-			# try to render updated card if we have user-scoped flow
-			if user_id:
-				try:
-					master_id = msg.from_user.id
-					if master_id:
-						hist = await master_services.MasterRepo.get_client_history_for_master_by_user(int(master_id), int(user_id))
-						text_card = master_services.format_client_history(hist or {}, int(user_id), lang=lang) if hist else t("master_no_client_history", lang)
-						from aiogram.utils.keyboard import InlineKeyboardBuilder
-						from bot.app.telegram.common.callbacks import pack_cb, MasterClientNoteCB
-						builder = InlineKeyboardBuilder()
-						builder.button(text=t("edit_note_button", lang), callback_data=pack_cb(MasterClientNoteCB, action="edit", user_id=int(user_id)))
-						builder.button(text=t("back", lang), callback_data=pack_cb(callbacks_mod.MasterMenuCB, act="my_clients"))
-						builder.adjust(2)
-						kb = builder.as_markup()
-						await msg.answer(text_card, reply_markup=kb)
-				except Exception:
-					pass
-			return
-	except Exception:
+	if ok:
 		try:
-			await msg.answer(t("error_retry", lang))
+			await msg.answer(t("master_note_saved", lang))
 		except Exception:
 			pass
-	finally:
-		try:
-			await state.clear()
-		except Exception as e:
-			logger.exception("master_cmd_start: state.clear failed: %s", e)
-			raise
+		await _cleanup_note_state()
+		sent = await _show_updated_screen()
+		if not sent:
+			await _restore_previous_screen()
+		return
+
+	try:
+		await msg.answer(t("error_retry", lang))
+	except Exception:
+		pass
+	await _cleanup_note_state()
+	await _restore_previous_screen()
 
 
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "menu"))
+@safe_handler()
 async def handle_master_menu_entry(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 	"""
 	ВХОДНАЯ ТОЧКА: Ловит нажатие кнопки 'Меню мастера' из главного меню.
@@ -392,11 +375,7 @@ async def handle_master_menu_entry(cb: CallbackQuery, state: FSMContext, locale:
 			text = header
 	kb = get_master_main_menu(lang)
 	await show_master_menu_ui(cb, state, lang, text, kb)
-	try:
-		await cb.answer()
-	except Exception as e:
-		logger.exception("handle_master_menu_entry: cb.answer failed: %s", e)
-		raise
+	await cb.answer()
 
 
 
@@ -410,10 +389,7 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 	lang = locale or default_language()
 	master_id = cb.from_user.id
 	if master_id is None:
-		try:
-			await cb.answer()
-		except Exception:
-			pass
+		await cb.answer()
 		return
 
 	try:
@@ -432,19 +408,15 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 	if page < 1:
 		page = 1
 
-	if not clients:
-		try:
-			await safe_edit(cb.message, text=t("master_no_clients", lang), reply_markup=get_master_main_menu(lang))
-			await nav_push(state, t("master_no_clients", lang), get_master_main_menu(lang), lang=lang)
-		except Exception:
-			logger.exception("master: failed to show 'no clients' UI")
-			raise
-		try:
+		if not clients:
+			try:
+				await safe_edit(cb.message, text=t("master_no_clients", lang), reply_markup=get_master_main_menu(lang))
+				await nav_push(state, t("master_no_clients", lang), get_master_main_menu(lang), lang=lang)
+			except Exception:
+				logger.exception("master: failed to show 'no clients' UI")
+				raise
 			await cb.answer()
-		except Exception:
-			logger.exception("master: cb.answer failed after no-clients UI")
-			raise
-		return
+			return
 
 	total = len(clients)
 	total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
@@ -487,11 +459,7 @@ async def master_my_clients(cb: CallbackQuery, callback_data, state: FSMContext,
 	except Exception as e:
 		logger.exception("show_my_clients_ui: safe_edit/nav_push failed: %s", e)
 		raise
-	try:
-		await cb.answer()
-	except Exception as e:
-		logger.exception("show_my_clients_ui: cb.answer failed: %s", e)
-		raise
+	await cb.answer()
 
 
 @master_router.callback_query(ClientInfoCB.filter())
@@ -532,11 +500,7 @@ async def master_client_info(cb: CallbackQuery, callback_data, state: FSMContext
 	except Exception as e:
 		logger.exception("master_client_note_edit: safe_edit/nav_push failed: %s", e)
 		raise
-	try:
-		await cb.answer()
-	except Exception as e:
-		logger.exception("master_client_note_edit: cb.answer failed: %s", e)
-		raise
+	await cb.answer()
 
 
 @master_router.callback_query(MasterClientNoteCB.filter(F.action == "edit"))
@@ -624,8 +588,8 @@ async def show_schedule(cb: CallbackQuery, state: FSMContext, locale: str) -> No
 
 	# 1. get canonical schedule dict
 	sched = await master_services.MasterRepo.get_schedule(int(master_id))
-	# 2. render into human-readable table
-	schedule_text = master_services.render_schedule_table(sched)
+	# 2. render into human-readable table (pass lang so localization works)
+	schedule_text = master_services.render_schedule_table(sched, lang=lang)
 
 	kb = get_weekly_schedule_kb(lang=lang)
 	base_text = t("master_schedule_week_overview", lang)
@@ -698,7 +662,7 @@ async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, l
 	master_id = int(master_id_raw)
 
 	try:
-		sched = await master_services.get_master_schedule(master_id)
+		sched = await master_services.MasterRepo.get_schedule(master_id)
 		new_sched = master_services.insert_window(sched, int(day), start_time, end_time)
 		await master_services.set_master_schedule(master_id, new_sched)
 	except Exception as e:
@@ -772,7 +736,7 @@ async def schedule_clear_day(cb: CallbackQuery, callback_data, state: FSMContext
 		except Exception:
 			pass
 		return
-	await _check_and_confirm_day_clear(cb, int(day), clear_mode=True)
+	await _check_and_confirm_day_clear(cb, int(day), clear_mode=True, state=state, locale=locale)
 	return
 
 
@@ -917,11 +881,18 @@ async def schedule_make_off(cb: CallbackQuery, callback_data, state: FSMContext,
 			logger.exception("schedule_make_off: cb.answer failed: %s", e)
 			raise
 		return
-	await _check_and_confirm_day_clear(cb, int(day), off_mode=True)
+	await _check_and_confirm_day_clear(cb, int(day), off_mode=True, state=state, locale=locale)
 	return
 
 
-async def _check_and_confirm_day_clear(cb: CallbackQuery, day: int, clear_mode: bool = False, off_mode: bool = False) -> None:
+async def _check_and_confirm_day_clear(
+	cb: CallbackQuery,
+	day: int,
+	clear_mode: bool = False,
+	off_mode: bool = False,
+	state: FSMContext | None = None,
+	locale: str | None = None,
+) -> None:
 	"""Shared conflict-check + apply logic for clearing or marking a day off.
 
 	Only one of clear_mode/off_mode should be True to determine messages.
@@ -956,19 +927,46 @@ async def _check_and_confirm_day_clear(cb: CallbackQuery, day: int, clear_mode: 
 		await master_services.set_master_schedule_day(int(master_id), int(day), [])
 		try:
 			if off_mode:
-				await cb.answer(t("toast_day_off_marked"))
+				await cb.answer(t("toast_day_off_marked", locale))
 			else:
-				await cb.answer(t("toast_day_cleared"))
+				await cb.answer(t("toast_day_cleared", locale))
 		except Exception as e:
 			logger.exception("_check_and_confirm_day_clear: cb.answer toast failed: %s", e)
 			raise
+
+		# After clearing/marking off, show refreshed weekly schedule so the master
+		# is returned to the schedule UI instead of a plain confirmation message.
 		try:
-			if off_mode:
-				await safe_edit(cb.message, text=t("master_day_marked_off"))
-			else:
-				await safe_edit(cb.message, text=t("master_cleared"))
-		except TelegramAPIError:
-			pass
+			lang = locale or default_language()
+		except Exception:
+			lang = (locale or default_language())
+
+		# Prefer using navigation state to push the schedule view when available.
+		try:
+			if state is not None:
+				await show_schedule(cb, state, lang)
+				return
+		except Exception:
+			# Fallback to manual render if show_schedule fails
+			logger.exception("_check_and_confirm_day_clear: show_schedule failed, falling back to inline render")
+
+		try:
+			# render schedule inline when state is unavailable
+			sched = await master_services.MasterRepo.get_schedule(int(cb.from_user.id))
+			schedule_text = master_services.render_schedule_table(sched, lang=lang)
+			kb = get_weekly_schedule_kb(lang=lang)
+			base_text = t("master_schedule_week_overview", lang)
+			full_text = f"{base_text}\n\n{schedule_text}"
+			await safe_edit(cb.message, text=full_text, reply_markup=kb)
+		except Exception:
+			# As a final fallback show a simple confirmation text
+			try:
+				if off_mode:
+					await safe_edit(cb.message, text=t("master_day_marked_off", lang))
+				else:
+					await safe_edit(cb.message, text=t("master_cleared", lang))
+			except Exception:
+				pass
 	except SQLAlchemyError as e:
 		if off_mode:
 			logger.exception("Failed to mark day off %s for master (DB error): %s", day, e)
@@ -1074,8 +1072,9 @@ async def schedule_add_time(cb: CallbackQuery, callback_data, state: FSMContext,
 	try:
 		await state.set_state(MasterScheduleStates.schedule_adding_window)
 		times = master_services.build_time_slot_list()
-		start_kb = get_time_start_kb(int(day), times=times)
-		await safe_edit(cb.message, text=tr("master_select_window_start"), reply_markup=start_kb)
+		lang = locale or default_language()
+		start_kb = get_time_start_kb(int(day), times=times, lang=lang)
+		await safe_edit(cb.message, text=tr("master_select_window_start", lang=lang), reply_markup=start_kb)
 	except TelegramAPIError:
 		logger.exception("Telegram API error showing start-time kb for master %s day=%s", master_id, day)
 	return
@@ -1121,7 +1120,7 @@ async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FS
 	if not bot and _msg is not None:
 		bot = getattr(_msg, "bot", None)
 	try:
-		from bot.app.services.client_services import send_booking_notification
+		from bot.app.core.notifications import send_booking_notification
 	except Exception:
 		send_booking_notification = None
 	for bid in (ids or []):
@@ -1164,7 +1163,15 @@ async def schedule_confirm_clear_day(cb: CallbackQuery, callback_data, state: FS
 	msg = t("master_day_marked_off", lang)
 	if cancelled:
 		msg = f"{msg}\n\n{t('cancelled_count', lang).format(count=cancelled)}"
-	await safe_edit(cb.message, text=msg)
+	# Show refreshed weekly schedule instead of plain confirmation text
+	try:
+		await show_schedule(cb, state, lang)
+	except Exception:
+		# fallback to editing message with summary
+		try:
+			await safe_edit(cb.message, text=msg)
+		except Exception:
+			pass
 	return
 
 
@@ -1184,7 +1191,7 @@ async def _show_day_actions(msg_obj, master_id: int, day: int, *, lang: str | No
 	intermediate FSM flows.
 	"""
 	try:
-		sched = await master_services.get_master_schedule(int(master_id))
+		sched = await master_services.MasterRepo.get_schedule(int(master_id))
 	except Exception:
 		sched = {}
 
@@ -1213,7 +1220,7 @@ async def _show_day_actions(msg_obj, master_id: int, day: int, *, lang: str | No
 	day_name = weekdays[int(day)] if 0 <= int(day) < len(weekdays) else f"Day {day}"
 	header = f"{tr('master_schedule_day_header', lang=lang, day=day_name)}\n"
 	if not windows:
-		body = t("master_no_windows")
+		body = t("master_no_windows", lang=lang)
 	else:
 		try:
 			lines = []
@@ -1224,150 +1231,96 @@ async def _show_day_actions(msg_obj, master_id: int, day: int, *, lang: str | No
 					lines.append(str(w))
 			body = "\n".join(lines)
 		except Exception:
-			body = t("master_no_windows")
+			body = t("master_no_windows", lang=lang)
 
 	text = f"{header}\n{body}"
-	kb = get_schedule_day_preview_kb(int(day), windows)
+	kb = get_schedule_day_preview_kb(int(day), windows, lang=(lang or default_language()))
 	return text, kb
 
 
 
-# Note: master-specific keyboards now use MasterMenuCB(act="menu") for Back
-# buttons. This avoids conflict with the client-wide "global_back" handler
-# which is registered on the client router. The master menu is handled by
-# `show_master_menu` (MasterMenuCB.act == "menu") which resets navigation.
+# Master menu callbacks are handled by `master_router` (use MasterMenuCB.act=="menu").
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "bookings"))
+@safe_handler()
 async def show_bookings_menu(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
-	# Dashboard-first: render upcoming bookings page and present dashboard KB.
-	master_id = cb.from_user.id
-	if master_id is None:
-		await safe_edit(cb.message, text=t("error_retry"))
-		return
-	try:
-		lang = locale
-	except Exception:
-		lang = locale
-	try:
-		# Fetch booking rows via service layer, format them and build UI-only keyboard
-		from bot.app.services.master_services import get_master_bookings
-		from bot.app.services.shared_services import format_booking_list_item
-		# master_services is imported from bot.app.services above
+    master_id = cb.from_user.id
+    if master_id is None:
+        await safe_edit(cb.message, text=t("error_retry"))
+        return
 
-		rows, meta = await get_master_bookings(master_id=int(master_id), mode='upcoming', page=1, page_size=DEFAULT_PAGE_SIZE)
-		formatted_rows: list[tuple[str,int]] = []
-		for r in rows:
-			try:
-				txt, bid = format_booking_list_item(r, role="master", lang=lang)
-				formatted_rows.append((txt, bid))
-			except Exception:
-				continue
-		# Build keyboard using UI-only builder
-		from bot.app.telegram.client.client_keyboards import build_my_bookings_keyboard
-		kb = await build_my_bookings_keyboard(
-			formatted_rows,
-			meta.get('upcoming_count', meta.get('total', 0)),
-			(meta.get('done_count', 0) + meta.get('cancelled_count', 0) + meta.get('noshow_count', 0)),
-			'upcoming',
-			meta.get('page', 1),
-			lang,
-			items_per_page=DEFAULT_PAGE_SIZE,
-			cancelled_count=meta.get('cancelled_count', 0),
-			noshow_count=meta.get('noshow_count', 0),
-			total_pages=meta.get('total_pages', 1),
-			current_page=meta.get('page', 1),
-			role="master",
-		)
-		# persist current mode/page in state
-		try:
-			await state.update_data(bookings_mode="upcoming", bookings_page=1)
-		except Exception:
-			pass
-		# Ensure role hint is set so NavCB(role_root) returns to master menu
-		try:
-			await state.update_data(preferred_role="master")
-		except Exception:
-			pass
-		# Use nav_replace with the dashboard text + keyboard. The keyboard builder is UI-only
-		# For master users prefer concise per-mode titles (no generic "master bookings" prefix).
-		# Use explicit per-mode title for the initial view (upcoming).
-		try:
-			# Map the canonical visible title to the current mode. Default to the generic header
-			# only if a mode-specific title is unavailable.
-			base_title = t("upcoming_bookings_title", lang) or t("master_bookings_header", lang)
-		except Exception:
-			base_title = t("master_bookings_header", lang)
-		# build dynamic header: for masters show the per-mode base title and optional page info
-		try:
-			meta = meta or {}
-			current_mode = "upcoming"
-			if current_mode == "upcoming":
-				title_for_mode = t("upcoming_bookings_title", lang)
-				tab_count = int(meta.get('upcoming_count', 0) or 0)
-			elif current_mode == "done":
-				title_for_mode = t("completed_bookings_title", lang)
-				tab_count = int(meta.get('done_count', 0) or 0)
-			elif current_mode == "cancelled":
-				title_for_mode = t("cancelled_bookings_title", lang)
-				tab_count = int(meta.get('cancelled_count', 0) or 0)
-			elif current_mode == "no_show":
-				title_for_mode = t("no_show_bookings_title", lang)
-				tab_count = int(meta.get('noshow_count', 0) or 0)
-			else:
-				title_for_mode = base_title
-				tab_count = int(meta.get('total', 0) or 0)
-			page = int(meta.get('page', 1) or 1)
-			total_pages = int(meta.get('total_pages', 1) or 1)
-			# Visible header: use a concise per-mode title without counts or the
-			# generic word "Bookings". Keep it short: Upcoming / Done / Cancelled / No-show.
-			try:
-				if current_mode == "upcoming":
-					title_for_mode = tr("upcoming", lang=lang) or "Upcoming"
-				elif current_mode == "done":
-					title_for_mode = tr("master_completed", lang=lang) or "Done"
-				elif current_mode == "cancelled":
-					title_for_mode = tr("cancelled", lang=lang) or "Cancelled"
-				elif current_mode == "no_show":
-					title_for_mode = tr("no_show", lang=lang) or "No-show"
-				else:
-					title_for_mode = base_title
-			except Exception:
-				title_for_mode = base_title
-			dynamic_header = title_for_mode
-		except Exception:
-			dynamic_header = base_title
-			title_for_mode = base_title
-		# ensure `title` exists for fallback message sends
-		title = title_for_mode if 'title_for_mode' in locals() else base_title
-		try:
-			await nav_replace(state, dynamic_header, _as_markup(kb))
-		except Exception:
-			try:
-				await nav_replace(state, dynamic_header, _as_markup(kb))
-			except Exception:
-				pass
-		# Try to edit the existing message; fallback to sending a new one when edit fails
-		try:
-			ok = await safe_edit(cb.message, text=dynamic_header, reply_markup=_as_markup(kb))
-			if not ok:
-				msg_obj = getattr(cb, 'message', None)
-				if msg_obj is not None and hasattr(msg_obj, 'answer'):
-					try:
-						new_msg = await msg_obj.answer(title, reply_markup=_as_markup(kb))
-						try:
-							bot_instance = getattr(msg_obj, 'bot', None)
-							if bot_instance is not None:
-								await bot_instance.delete_message(chat_id=msg_obj.chat.id, message_id=msg_obj.message_id)
-						except Exception:
-							pass
-					except Exception:
-						pass
-		except Exception:
-			logger.exception("force redraw failed in show_bookings_menu")
-	except SQLAlchemyError as e:
-		logger.exception("Failed to render bookings dashboard for master %s: %s", master_id, e)
-		await safe_edit(cb.message, text=t("error_retry"))
-	await cb.answer()
+    lang = locale
+
+    try:
+        from bot.app.services.shared_services import format_booking_list_item
+        from bot.app.telegram.client.client_keyboards import build_my_bookings_keyboard
+
+        rows, meta = await _load_master_bookings(
+            master_telegram_id=int(master_id),
+            mode="upcoming",
+            page=1,
+            page_size=DEFAULT_PAGE_SIZE,
+        )
+
+        formatted_rows: list[tuple[str, int]] = []
+        for r in rows:
+            try:
+                txt, bid = format_booking_list_item(r, role="master", lang=lang)
+                formatted_rows.append((txt, bid))
+            except Exception:
+                continue
+
+        kb = await build_my_bookings_keyboard(
+            formatted_rows,
+            meta.get("upcoming_count", meta.get("total", 0)),
+            (meta.get("done_count", 0) + meta.get("cancelled_count", 0) + meta.get("noshow_count", 0)),
+            "upcoming",
+            meta.get("page", 1),
+            lang,
+            items_per_page=DEFAULT_PAGE_SIZE,
+            cancelled_count=meta.get("cancelled_count", 0),
+            noshow_count=meta.get("noshow_count", 0),
+            total_pages=meta.get("total_pages", 1),
+            current_page=meta.get("page", 1),
+            role="master",
+        )
+
+        await state.update_data(bookings_mode="upcoming", bookings_page=1, preferred_role="master")
+
+        # Определяем заголовок и количество для текущего режима
+        current_mode = "upcoming"
+        if current_mode == "upcoming":
+            title_for_mode = t("upcoming_bookings_title", lang)
+            tab_count = int(meta.get("upcoming_count", 0) or 0)
+        elif current_mode == "done":
+            title_for_mode = t("completed_bookings_title", lang)
+            tab_count = int(meta.get("done_count", 0) or 0)
+        elif current_mode == "cancelled":
+            title_for_mode = t("cancelled_bookings_title", lang)
+            tab_count = int(meta.get("cancelled_count", 0) or 0)
+        elif current_mode == "no_show":
+            title_for_mode = t("no_show_bookings_title", lang)
+            tab_count = int(meta.get("noshow_count", 0) or 0)
+        else:
+            title_for_mode = t("master_bookings_header", lang)
+            tab_count = int(meta.get("total", 0) or 0)
+
+        page = int(meta.get("page", 1) or 1)
+        total_pages = int(meta.get("total_pages", 1) or 1)
+
+        # Формируем динамический заголовок
+        dynamic_header = f"{title_for_mode} ({tab_count})"
+        if total_pages > 1:
+            dynamic_header += f" ({t('page_short', lang)} {page}/{total_pages})"
+
+        await nav_replace(state, dynamic_header, kb)
+        await safe_edit(cb.message, text=dynamic_header, reply_markup=kb)
+
+    except SQLAlchemyError as e:
+        logger.exception("Failed to render bookings dashboard for master %s: %s", master_id, e)
+        await safe_edit(cb.message, text=t("error_retry"))
+
+    await cb.answer()
 
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "clear_all"))
@@ -1381,7 +1334,8 @@ async def confirm_clear_all(cb: CallbackQuery, locale: str) -> None:
 
 	builder = InlineKeyboardBuilder()
 	builder.button(text=t("confirm", lang), callback_data=pack_cb(MasterMenuCB, act="clear_all_confirm"))
-	builder.button(text=t("cancel", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
+	# Cancel should return the user to the schedule view rather than main menu
+	builder.button(text=t("cancel", lang), callback_data=pack_cb(MasterMenuCB, act="schedule"))
 	builder.adjust(2)
 	await safe_edit(cb.message, text=tr("master_clear_all_confirm"), reply_markup=builder.as_markup())
 
@@ -1449,7 +1403,21 @@ async def do_clear_all(cb: CallbackQuery, locale: str) -> None:
 				logger.exception("Failed to set empty-week schedule for master %s", master_id)
 
 		await cb.answer(t("toast_schedule_cleared"))
-		await safe_edit(cb.message, text=t("master_cleared", locale))
+		# Render refreshed weekly schedule inline so master is returned to UI
+		try:
+			lang = locale or default_language()
+		except Exception:
+			lang = (locale or default_language())
+		try:
+			sched = await master_services.MasterRepo.get_schedule(int(master_id))
+			schedule_text = master_services.render_schedule_table(sched, lang=lang)
+			kb = get_weekly_schedule_kb(lang=lang)
+			base_text = t("master_schedule_week_overview", lang)
+			full_text = f"{base_text}\n\n{schedule_text}"
+			await safe_edit(cb.message, text=full_text, reply_markup=kb)
+		except Exception:
+			# fallback to simple confirmation
+			await safe_edit(cb.message, text=t("master_cleared", locale))
 	except SQLAlchemyError:
 		await safe_edit(cb.message, text=t("error_retry", locale))
 
@@ -1474,7 +1442,7 @@ async def exec_clear_all_with_conflicts(cb: CallbackQuery, locale: str) -> None:
 	if not bot and _msg is not None:
 		bot = getattr(_msg, "bot", None)
 	try:
-		from bot.app.services.client_services import send_booking_notification
+		from bot.app.core.notifications import send_booking_notification
 	except Exception:
 		send_booking_notification = None
 
@@ -1525,10 +1493,22 @@ async def exec_clear_all_with_conflicts(cb: CallbackQuery, locale: str) -> None:
 		lang = await safe_get_locale(int(master_id))
 	except Exception:
 		lang = "uk"
-	msg = t("master_cleared", lang)
-	if cancelled:
-		msg = f"{msg}\n\n{t('cancelled_count', lang).format(count=cancelled)}"
-	await safe_edit(cb.message, text=msg)
+	# Render refreshed weekly schedule inline so master is returned to UI
+	try:
+		sched = await master_services.MasterRepo.get_schedule(int(master_id))
+		schedule_text = master_services.render_schedule_table(sched, lang=lang)
+		kb = get_weekly_schedule_kb(lang=lang)
+		base_text = t("master_schedule_week_overview", lang)
+		full_text = f"{base_text}\n\n{schedule_text}"
+		if cancelled:
+			# append cancelled count summary below the schedule
+			full_text = f"{full_text}\n\n{t('cancelled_count', lang).format(count=cancelled)}"
+		await safe_edit(cb.message, text=full_text, reply_markup=kb)
+	except Exception:
+		msg = t("master_cleared", lang)
+		if cancelled:
+			msg = f"{msg}\n\n{t('cancelled_count', lang).format(count=cancelled)}"
+		await safe_edit(cb.message, text=msg)
 
 
 # Step 1: user picked a start time from the inline keyboard
@@ -1568,8 +1548,8 @@ async def pick_window_start(cb: CallbackQuery, callback_data, state: FSMContext,
 		# Compute end-time items via service layer and pass to UI-only keyboard builder
 		items = master_services.compute_time_end_items(day, start_time)
 		# Build end-time keyboard and ask master to pick end
-		end_kb = get_time_end_kb(day, start_time, items=items)
-		await safe_edit(cb.message, text=tr("master_select_window_end", start=start_time), reply_markup=end_kb)
+		end_kb = get_time_end_kb(day, start_time, items=items, lang=lang)
+		await safe_edit(cb.message, text=tr("master_select_window_end", start=start_time, lang=lang), reply_markup=end_kb)
 	except Exception as e:
 			# Catch-all: log and inform user that DB/UI action failed
 			logger.exception("Error handling pick_start: %s", e)
@@ -1728,7 +1708,7 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
 	master_id = int(master_id_raw)
 	try:
 		# Use service helpers: insert and persist
-		sched = await master_services.get_master_schedule(master_id)
+		sched = await master_services.MasterRepo.get_schedule(master_id)
 		# interval is 'HH:MM-HH:MM'
 		start, end = m.group(1), m.group(2)
 		new_sched = master_services.insert_window(sched, int(day), start, end)
@@ -1762,18 +1742,13 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
 		except AttributeError:
 			pass
 
-
-# Duplicate handler `receive_client_note` removed — keep `master_edit_note_fallback`
-# which provides the canonical logic for saving a client's note when a master
-# is in the `MasterStates.edit_note` state. This avoids routing conflicts.
-
-
 class _HasModePage(Protocol):
 	mode: str | None
 	page: int | None
 
 @master_router.callback_query(MasterBookingsCB.filter())
 @master_router.callback_query(BookingsPageCB.filter())
+@safe_handler()
 async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePage, state: FSMContext, locale: str | None = None) -> None:
 	"""Handle master bookings tab changes and pagination (combined).
 
@@ -1810,10 +1785,14 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 			page = int(data.get("bookings_page", 1) or 1)
 
 		# Use service-driven flow: fetch rows, prefetch maps, format and build UI-only keyboard
-		from bot.app.services.master_services import get_master_bookings
 		from bot.app.services.shared_services import format_booking_list_item
 
-		rows, meta = await get_master_bookings(master_id=int(master_id), mode=mode, page=int(page or 1), page_size=DEFAULT_PAGE_SIZE)
+		rows, meta = await _load_master_bookings(
+			master_telegram_id=int(master_id),
+			mode=mode,
+			page=int(page or 1),
+			page_size=DEFAULT_PAGE_SIZE,
+		)
 		formatted_rows: list[tuple[str,int]] = []
 		for r in rows:
 			try:
@@ -1866,7 +1845,7 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 					dynamic_header += f" ({t('page_short', lang)} {page}/{total_pages})"
 			except Exception:
 				dynamic_header = t('master_bookings_header', lang)
-			await safe_edit(cb.message, text=dynamic_header, reply_markup=_as_markup(kb))
+			await safe_edit(cb.message, text=dynamic_header, reply_markup=kb)
 		logger.info("Master bookings navigate: user=%s mode=%s page=%s", master_id, mode, page)
 	except Exception as e:
 		# Catch-all for DB/UI/other failures during bookings navigation
@@ -1879,6 +1858,7 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "master_detail"))
+@safe_handler()
 async def booking_master_detail(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
 	try:
 		booking_id_raw = getattr(callback_data, "booking_id", None)
@@ -1930,6 +1910,37 @@ async def booking_mark_done(cb: CallbackQuery, callback_data, state: FSMContext,
 	try:
 		if ok:
 			await cb.answer(t("master_checkin_success"))
+			# Notify client about completion (best-effort)
+			try:
+				from bot.app.services.client_services import build_booking_details, BookingRepo, UserRepo
+				from bot.app.core.notifications import send_booking_notification
+				bd = await build_booking_details(booking_id)
+				recipients: list[int] = []
+				# Primary: booking.user_id -> telegram_id
+				try:
+					b = await BookingRepo.get(booking_id)
+					uid = getattr(b, "user_id", None)
+					if uid:
+						u = await UserRepo.get_by_id(int(uid))
+						ctid = getattr(u, "telegram_id", None) if u else None
+						if ctid:
+							recipients.append(int(ctid))
+				except Exception:
+					pass
+				# Fallback: client_telegram_id from built details
+				try:
+					ctid = getattr(bd, "client_telegram_id", None)
+					if ctid:
+						recipients.append(int(ctid))
+				except Exception:
+					pass
+				# Deduplicate and send
+				recipients = list({r for r in recipients if r})
+				if recipients:
+					await send_booking_notification(cb.bot, booking_id, "done", recipients)
+					logger.info("Notified client(s) about booking %s completion: %s", booking_id, recipients)
+			except Exception as ne:
+				logger.exception("Failed to notify client about completion for booking %s: %s", booking_id, ne)
 		else:
 			await cb.answer(t("error_retry"))
 	except TelegramAPIError:
@@ -2362,18 +2373,3 @@ async def stats_month(cb: CallbackQuery, state: FSMContext, locale: str) -> None
 	kb = get_master_main_menu(lang)
 	await safe_edit(cb.message, text=text, reply_markup=kb)
 	await state.update_data(current_screen="stats_month")
-
-
-# master-specific bookings rendering moved to `bot.app.services.master_services.render_bookings_page`.
-# The legacy inline helper was removed to avoid duplication; the service should be the single source
-# of truth for bookings rendering logic.
-
-@master_router.message(F.text)
-async def master_catch_all_debug(msg: Message, state: FSMContext, locale: str) -> None:
-    st = await state.get_state()
-    logger.info(
-    "master_catch_all_debug: caught message '%s' in state '%s' from user %s",
-    msg.text,
-    st,
-    getattr(msg.from_user, "id", None),
-)

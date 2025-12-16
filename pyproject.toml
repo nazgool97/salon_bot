@@ -9,6 +9,7 @@ dependencies = [
     "aiogram>=3.4.1",
     "SQLAlchemy>=2.0.0",
     "cyclonedx-python-lib>=5,<10",
+    "Babel>=2.15",
 ]
 
 [project.optional-dependencies]

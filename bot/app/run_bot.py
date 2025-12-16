@@ -1,22 +1,22 @@
 """Runtime entrypoint for Telegram bot."""
+import argparse
 import asyncio
 import logging
-import os
+import sys
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from rich.logging import RichHandler
 
+from bot.app.core.constants import BOT_TOKEN, LOG_LEVEL_NAME, RUN_BOOTSTRAP_ENABLED
+from bot.app.core.notifications import notify_admins_bot_started
+from bot.app.core.db import get_session
 from bot.app.telegram.main_router import build_main_router
 from bot.app.workers.expiration import start_expiration_worker, start_cleanup_worker
 from bot.app.workers.reminders import start_reminders_worker
-from bot.app.core.db import get_session
 from bot.app.domain.models import Master
-from bot.app.services.shared_services import get_admin_ids, safe_get_locale
-from bot.app.translations import t
-import argparse
-import sys
+from bot.app.services.shared_services import get_admin_ids
 
 
 # ==============================================================
@@ -41,8 +41,7 @@ file_handler.setFormatter(logging.Formatter(
 ))
 
 # Resolve root log level from environment (LOG_LEVEL), default INFO
-_env_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
-_level = getattr(logging, _env_level, logging.INFO)
+_level = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 
 logging.basicConfig(
     level=_level,       # configurable via LOG_LEVEL
@@ -69,61 +68,10 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 async def maybe_seed() -> None:
     """Опционально заполняет данные через RUN_BOOTSTRAP."""
-    if os.getenv("RUN_BOOTSTRAP", "0").lower() not in {"1", "true", "yes"}:
+    if not RUN_BOOTSTRAP_ENABLED:
         return
 
-    logger.info("[bootstrap] Running…")
-
-    try:
-        from bot.app.core.bootstrap import init_services, init_masters
-        from bot.app.services.admin_services import invalidate_services_cache
-        from bot.app.services.master_services import invalidate_masters_cache
-
-        await init_services()
-        await init_masters()
-
-        try:
-            invalidate_services_cache()
-        except Exception:
-            logger.exception("maybe_seed: invalidate_services_cache failed")
-
-        try:
-            invalidate_masters_cache()
-        except Exception:
-            logger.exception("maybe_seed: invalidate_masters_cache failed")
-
-        logger.info("[bootstrap] Completed")
-    except Exception as e:
-        logger.error("[bootstrap] Failed: %s", e)
-
-
-# ==============================================================
-# ADMIN NOTIFY
-# ==============================================================
-
-async def _notify_admins(bot: Bot) -> None:
-    admin_ids = get_admin_ids()
-
-    for uid in admin_ids:
-        try:
-            lang = await safe_get_locale(int(uid or 0))
-            msg = t("bot_started_notice", lang)
-
-            if msg == "bot_started_notice":
-                msg = {
-                    "uk": "Бот запущено. Надішліть /start або /ping.",
-                    "ru": "Бот запущен. Отправьте /start или /ping.",
-                    "en": "Bot started. Send /start or /ping."
-                }.get(lang, "Bot started. Send /start or /ping.")
-
-            from bot.app.services.shared_services import _safe_send
-
-            try:
-                await _safe_send(bot, uid, msg)
-            except Exception:
-                await bot.send_message(uid, msg)
-        except Exception:
-            logger.exception("_notify_admins: failed to send admin notifications")
+    logger.info("[bootstrap] skipped: bootstrap helpers removed")
 
 
 # ==============================================================
@@ -131,7 +79,7 @@ async def _notify_admins(bot: Bot) -> None:
 # ==============================================================
 
 async def main() -> None:
-    token = os.getenv("BOT_TOKEN")
+    token = BOT_TOKEN
     if not token:
         logger.error("BOT_TOKEN is not set")
         raise SystemExit(1)
@@ -248,7 +196,7 @@ async def main() -> None:
         logger.exception("main: resolve_used_update_types failed")
 
     # Notify admins
-    await _notify_admins(bot)
+    await notify_admins_bot_started(bot)
 
     # Start background workers
     stop_exp = await start_expiration_worker()

@@ -8,14 +8,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Python dependencies via pip/requirements.txt (simpler and faster for CI)
-COPY requirements.txt /app/
+COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Copy project files
-COPY . /app
+# КОПИРУЕМ ВСЁ приложение
+COPY . .
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python /app/scripts/healthcheck.py || exit 1
+# Чтобы bot НОРМАЛЬНО импортировался
+ENV PYTHONPATH=/app
 
 CMD ["python", "-m", "bot.app.run_bot"]

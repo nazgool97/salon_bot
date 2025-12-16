@@ -12,7 +12,16 @@ from sqlalchemy import func, delete
 from sqlalchemy.exc import SQLAlchemyError
 
 from bot.app.core.db import get_session
-from bot.app.core.constants import DEFAULT_SERVICE_FALLBACK_DURATION
+from bot.app.core.constants import (
+    ADMIN_IDS_LIST,
+    DEFAULT_CURRENCY,
+    DEFAULT_LANGUAGE,
+    DEFAULT_LOCAL_TIMEZONE,
+    DEFAULT_SERVICE_FALLBACK_DURATION,
+    MASTER_IDS_LIST,
+    SETTINGS_CACHE_TTL_SECONDS,
+    TELEGRAM_PROVIDER_TOKEN,
+)
 from bot.app.domain.models import User
 from bot.app.translations import tr as _tr_raw
 from aiogram import Bot
@@ -23,9 +32,13 @@ except Exception:
     # set to None so we don't accidentally catch all Exceptions below.
     TelegramAPIError = None
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+# Default online payment discount percent (used when SettingsRepo lookup fails)
+ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT = 5
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -51,12 +64,104 @@ def get_env_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_setting_value(raw: Any) -> Any:
+    """Parse a Setting.value-like string into bool/int/float when reasonable."""
+    if raw is None:
+        return raw
+    try:
+        s = str(raw).strip()
+    except Exception:
+        return raw
+    low = s.lower()
+    if low in {"true", "yes", "on", "1"}:
+        return True
+    if low in {"false", "no", "off", "0"}:
+        return False
+    try:
+        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+            return int(s)
+    except Exception:
+        pass
+    try:
+        if "." in s:
+            return float(s)
+    except Exception:
+        pass
+    return s
+
+
+def _coerce_int(value: int | str | None, default: int) -> int:
+    """Coerce a possibly-None value into int, returning `default` on failure.
+
+    This helper centralizes the small UI/service need to accept either an
+    integer or a string that should parse to int. It intentionally does not
+    perform environment lookups; for env-backed integers use `get_env_int`.
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _default_language() -> str:
-    return os.getenv("DEFAULT_LANGUAGE") or os.getenv("LANGUAGE") or "uk"
+    return DEFAULT_LANGUAGE
 
 
 def _default_currency() -> str:
-    return os.getenv("CURRENCY") or "UAH"
+    # UI-only synchronous fallback for places that cannot access DB.
+    # Prefer `DEFAULT_CURRENCY` env var when present, then legacy `CURRENCY`.
+    return DEFAULT_CURRENCY
+
+
+async def get_global_currency() -> str:
+    """Async helper to resolve the canonical runtime currency.
+
+    Tries DB-backed `SettingsRepo.get_currency()` and falls back to
+    the environment-only `_default_currency()` when the repo is
+    unavailable. Call renderers should prefer this helper when
+    they can await; otherwise use `_default_currency()` for
+    synchronous code paths.
+    """
+    try:
+        from bot.app.services.admin_services import SettingsRepo
+
+        try:
+            val = await SettingsRepo.get_currency()
+            return val or _default_currency()
+        except Exception:
+            return _default_currency()
+    except Exception:
+        return _default_currency()
+
+
+def normalize_currency(code: str | None) -> str | None:
+    """Normalize and validate an ISO 4217 currency code.
+
+    Returns the uppercased 3-letter alphabetic code when it looks like a
+    valid ISO 4217 code (three letters). This intentionally does NOT
+    whitelist specific currencies so admins can enter any 3-letter code.
+
+    Note: acceptance here is syntactic only; downstream systems (payment
+    providers) may not support all codes. Consider integrating a
+    comprehensive currency library (e.g. `pycountry`) if you need a
+    canonical list.
+    """
+    try:
+        if not code:
+            return None
+        c = str(code).strip().upper()
+        if not c:
+            return None
+        # Accept any 3-letter A-Z code (ISO 4217 format). Do not maintain
+        # a hardcoded whitelist here so deployments worldwide work out of
+        # the box without code changes.
+        if re.fullmatch(r"[A-Z]{3}", c):
+            return c
+        return None
+    except Exception:
+        return None
 
 
 def _parse_env_int_list(name: str) -> list[int]:
@@ -73,6 +178,92 @@ def _parse_env_int_list(name: str) -> list[int]:
 
 def default_language() -> str:
     return _default_language()
+
+
+# ---------------- Pagination utility ----------------
+def compute_pagination(total: int, page: int | None, page_size: int | None) -> tuple[int, int, int, int | None]:
+    """Compute safe pagination values.
+
+    Returns (page, total_pages, offset, limit).
+    - total: total item count (negative treated as 0)
+    - page: requested page (None/invalid -> 1)
+    - page_size: items per page (None/<=0 -> no limit)
+    """
+    try:
+        t = int(total or 0)
+    except Exception:
+        t = 0
+    if t < 0:
+        t = 0
+    try:
+        ps = None if page_size is None else int(page_size)
+    except Exception:
+        ps = None
+    if ps is not None and ps <= 0:
+        ps = None
+    if ps is None:
+        total_pages = 1
+        p = 1
+        offset = 0
+        limit = None
+        return p, total_pages, offset, limit
+    try:
+        total_pages = max(1, (t + ps - 1) // ps)
+    except Exception:
+        total_pages = 1
+    try:
+        req = int(page or 1)
+    except Exception:
+        req = 1
+    p = max(1, min(req, total_pages))
+    offset = (p - 1) * ps
+    return p, total_pages, offset, ps
+
+
+def get_cancel_keywords(lang: str | None = None) -> set[str]:
+    """Return a set of localized cancel keywords for the given language.
+
+    The translation key `cancel_keywords` may be either a list of strings
+    or a single string; this helper normalizes both variants and returns
+    a lowercased set for robust comparison with user input.
+    """
+    try:
+        lang = lang or _default_language()
+        raw = _tr_raw("cancel_keywords", lang=lang)
+        kws: set[str] = set()
+        if isinstance(raw, list):
+            for kw in raw:
+                try:
+                    if kw:
+                        kws.add(str(kw).strip().lower())
+                except Exception:
+                    continue
+        elif raw:
+            try:
+                kws.add(str(raw).strip().lower())
+            except Exception:
+                pass
+        if not kws:
+            kws = {"cancel"}
+        return kws
+    except Exception:
+        return {"cancel"}
+
+
+def is_cancel_text(text: str | None, lang: str | None = None) -> bool:
+    """Return True when the provided text should be interpreted as a cancel action.
+
+    This compares a normalized lowercased input against the localized cancel
+    keywords set returned by `get_cancel_keywords`.
+    """
+    try:
+        if not text:
+            return False
+        normalized = str(text).strip().lower()
+        kws = get_cancel_keywords(lang=lang)
+        return normalized in kws
+    except Exception:
+        return False
 
 
 def format_user_display_name(username: str | None, first_name: str | None, last_name: str | None) -> str | None:
@@ -147,15 +338,15 @@ async def get_contact_info() -> dict[str, str]:
 
 
 def get_admin_ids() -> list[int]:
-    return _parse_env_int_list("ADMIN_IDS")
+    return ADMIN_IDS_LIST
 
 
 def get_master_ids() -> list[int]:
-    return _parse_env_int_list("MASTER_IDS")
+    return MASTER_IDS_LIST
 
 
 def _resolve_local_tz() -> ZoneInfo | None:
-    tz_name = os.getenv("LOCAL_TIMEZONE", "Europe/Kyiv")
+    tz_name = DEFAULT_LOCAL_TIMEZONE
     try:
         return ZoneInfo(tz_name)
     except Exception:
@@ -181,14 +372,13 @@ to keep responsibilities clear and avoid circular imports.
 
 # Эмодзи для статусов
 STATUS_EMOJI: Dict[str, str] = {
-    "paid": "✅",
+    "paid": "💳",
     "confirmed": "💵",
     "pending_payment": "⏳",
     "reserved": "🟡",
     "expired": "⌛",
-    "active": "🟢",  # legacy
     "cancelled": "❌",
-    "done": "✔️",
+    "done": "✅",
     "no_show": "👻",
 }
 
@@ -207,10 +397,7 @@ def _settings_cache_expired(last_checked: datetime | None) -> bool:
     a TTL from environment (``SETTINGS_CACHE_TTL_SECONDS``)
     with a conservative default of 60 seconds.
     """
-    try:
-        _ttl = int(os.getenv("SETTINGS_CACHE_TTL_SECONDS", "60"))
-    except ValueError:
-        _ttl = 60
+    _ttl = SETTINGS_CACHE_TTL_SECONDS
     if last_checked is None:
         return True
     try:
@@ -294,7 +481,7 @@ async def get_telegram_provider_token(force_reload: bool = False) -> str | None:
         except Exception:
             token = None
         if not token:
-            token = os.getenv("TELEGRAM_PAYMENT_PROVIDER_TOKEN")
+            token = TELEGRAM_PROVIDER_TOKEN
         _PROVIDER_TOKEN_CACHE = token or None
         _PROVIDER_LAST_CHECKED = utc_now()
         return token or None
@@ -318,52 +505,181 @@ async def is_online_payments_available() -> bool:
 
 
 def format_money_cents(cents: int | float | None, currency: str | None = None) -> str:
-    """Форматирует сумму в копейках в читаемый вид (например, '100.00 UAH').
+    """Format money given in cents using locale-aware formatting when
+    Babel is available; otherwise fall back to a simple ``{amount} {CUR}``
+    representation.
 
     Args:
-        cents: Сумма в копейках.
-        currency: Валюта (по умолчанию UAH).
+        cents: amount in minor units (cents).
+        currency: ISO 4217 3-letter code (if None, resolved from env/settings).
 
     Returns:
-        Отформатированная строка с суммой.
+        Localized money string, e.g. "$1.00" or "1,00 €" where possible.
     """
     try:
         if not currency:
             currency = _default_currency()
-        # Приводим к целым копейкам; None и некорректные значения -> 0
+        # Coerce to integer cents; accept float/int/Decimal
         cents_int = 0
-        if isinstance(cents, (int, float)):
-            cents_int = int(cents)
-        value = cents_int / 100
+        try:
+            if isinstance(cents, Decimal):
+                cents_int = int(cents)
+            elif isinstance(cents, (int, float)):
+                cents_int = int(cents)
+            else:
+                cents_int = int(float(cents)) if cents is not None else 0
+        except Exception:
+            cents_int = 0
+
+        amount = Decimal(cents_int) / Decimal(100)
+
+        # Try to use Babel for proper locale-aware currency formatting.
+        try:
+            from babel.numbers import format_currency
+            try:
+                from babel.core import Locale
+                from babel import default_locale as _babel_default_locale
+            except Exception:
+                Locale = None  # type: ignore
+                _babel_default_locale = None  # type: ignore
+
+            # Resolve a best-effort locale using Babel parsing instead of manual mappings.
+            locale_str = "en_US"
+            try:
+                lang = os.getenv("DEFAULT_LANGUAGE") or os.getenv("LANGUAGE") or default_language() or "en"
+                locale_hint = (lang or "en").replace("-", "_")
+                if Locale is not None:
+                    locale_str = str(Locale.parse(locale_hint, sep="_"))
+                else:
+                    locale_str = locale_hint
+            except Exception:
+                try:
+                    if _babel_default_locale:
+                        locale_str = _babel_default_locale() or locale_str
+                except Exception:
+                    pass
+
+            try:
+                formatted = format_currency(amount, str(currency), locale=locale_str)
+                logger.debug("Formatted money (Babel): %s %s -> %s", cents_int, currency, formatted)
+                return formatted
+            except Exception:
+                # If Babel fails for this locale/currency, fallback below
+                pass
+        except Exception:
+            # Babel not installed or import failed; fall back
+            pass
+
+        # Fallback: simple formatted string with dot and currency suffix
+        value = float(amount)
         formatted = f"{value:.2f} {currency}"
-        # Используем %s для безопасности при непредвиденных типах
-        logger.debug("Форматирована сумма: %s копеек -> %s", cents_int, formatted)
+        logger.debug("Formatted money (fallback): %s -> %s", cents_int, formatted)
         return formatted
     except Exception as e:
-        logger.error("Ошибка форматирования суммы: cents=%s, error=%s", cents, e)
-        return f"0.00 {currency}"
+        logger.exception("format_money_cents failed: %s", e)
+        try:
+            return f"0.00 {currency or 'UNK'}"
+        except Exception:
+            return "0.00"
+
+
+def format_minutes_short(minutes: int, lang: str | None = None) -> str:
+    """Return a compact, localized minutes label (uses hours when divisible).
+
+    Examples: 120 -> "2 h" (with localized hours_short), 90 -> "90 min".
+    """
+    try:
+        mins = int(minutes)
+    except Exception:
+        return str(minutes)
+
+    try:
+        l = lang or default_language()
+    except Exception:
+        l = lang or default_language()
+
+    try:
+        hours_label = _tr_raw("hours_short", lang=l) or "h"
+    except Exception:
+        hours_label = "h"
+    try:
+        minutes_label = _tr_raw("minutes_short", lang=l) or "min"
+    except Exception:
+        minutes_label = "min"
+
+    if mins >= 120 and mins % 60 == 0:
+        return f"{mins // 60} {hours_label}"
+    return f"{mins} {minutes_label}"
 
 
 # ---------------- Time utilities (shared) ---------------- #
-def _parse_hm_to_minutes(hm: str) -> int:
-    """Parse 'HH:MM' into minutes since midnight."""
-    try:
-        parts = str(hm).split(":")
-        h = int(parts[0]) if parts and parts[0] != "" else 0
-        # Be defensive: parts[1] may be an empty string (e.g. '9:'), which
-        # would raise ValueError on int('') and be caught below returning 0.
-        # Instead treat an empty minute part as 0.
-        m = int(parts[1]) if len(parts) > 1 and parts[1] != "" else 0
-        return max(0, min(23, h)) * 60 + max(0, min(59, m))
-    except Exception:
-        return 0
+def _parse_hm_to_minutes(text: str | int) -> int:
+    """Parse an HH:MM-like input into minutes since midnight.
+
+    Accepted forms:
+      - "09:30", "9:30" -> 570
+      - "0930", "930"   -> 570
+      - "9"              -> 540 (interpreted as hours)
+      - integer minutes (returned as-is when in valid range)
+
+    On invalid input a ValueError is raised.
+    """
+    if text is None:
+        raise ValueError("empty time")
+
+    # Integers are treated as minutes
+    if isinstance(text, int):
+        minutes = int(text)
+        if minutes < 0 or minutes >= 24 * 60:
+            raise ValueError(f"minutes out of range: {minutes}")
+        return minutes
+
+    s = str(text).strip()
+    if not s:
+        raise ValueError("empty time")
+
+    # HH:MM or H:MM
+    m = re.fullmatch(r"(\d{1,2}):(\d{1,2})", s)
+    if m:
+        h = int(m.group(1))
+        mm = int(m.group(2))
+        if not (0 <= h < 24 and 0 <= mm < 60):
+            raise ValueError(f"time out of range: {s}")
+        return h * 60 + mm
+
+    # HHMM or HMM numeric forms like 930 or 0930
+    if re.fullmatch(r"\d{3,4}", s):
+        s2 = s.zfill(4)
+        h = int(s2[:2])
+        mm = int(s2[2:])
+        if not (0 <= h < 24 and 0 <= mm < 60):
+            raise ValueError(f"time out of range: {s}")
+        return h * 60 + mm
+
+    # Single hour number like "9" -> 9:00
+    if re.fullmatch(r"\d{1,2}", s):
+        h = int(s)
+        if not (0 <= h < 24):
+            raise ValueError(f"hour out of range: {s}")
+        return h * 60
+
+    raise ValueError(f"unrecognized time format: {text}")
 
 
 def _minutes_to_hm(minutes: int) -> str:
-    minutes = max(0, min(24 * 60 - 1, int(minutes)))
-    h = minutes // 60
-    m = minutes % 60
-    return f"{h:02d}:{m:02d}"
+    """Format minutes-since-midnight as "HH:MM".
+
+    Raises ValueError when `minutes` is out of 0..(24*60-1).
+    """
+    try:
+        m = int(minutes)
+    except Exception:
+        raise ValueError(f"invalid minutes value: {minutes}")
+    if m < 0 or m >= 24 * 60:
+        raise ValueError(f"minutes out of range: {m}")
+    h = m // 60
+    mm = m % 60
+    return f"{h:02d}:{mm:02d}"
 
 
 def get_local_tz() -> ZoneInfo:
@@ -383,9 +699,13 @@ from datetime import timezone
 def utc_now() -> datetime:
     """Return current time as an aware UTC datetime."""
     try:
+        # Prefer the `UTC` constant when available (PEP 495 friendly).
         return datetime.now(UTC)
     except Exception:
-        return datetime.now(timezone.utc)
+        # Fallback to the well-known timezone.utc instance.
+        from datetime import timezone as _tz
+
+        return datetime.now(_tz.utc)
 
 
 def local_now() -> datetime:
@@ -394,9 +714,15 @@ def local_now() -> datetime:
     Falls back to UTC when local timezone resolution fails.
     """
     try:
-        return datetime.now(get_local_tz())
+        # Derive local time from a single source of truth (UTC) so all parts
+        # of the application use consistent anchor points for arithmetic.
+        return utc_now().astimezone(get_local_tz())
     except Exception:
-        return datetime.now(UTC)
+        try:
+            return utc_now()
+        except Exception:
+            # Last-resort: naive now in UTC
+            return datetime.utcnow().replace(tzinfo=UTC)
 
 
 def format_slot_label(slot: datetime | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None) -> str:
@@ -476,19 +802,18 @@ def _decode_time(tok: str | None) -> str | None:
 async def get_service_duration(session, service_id: str | None, master_id: int | None = None) -> int:
     """Resolve the effective duration (minutes) for a service+master pair.
 
-    Resolution order:
-      1. If `master_id` provided, check `master_services.duration_minutes`.
-      2. Check `services.duration_minutes` (canonical service-level value).
-      3. Check `service_profiles.duration_minutes` (legacy profile data).
-      4. Fallback to `SettingsRepo.get_slot_duration()` or
-         `DEFAULT_SERVICE_FALLBACK_DURATION`.
+        Resolution order:
+            1. If `master_id` provided, check `master_services.duration_minutes`.
+            2. Check `services.duration_minutes` (canonical service-level value).
+            3. Fallback to `SettingsRepo.get_slot_duration()` or
+                 `DEFAULT_SERVICE_FALLBACK_DURATION`.
 
     This helper is async and takes a SQLAlchemy `session` so callers can
     reuse their existing transaction/session and avoid extra roundtrips.
     """
     try:
         # Lazy imports to avoid circular dependencies at module-import time
-        from bot.app.domain.models import MasterService, Service, ServiceProfile
+        from bot.app.domain.models import MasterService, Service
         from bot.app.services.admin_services import SettingsRepo
 
         # 1) master-specific override
@@ -515,14 +840,7 @@ async def get_service_duration(session, service_id: str | None, master_id: int |
             except Exception:
                 pass
 
-        # 3) legacy service_profile
-        if service_id is not None:
-            try:
-                sp = await session.scalar(select(ServiceProfile).where(ServiceProfile.service_id == service_id))
-                if sp and getattr(sp, "duration_minutes", None):
-                    return int(getattr(sp, "duration_minutes") or 0)
-            except Exception:
-                pass
+        # 3) legacy fallback removed: durations are canonical on `services` table
 
         # 4) settings fallback
         try:
@@ -557,38 +875,6 @@ def status_to_emoji(status: object) -> str:
     except Exception:
         return "❓"
 
-
-def _format_client_booking_row(fields: dict[str, str]) -> str:
-    status_label = str(fields.get("status_label") or "")
-    st = str(fields.get("st") or "")
-    dt = str(fields.get("dt") or "")
-    master_name = str(fields.get("master_name") or "")
-    service_name = str(fields.get("service_name") or "")
-    price_txt = str(fields.get("price_txt") or "")
-    return f"{status_label} {st} {dt} {master_name[:20]} {service_name[:24]} {price_txt}".strip()
-
-
-def _format_master_booking_row(fields: dict[str, str]) -> str:
-    status_label = str(fields.get("status_label") or "")
-    st = str(fields.get("st") or "")
-    dt = str(fields.get("dt") or "")
-    client_name = str(fields.get("client_name") or "")
-    service_name = str(fields.get("service_name") or "")
-    price_txt = str(fields.get("price_txt") or "")
-    return f"{status_label} {st} {dt} {client_name[:20]} {service_name[:24]} {price_txt}".strip()
-
-
-def _format_admin_booking_row(fields: dict[str, str]) -> str:
-    status_label = str(fields.get("status_label") or "")
-    st = str(fields.get("st") or "")
-    dt = str(fields.get("dt") or "")
-    master_name = str(fields.get("master_name") or "")
-    client_name = str(fields.get("client_name") or "")
-    service_name = str(fields.get("service_name") or "")
-    price_txt = str(fields.get("price_txt") or "")
-    return f"{status_label} {st} {dt} {master_name[:20]} / {client_name[:20]} {service_name[:20]} {price_txt}".strip()
-
-
 def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -> tuple[str, int]:
     """Format a booking entry for compact list display.
 
@@ -604,7 +890,8 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
         "starts_at": info.starts_at,
         "original_price_cents": info.original_price_cents,
         "final_price_cents": info.final_price_cents,
-        "currency": info.currency,
+        # Use env/default currency SSoT
+        "currency": _default_currency(),
         "master_name": info.master_name,
         "service_name": info.service_name,
         "client_name": info.client_name,
@@ -628,7 +915,9 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
         except Exception:
             st = dt = ""
     price_cents = data.get("final_price_cents") or data.get("original_price_cents")
-    currency = data.get("currency") or _default_currency()
+    # Use env-configured default currency as the single source of truth.
+    # Ignore any per-service or per-booking stored currency values.
+    currency = _default_currency()
     price_txt = format_money_cents(int(price_cents), currency) if price_cents else ""
     status_val = data.get("status")
     status_label = status_to_emoji(status_val) if status_val is not None else ""
@@ -641,11 +930,30 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
         "client_name": client_name,
         "price_txt": price_txt,
     }
+    # Prefer role-specific formatters defined in service modules. Import lazily
+    # to avoid circular imports at module import time. Fall back to a simple
+    # client-style formatter when the role module isn't importable (tests/etc.).
+    try:
+        from bot.app.services.client_services import format_client_booking_row as _client_fmt
+    except Exception:
+        _client_fmt = lambda f: f.get("service_name", "")
+
+    try:
+        from bot.app.services.master_services import format_master_booking_row as _master_fmt
+    except Exception:
+        _master_fmt = _client_fmt
+
+    try:
+        from bot.app.services.admin_services import format_admin_booking_row as _admin_fmt
+    except Exception:
+        _admin_fmt = _client_fmt
+
     formatter = {
-        "master": _format_master_booking_row,
-        "admin": _format_admin_booking_row,
+        "master": _master_fmt,
+        "admin": _admin_fmt,
+        "client": _client_fmt,
     }
-    formatter_fn = formatter.get(str(role).lower(), _format_client_booking_row)
+    formatter_fn = formatter.get(str(role).lower(), _client_fmt)
     text = formatter_fn(row_fields)
     return text, bid
 
@@ -662,7 +970,8 @@ class BookingInfo:
     starts_at: datetime | None = None
     original_price_cents: int | None = None
     final_price_cents: int | None = None
-    currency: str | None = None
+    # Currency is intentionally not stored in the DTO; use global setting
+    # resolved at render time via `get_global_currency()` or `_default_currency()`.
     client_name: str | None = None
     client_username: str | None = None
     client_id: int | None = None
@@ -679,7 +988,8 @@ def booking_info_from_mapping(data: Mapping[str, Any]) -> BookingInfo:
         starts_at=data.get("starts_at"),
         original_price_cents=_to_int(data.get("original_price_cents")),
         final_price_cents=_to_int(data.get("final_price_cents")),
-        currency=_to_str(data.get("currency") or "UAH"),
+        # Do not trust per-booking or per-service stored currency values.
+        # Renderers should use the global currency instead.
         client_name=_to_str(data.get("client_name")),
         client_username=_to_str(data.get("client_username")),
         client_id=_to_int(data.get("client_id") or data.get("user_id")),
@@ -706,7 +1016,7 @@ def normalize_booking_row(row: Any) -> BookingInfo:
             "starts_at": getattr(row, "starts_at", None),
             "original_price_cents": getattr(row, "original_price_cents", None),
             "final_price_cents": getattr(row, "final_price_cents", None),
-            "currency": getattr(row, "currency", None) or "UAH",
+            # Do not materialize currency on the DTO; renderers use global SSoT.
             "client_name": getattr(row, "client_name", None),
             "client_username": getattr(row, "client_username", None),
             "client_id": getattr(row, "client_id", None) or getattr(row, "user_id", None),
@@ -752,7 +1062,7 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
 
         booking_id = _get("booking_id", 0)
         price_cents = _get("price_cents", 0) or 0
-        currency = _get("currency", "UAH")
+        currency = _get("currency") or _default_currency()
         service_name = _get("service_name", None)
         master_name = _get("master_name", None)
         date_str = _get("date_str", None)
@@ -776,13 +1086,16 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
         service_name = service_name or __("service_label")
         master_name = master_name or __("master_label")
 
+        time_str: str | None = None
         if not date_str:
             if starts_at:
                 try:
                     dt_local = starts_at.astimezone(get_local_tz())
                     date_str = f"{dt_local:%d.%m.%Y}"
+                    time_str = f"{dt_local:%H:%M}"
                 except Exception:
                     date_str = "—"
+                    time_str = None
             else:
                 date_str = "—"
 
@@ -791,7 +1104,11 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
         lines.append(f"<b>{__("booking_label")} №{booking_id}</b>")
         lines.append(f"{__("service_label")}: <b>{service_name}</b>")
         lines.append(f"{__("master_label")}: {master_name}")
-        lines.append(f"{__("date_label")}: <b>{date_str}</b>")
+        # Include time in header when available so client sees booking time immediately
+        if time_str:
+            lines.append(f"{__("date_label")}: <b>{date_str} {time_str}</b>")
+        else:
+            lines.append(f"{__("date_label")}: <b>{date_str}</b>")
         try:
             lines.append(f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}")
         except Exception:
@@ -871,8 +1188,6 @@ async def translate_for_user(user_id: int, key: str, **kwargs: Any) -> str:
         return key
 
 
-# (Service & master cache helpers now reside in their role modules.)
-
 
 __all__ = [
     "is_telegram_payments_enabled",
@@ -887,12 +1202,12 @@ __all__ = [
     "get_env_int",
     "get_admin_ids",
     "get_master_ids",
-    # Note: get_service_name moved to bot.app.services.admin_services
     "format_booking_list_item",
     "format_booking_details_text",
     "format_slot_label",
     "BookingInfo",
     "booking_info_from_mapping",
+    "get_global_currency",
 ]
 
 # ---------------- New shared helpers (i18n, profiles, notifications) ---------------- #
@@ -935,23 +1250,6 @@ def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
     # returning 0 and masking incorrect behavior.
     return int(obj.from_user.id)
 
-
-def _safe_call(name: str, *args, **kwargs) -> None:
-    """Call cfg.<name>(*args, **kwargs) if callable, swallow errors.
-
-    Useful for optional cache invalidations/hooks that may not exist in some deployments.
-    """
-    try:
-        cfg_mod = import_module("bot.config")
-        fn = getattr(cfg_mod, name, None)
-        if callable(fn):
-            try:
-                fn(*args, **kwargs)
-            except Exception:
-                # Best-effort only
-                pass
-    except Exception:
-        pass
 
 
 def _get_id_from_callback(data: str | None, prefix: str) -> Optional[int]:
@@ -1001,15 +1299,6 @@ def tr(key: str, *, lang: str | None = None, user_id: int | None = None, **fmt: 
         return key
 
 
-# ---------------- Minimal shared UI primitives moved to UI modules ---------------- #
-# The keyboard builders are UI-only and now live under
-# `bot.app.telegram.*_keyboards` (for role-specific factories) and
-# `bot.app.telegram.client.client_keyboards` for simple/common helpers.
-
-
-# UI rendering moved to client client_keyboards.render_bookings_list_page
-
-
 def tz_convert(dt: datetime, tz: ZoneInfo | str | None = None) -> datetime:
     """Convert a datetime to a target timezone (defaults to LOCAL_TZ)."""
     try:
@@ -1038,20 +1327,7 @@ def format_date(dt: datetime, fmt: str = "%d.%m %H:%M", tz: ZoneInfo | str | Non
             return "N/A"
 
 
-# Booking- and master-related helpers (service name resolution, bookings list,
-# master profile formatting) have been moved into their respective modules to
-# avoid duplication and import cycles:
-# - Booking helpers -> bot.app.services.client_services
-# - Master profile helpers -> bot.app.services.master_services
-#
-# The original implementations were removed from shared_services. Callers
-# should import the canonical functions/classes from the modules listed above.
-
-
-
-# BookingDetails dataclass and build_booking_details() were moved to
-# `bot.app.services.client_services`. Import the canonical implementations
-# from that module when booking-specific logic is required.
+ 
 
 
 async def _safe_send(bot: Bot, chat_id: int | str, text: str, reply_markup: Any = None, **kwargs: Any) -> bool:
@@ -1083,15 +1359,3 @@ async def _safe_send(bot: Bot, chat_id: int | str, text: str, reply_markup: Any 
         raise
 
 
-# build_bookings_dashboard_kb intentionally removed: import from client_keyboards
-
-
-# Removed thin proxy format_booking_card_text; callers should import
-# `format_booking_details_text` from `bot.app.services.client_services`.
-
-
-# build_booking_card_kb deprecated shim removed; import from client_keyboards
-
-
-# `render_booking_card` removed — handlers should call the builder + formatter + kb
-# explicitly (build_booking_details -> format_booking_details_text -> build_booking_card_kb).

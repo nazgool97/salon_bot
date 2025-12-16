@@ -42,15 +42,12 @@ class AdminStates(StatesGroup):
     waiting_for_price: ClassVar[State] = State()
     set_price: ClassVar[State] = State()
     # Removed obsolete currency states (waiting_for_currency, set_currency) now handled via picker callbacks only.
+    # Manual currency entry states
+    enter_currency: ClassVar[State] = State()
 
     # Additional admin states
     add_master_extra: ClassVar[State] = State()
     admin_misc: ClassVar[State] = State()
     # Phone/settings editing state
     edit_setting_text: ClassVar[State] = State()
-    # Setup wizard sequential states
-    wizard_phone: ClassVar[State] = State()
-    wizard_address: ClassVar[State] = State()
-    wizard_instagram: ClassVar[State] = State()
-    wizard_hours_start: ClassVar[State] = State()
-    wizard_hours_end: ClassVar[State] = State()
+    # (wizard states removed)

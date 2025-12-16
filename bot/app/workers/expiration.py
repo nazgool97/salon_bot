@@ -225,7 +225,7 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
                     # 3. Notify affected parties about NO_SHOW (if bot provided)
                     if bot is not None:
                         try:
-                            from bot.app.services.client_services import send_booking_notification
+                            from bot.app.core.notifications import send_booking_notification
                             from bot.app.services.master_services import MasterRepo
                             admins = get_admin_ids() or []
                             for bid in booking_ids_to_fail:

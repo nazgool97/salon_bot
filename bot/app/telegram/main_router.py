@@ -12,9 +12,8 @@ logger = logging.getLogger(__name__)
 
 def build_main_router() -> Router:
     router = Router()
-    # NOTE: global navigation handler is registered after feature routers
-    # to ensure typed CallbackData handlers in feature routers receive
-    # callbacks first. The handler is attached later below.
+    # Register global navigation handler after feature routers so feature
+    # CallbackData handlers are matched first.
     
     # Include public/client router first so general commands (like /start)
     # and fallback message handlers are evaluated before role-protected
@@ -48,7 +47,7 @@ def build_main_router() -> Router:
         logger.error("Failed to include master_router: %s", e)
     # Register global navigation handler after feature routers so it doesn't
     # intercept typed callback_data handlers defined in feature routers.
-    @router.callback_query(NavCB.filter())
+    @router.callback_query(NavCB.filter(F.act.in_(["root", "back", "role_root", "noop"])))
     async def _global_nav_handler(cb: CallbackQuery, callback_data, state: FSMContext) -> None:
         try:
             act = getattr(callback_data, "act", None)
@@ -58,6 +57,9 @@ def build_main_router() -> Router:
                 await nav_pop(cb, state)
             elif act == "role_root":
                 await nav_role_root(cb, state)
+            elif act == "noop":
+                # explicit no-op to acknowledge label buttons
+                pass
             try:
                 await cb.answer()
             except Exception:

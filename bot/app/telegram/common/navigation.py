@@ -296,135 +296,105 @@ async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMC
     Priority: admin -> master -> client
     This implements the "Назад в своё меню" behaviour.
     """
-    try:
-        # If the user is already sitting on a role root (admin or master),
-        # treat the 'role_root' button as a request to leave the role UI and
-        # return to the global client root. We must check the current_text
-        # before clearing the navigation stack (nav_reset) because nav_reset
-        # clears the current_text value.
-        cur_text = None
-        cur_lang = None
-        if state is not None:
+    # If the user is already sitting on a role root (admin or master),
+    # treat the 'role_root' button as a request to leave the role UI and
+    # return to the global client root. We must check the current_text
+    # before clearing the navigation stack (nav_reset) because nav_reset
+    # clears the current_text value.
+    cur_text = None
+    cur_lang = None
+    if state is not None:
+        d = await state.get_data()
+        cur_text = d.get("current_text")
+        cur_lang = d.get("current_lang")
+
+    # If current_text matches a role's root title, go to client root instead
+    if cur_text is not None:
+        from bot.app.services.shared_services import safe_get_locale
+        from bot.app.translations import tr
+        # Determine language for comparison (prefer stored lang)
+        if not cur_lang:
+            user_id = obj.from_user.id
             try:
-                d = await state.get_data()
-                cur_text = d.get("current_text")
-                cur_lang = d.get("current_lang")
+                cur_lang = await safe_get_locale(user_id)
             except Exception:
-                cur_text = None
                 cur_lang = None
 
-        # If current_text matches a role's root title, go to client root instead
-        if cur_text is not None:
-            try:
-                from bot.app.services.shared_services import safe_get_locale
-                from bot.app.translations import tr
-                # Determine language for comparison (prefer stored lang)
-                if not cur_lang:
-                    user_id = obj.from_user.id
-                    try:
-                        cur_lang = await safe_get_locale(user_id)
-                    except Exception:
-                        cur_lang = None
+        admin_title = tr("admin_panel_title", lang=cur_lang) if cur_lang is not None else tr("admin_panel_title")
+        master_title = tr("master_menu_header", lang=cur_lang) if cur_lang is not None else tr("master_menu_header")
+        if cur_text in (admin_title, master_title):
+            # User is already on a role's root screen -> go to client root
+            await nav_root(obj, state)
+            return
 
-                admin_title = tr("admin_panel_title", lang=cur_lang) if cur_lang is not None else tr("admin_panel_title")
-                master_title = tr("master_menu_header", lang=cur_lang) if cur_lang is not None else tr("master_menu_header")
-                if cur_text in (admin_title, master_title):
-                    # User is already on a role's root screen -> go to client root
-                    await nav_root(obj, state)
-                    return
-            except Exception:
-                logger.exception("nav_role_root: failed to detect current role titles")
+    # Reset nav stack now (role root should be the new root)
+    if state is not None:
+        await nav_reset(state)
 
-        # Reset nav stack now (role root should be the new root)
+    # Determine role and show the appropriate menu. Use lazy imports to
+    # avoid circular imports at module load time.
+    # If FSM state contains a preferred role hint (set by role-specific
+    # handlers when they open their root screen), honor it first so the
+    # 'role_root' button returns the user to the UI they came from.
+    pref = None
+    if state is not None:
+        d = await state.get_data()
+        pref = d.get("preferred_role")
+
+    if pref == "master":
+        from bot.app.telegram.master.master_handlers import show_master_menu
         if state is not None:
+            await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
+            return
+
+    if pref == "admin":
+        from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
+        from bot.app.translations import tr
+        from bot.app.services.shared_services import safe_get_locale
+        user_id = obj.from_user.id
+        lang = await safe_get_locale(user_id)
+        text = tr("admin_panel_title", lang=lang) or "Admin"
+        if isinstance(obj, CallbackQuery) and obj.message is not None:
+            from bot.app.telegram.common.ui_fail_safe import safe_edit
             try:
-                await nav_reset(state)
-            except Exception:
-                logger.exception("nav_role_root: nav_reset failed")
+                await safe_edit(obj.message, text, reply_markup=admin_menu_kb(lang))
+            except TelegramAPIError as exc:
+                # Only swallow Telegram API acknowledgement errors (network, flood, etc.)
+                logger.debug("nav_role_root: TelegramAPIError while editing admin root: %s", exc)
+        if state is not None:
+            await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
+        return
 
-        # Determine role and show the appropriate menu. Use lazy imports to
-        # avoid circular imports at module load time.
-        try:
-            # If FSM state contains a preferred role hint (set by role-specific
-            # handlers when they open their root screen), honor it first so the
-            # 'role_root' button returns the user to the UI they came from.
-            pref = None
-            if state is not None:
-                try:
-                    d = await state.get_data()
-                    pref = d.get("preferred_role")
-                except Exception:
-                    pref = None
+    # If no preferred role hint or preferred handling failed, fall back
+    # to dynamic role detection (existing behaviour).
+    from bot.app.telegram.common.roles import is_admin_user, is_master_user
+    # Prefer master menu first so a user who is both master and admin
+    # returns to the master UI when coming from master flows.
+    if await is_master_user(obj):
+        from bot.app.telegram.master.master_handlers import show_master_menu
+        if state is not None:
+            await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
+            return
 
-            if pref == "master":
-                try:
-                    from bot.app.telegram.master.master_handlers import show_master_menu
-                    if state is not None:
-                        await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
-                        return
-                except Exception:
-                        logger.exception("nav_role_root: preferred master handler failed")
-            if pref == "admin":
-                try:
-                    from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
-                    from bot.app.translations import tr
-                    from bot.app.services.shared_services import safe_get_locale
-                    user_id = obj.from_user.id
-                    lang = await safe_get_locale(user_id)
-                    text = tr("admin_panel_title", lang=lang) or "Admin"
-                    if isinstance(obj, CallbackQuery) and obj.message is not None:
-                        from bot.app.telegram.common.ui_fail_safe import safe_edit
-                        await safe_edit(obj.message, text, reply_markup=admin_menu_kb(lang))
-                    try:
-                        if state is not None:
-                            await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
-                    except Exception:
-                            logger.exception("nav_role_root: preferred admin handler failed")
-                    return
-                except Exception:
-                    logger.exception("nav_role_root: preferred admin handler failed, falling back")
+    if await is_admin_user(obj):
+        from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
+        from bot.app.translations import tr
+        from bot.app.services.shared_services import safe_get_locale
+        user_id = obj.from_user.id
+        lang = await safe_get_locale(user_id)
+        text = tr("admin_panel_title", lang=lang) or "Admin"
+        if isinstance(obj, CallbackQuery) and obj.message is not None:
+            from bot.app.telegram.common.ui_fail_safe import safe_edit
+            try:
+                await safe_edit(obj.message, text, reply_markup=admin_menu_kb(lang))
+            except TelegramAPIError as exc:
+                logger.debug("nav_role_root: TelegramAPIError while editing admin root: %s", exc)
+        if state is not None:
+            await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
+        return
 
-            # If no preferred role hint or preferred handling failed, fall back
-            # to dynamic role detection (existing behaviour).
-            from bot.app.telegram.common.roles import is_admin_user, is_master_user
-            # is_admin_user / is_master_user accept Message|CallbackQuery
-            # Prefer master menu first so a user who is both master and admin
-            # returns to the master UI when coming from master flows.
-            if await is_master_user(obj):
-                try:
-                    # Delegate to master handler's show_master_menu which resets nav
-                    from bot.app.telegram.master.master_handlers import show_master_menu
-                    if state is not None:
-                        await show_master_menu(obj if isinstance(obj, CallbackQuery) else obj, state)
-                        return
-                except Exception:
-                    logger.exception("nav_role_root: master role detection failed, falling back")
-            if await is_admin_user(obj):
-                try:
-                    from bot.app.telegram.admin.admin_keyboards import admin_menu_kb
-                    from bot.app.translations import tr
-                    from bot.app.services.shared_services import safe_get_locale
-                    user_id = obj.from_user.id
-                    lang = await safe_get_locale(user_id)
-                    text = tr("admin_panel_title", lang=lang) or "Admin"
-                    if isinstance(obj, CallbackQuery) and obj.message is not None:
-                        from bot.app.telegram.common.ui_fail_safe import safe_edit
-                        await safe_edit(obj.message, text, reply_markup=admin_menu_kb(lang))
-                    try:
-                        if state is not None:
-                            await nav_replace(state, text, admin_menu_kb(lang), lang=lang)
-                    except Exception:
-                        logger.exception("nav_role_root: updating nav state for admin role failed")
-                    return
-                except Exception:
-                    logger.exception("nav_role_root: admin role detection failed, falling back")
-        except Exception:
-              logger.exception("nav_role_root: role detection failed")
-
-        # Default fallback: client main menu
-        await nav_root(obj, state)
-    except Exception:
-        logger.exception("nav_role_root: unexpected error")
+    # Default fallback: client main menu
+    await nav_root(obj, state)
 
 
 # Navigation router: central handler for NavCB callbacks (root/back/role_root).
@@ -450,7 +420,10 @@ async def _handle_nav_back(cb: CallbackQuery, state: FSMContext) -> None:
 @nav_router.callback_query(NavCB.filter(F.act == "role_root"))
 async def _handle_nav_role_root(cb: CallbackQuery, state: FSMContext) -> None:
     """Возврат в корневое меню роли (admin/master/client)."""
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramAPIError as exc:
+        logger.debug("nav_role_root: TelegramAPIError while answering callback: %s", exc)
     await nav_role_root(cb, state)
 
 

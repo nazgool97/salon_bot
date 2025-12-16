@@ -61,12 +61,14 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
         if isinstance(obj, Message):
             await obj.answer(text)
         else:
-            # For callback queries, show a localized alert so the user sees
-            # why the action was denied. This makes diagnosing routing/role
-            # issues easier in the UI. If this becomes noisy, we can revert
-            # to a silent acknowledge, but for now an alert improves UX.
+            # For callback queries, avoid noisy alert popups in normal UX flows
+            # (for example, a master navigating their own menu). Silently
+            # acknowledge the callback instead of showing an alert. During
+            # debugging you can re-enable alerts or call `ensure_admin` from
+            # code paths that should explicitly notify non-admins.
             try:
-                await obj.answer(text, show_alert=True)
+                # Silent acknowledge: no visible alert will be shown to the user.
+                await obj.answer()
             except Exception:
                 # Best-effort: if answering fails, ignore to avoid spamming logs
                 pass

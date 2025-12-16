@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.app.telegram.client.client_keyboards import get_simple_kb
+from bot.app.telegram.client.client_keyboards import get_simple_kb, build_bookings_dashboard_kb
 from bot.app.telegram.common.callbacks import pack_cb, MasterMenuCB, MasterScheduleCB, NavCB
 from bot.app.translations import t, tr
 from typing import Any, cast
 import logging
 
 logger = logging.getLogger(__name__)
-from bot.app.services.master_services import format_master_profile_text, build_time_slot_list
+from bot.app.services.master_services import build_time_slot_list
 
 
 
@@ -26,7 +26,7 @@ def get_master_main_menu(lang: str = "uk") -> InlineKeyboardMarkup:
 	builder.button(text=t("master_my_clients_button", lang), callback_data=pack_cb(MasterMenuCB, act="my_clients"))
 	builder.button(text=t("master_stats_button", lang), callback_data=pack_cb(MasterMenuCB, act="stats"))
 	# New: edit per-service durations
-	builder.button(text=t("master_service_durations_button", lang) if t("master_service_durations_button", lang) != "master_service_durations_button" else "⏱ Длительности", callback_data=pack_cb(MasterMenuCB, act="service_durations"))
+	builder.button(text=t("master_service_durations_button", lang), callback_data=pack_cb(MasterMenuCB, act="service_durations"))
 	# Back from master main menu should return to role_root (client/main)
 	# Use NavCB(role_root) so nav_role_root can decide the proper target.
 	builder.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))
@@ -136,22 +136,13 @@ __all__ = [
 	"get_stats_kb",
 	"get_time_start_kb",
 	"get_time_end_kb",
-	"format_master_profile_text",
 ]
 
 
 def get_master_bookings_dashboard_kb(lang: str = "uk", mode: str = "upcoming", page: int = 1, total_pages: int = 1) -> InlineKeyboardMarkup:
 	"""Delegator: use shared build_bookings_dashboard_kb for master dashboard."""
-	try:
-		from bot.app.telegram.client.client_keyboards import build_bookings_dashboard_kb
-
-		meta = {"mode": mode, "page": int(page or 1), "total_pages": int(total_pages or 1)}
-		return build_bookings_dashboard_kb("master", meta, lang=lang)
-	except Exception:
-		# Fallback to previous behaviour minimal keyboard
-		from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-		from bot.app.telegram.common.callbacks import pack_cb, NavCB
-		return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("back", lang), callback_data=pack_cb(NavCB, act="role_root"))]])
+	meta = {"mode": mode, "page": int(page or 1), "total_pages": int(total_pages or 1)}
+	return build_bookings_dashboard_kb("master", meta, lang=lang)
 
 
 from bot.app.core.constants import (
@@ -160,7 +151,7 @@ from bot.app.core.constants import (
 )
 
 
-def get_time_start_kb(day: int, *, times: list[str] | None = None) -> InlineKeyboardMarkup:
+def get_time_start_kb(day: int, *, times: list[str] | None = None, lang: str = "uk") -> InlineKeyboardMarkup:
 	"""Keyboard for selecting the start time for a day's window."""
 	logger.debug("Building time start kb for day=%s times=%s", day, times)
 	builder = InlineKeyboardBuilder()
@@ -172,7 +163,7 @@ def get_time_start_kb(day: int, *, times: list[str] | None = None) -> InlineKeyb
 	builder.adjust(4)
 	# Back button returns to day actions (so master can continue editing the day)
 	try:
-		back_button = InlineKeyboardButton(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
+		back_button = InlineKeyboardButton(text=f"{t('back', lang=lang)}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
 		builder.row(back_button)
 	except Exception as e:
 		logger.exception("get_time_start_kb: failed to append back_button: %s", e)
@@ -180,7 +171,7 @@ def get_time_start_kb(day: int, *, times: list[str] | None = None) -> InlineKeyb
 	return builder.as_markup()
 
 
-def get_time_end_kb(day: int, start_time: str, *, items: list[tuple[str, str]], end_hour: int = DEFAULT_DAY_END_HOUR, step_min: int = DEFAULT_TIME_STEP_MINUTES) -> InlineKeyboardMarkup:
+def get_time_end_kb(day: int, start_time: str, *, items: list[tuple[str, str]], end_hour: int = DEFAULT_DAY_END_HOUR, step_min: int = DEFAULT_TIME_STEP_MINUTES, lang: str = "uk") -> InlineKeyboardMarkup:
 	"""Keyboard for selecting the end time given a chosen start_time.
 
 	End choices are strictly after start_time with the same step increments.
@@ -205,7 +196,7 @@ def get_time_end_kb(day: int, start_time: str, *, items: list[tuple[str, str]], 
 		except Exception:
 			pass
 		try:
-			back_button = InlineKeyboardButton(text=f"{t('back')}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
+			back_button = InlineKeyboardButton(text=f"{t('back', lang=lang)}", callback_data=pack_cb(MasterScheduleCB, action="edit_day", day=day))
 			builder.row(back_button)
 		except Exception:
 			pass

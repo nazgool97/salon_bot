@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, UTC
@@ -13,25 +14,22 @@ from bot.app.domain.models import (
     BookingStatus,
     Master,
     Service,
-    ServiceProfile,
     User,
     BookingRating,
-    MasterProfile,
     MasterSchedule,
     BookingItem,
     normalize_booking_status,
     TERMINAL_STATUSES,
     ACTIVE_STATUSES,
 )
-import asyncio
 from bot.app.core.db import get_session
+from bot.app.core.constants import REQUIRE_ROW_LOCK_STRICT
 from bot.app.services import master_services
 from bot.app.services.master_services import MasterRepo
 
 from zoneinfo import ZoneInfo
 from aiogram import Bot
 from bot.app.services.shared_services import (
-    LOCAL_TZ,
     BookingInfo,
     booking_info_from_mapping,
     format_money_cents,
@@ -43,13 +41,20 @@ from bot.app.services.shared_services import (
     format_date,
     utc_now,
     local_now,
+    get_local_tz,
     get_service_duration,
+    ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT,
 )
 from bot.app.services.admin_services import SettingsRepo
 from bot.app.services.admin_services import ServiceRepo
 from bot.app.telegram.common.status import ACTIVE_BLOCKING_STATUSES
 
 logger = logging.getLogger(__name__)
+
+# Online payment discount setting key (percent). Default value centralized
+# in `shared_services.ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT` so there's a
+# single source of truth for the fallback percent used across the codebase.
+ONLINE_PAYMENT_DISCOUNT_SETTING = "online_payment_discount_percent"
 
 
 @dataclass
@@ -65,13 +70,35 @@ class BookingConflictRow:
 # ---------------- Formatting helpers (moved from client_keyboards) ----------------
 
 
-async def calculate_booking_permissions(obj: dict | Any, lock_r_hours: int | None = None, lock_c_hours: int | None = None, settings: Any | None = None) -> tuple[bool, bool]:
+# --- Client formatters ------------------------------------------------------
+def format_client_booking_row(fields: dict[str, str]) -> str:
+    """Format booking row for client-facing compact lists.
+
+    Fields is a mapping with keys produced by `format_booking_list_item`.
+    """
+    status_label = str(fields.get("status_label") or "")
+    st = str(fields.get("st") or "")
+    dt = str(fields.get("dt") or "")
+    master_name = str(fields.get("master_name") or "")
+    service_name = str(fields.get("service_name") or "")
+    price_txt = str(fields.get("price_txt") or "")
+    # Keep status label at the front, then compact parts separated by bullets
+    datetime_part = f"{dt} {st}".strip()
+    service_part = f"{service_name[:24]} {price_txt}".strip()
+    parts = [datetime_part, master_name[:20].strip(), service_part]
+    parts = [p for p in parts if p]
+    body = " • ".join(parts)
+    return (f"{status_label} " + body).strip()
+
+
+
+async def calculate_booking_permissions(obj: dict | Any, lock_r_minutes: int | None = None, lock_c_minutes: int | None = None, settings: Any | None = None) -> tuple[bool, bool]:
     """Calculate (can_cancel, can_reschedule) for a booking-like object.
 
     Args:
         obj: mapping or object with a `starts_at` and optional `status`.
-        settings: optional object providing `get_client_reschedule_lock_hours` and
-            `get_client_cancel_lock_hours` callables; falls back to `SettingsRepo`.
+        settings: optional object providing `get_client_reschedule_lock_minutes` and
+            `get_client_cancel_lock_minutes` callables; falls back to `SettingsRepo`.
     Returns:
         (can_cancel, can_reschedule)
     """
@@ -88,33 +115,33 @@ async def calculate_booking_permissions(obj: dict | Any, lock_r_hours: int | Non
             delta_seconds = (starts_utc - now_utc).total_seconds()
             # resolve lock settings: explicit args take precedence, then provided
             # settings object, then SettingsRepo, then default 3 hours
-            if lock_r_hours is not None:
-                lock_r = lock_r_hours
+            if lock_r_minutes is not None:
+                lock_r = lock_r_minutes
             else:
                 try:
-                    if settings and hasattr(settings, "get_client_reschedule_lock_hours"):
-                        lock_r = settings.get_client_reschedule_lock_hours()
+                    if settings and hasattr(settings, "get_client_reschedule_lock_minutes"):
+                        lock_r = settings.get_client_reschedule_lock_minutes()
                         if asyncio.iscoroutine(lock_r):
                             lock_r = await lock_r
                     else:
-                        lock_r = await SettingsRepo.get_client_reschedule_lock_hours()
+                        lock_r = await SettingsRepo.get_client_reschedule_lock_minutes()
                 except Exception:
-                    lock_r = 3
+                    lock_r = 180
 
-            if lock_c_hours is not None:
-                lock_c = lock_c_hours
+            if lock_c_minutes is not None:
+                lock_c = lock_c_minutes
             else:
                 try:
-                    if settings and hasattr(settings, "get_client_cancel_lock_hours"):
-                        lock_c = settings.get_client_cancel_lock_hours()
+                    if settings and hasattr(settings, "get_client_cancel_lock_minutes"):
+                        lock_c = settings.get_client_cancel_lock_minutes()
                         if asyncio.iscoroutine(lock_c):
                             lock_c = await lock_c
                     else:
-                        lock_c = await SettingsRepo.get_client_cancel_lock_hours()
+                        lock_c = await SettingsRepo.get_client_cancel_lock_minutes()
                 except Exception:
-                    lock_c = 3
-            can_reschedule = delta_seconds >= (lock_r * 3600)
-            can_cancel = delta_seconds >= (lock_c * 3600)
+                    lock_c = 60
+            can_reschedule = delta_seconds >= (lock_r * 60)
+            can_cancel = delta_seconds >= (lock_c * 60)
     except Exception:
         can_cancel = False
         can_reschedule = False
@@ -157,12 +184,11 @@ async def format_bookings_for_ui(rows: Iterable[Any], lang: str) -> list[tuple[s
 
 # Lightweight DTO so handlers can consume service metadata without extra DB calls
 class ServiceDTO:
-    def __init__(self, id: str, name: str, duration_minutes: int | None = None, price_cents: int | None = None, currency: str | None = None):
+    def __init__(self, id: str, name: str, duration_minutes: int | None = None, price_cents: int | None = None):
         self.id = id
         self.name = name
         self.duration_minutes = duration_minutes
         self.price_cents = price_cents
-        self.currency = currency
 
 
 async def get_filtered_services() -> list[ServiceDTO]:
@@ -174,11 +200,11 @@ async def get_filtered_services() -> list[ServiceDTO]:
     out: list[ServiceDTO] = []
     try:
         from bot.app.core.db import get_session
-        from bot.app.domain.models import Service, ServiceProfile, MasterService
+        from bot.app.domain.models import Service, MasterService
         from sqlalchemy import select, join, outerjoin
         async with get_session() as session:
             # Join Service <- MasterService to ensure only services that have at least
-            # one master are returned, and left-outer-join to ServiceProfile to
+            # one master are returned; legacy ServiceProfile join removed
             # fetch duration metadata in the same query. Use GROUP BY to avoid
             # DISTINCT + ORDER BY portability issues across DB engines.
             # Build FROM/JOINs using join()/outerjoin() to avoid overwriting
@@ -187,15 +213,16 @@ async def get_filtered_services() -> list[ServiceDTO]:
                 select(
                     Service.id,
                     Service.name,
-                    ServiceProfile.duration_minutes,
-                    Service.price_cents,
-                    Service.currency,
+                        Service.duration_minutes,
+                        Service.price_cents,
                 )
                 .join(MasterService, MasterService.service_id == Service.id)
-                .outerjoin(ServiceProfile, ServiceProfile.service_id == Service.id)
-                .group_by(Service.id, Service.name, ServiceProfile.duration_minutes, Service.price_cents, Service.currency)
+                    .group_by(Service.id, Service.name, Service.duration_minutes, Service.price_cents)
             )
             rows = (await session.execute(stmt)).all()
+
+            # Currency is a global setting; ServiceDTO no longer carries it.
+
             for r in rows:
                 sid = str(r[0])
                 name = str(r[1] or sid)
@@ -207,19 +234,17 @@ async def get_filtered_services() -> list[ServiceDTO]:
                     pc = int(r[3]) if r[3] is not None else None
                 except Exception:
                     pc = None
-                cur = r[4] if r[4] is not None else None
-                out.append(ServiceDTO(id=sid, name=name, duration_minutes=dur, price_cents=pc, currency=cur))
+                out.append(ServiceDTO(id=sid, name=name, duration_minutes=dur, price_cents=pc))
             return out
     except Exception:
+        logger.exception("get_filtered_services failed")
         return []
 
     # (Duplicate legacy definition removed during consolidation.)
 
 
-def format_booking_details_text(data: dict | Any, lang: str | None = None, role: str = "client") -> str:
-    """Thin wrapper that delegates to shared formatter (single source of truth)."""
-    from bot.app.services.shared_services import format_booking_details_text as _fmt
-    return _fmt(data, lang, role)
+# Thin wrapper `format_booking_details_text` removed; use the shared
+# implementation imported at module top (`format_booking_details_text`).
 
 
 # --- Booking presentation and list helpers moved from shared_services ---
@@ -233,7 +258,7 @@ class BookingDetails:
     service_name: str | None = None
     master_name: str | None = None
     price_cents: int = 0
-    currency: str = "UAH"
+    currency: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     date_str: str | None = None
@@ -305,20 +330,34 @@ def compute_calendar_day_states(
                 w_states.append((day, 'full'))
         weeks_states.append(w_states)
     return weeks_states
+    
 
 def compute_month_label(year: int, month: int, lang: str) -> str:
     """Return localized month label (e.g. 'Березень 2025')."""
+    # 1) Prefer explicit translation list (month_names_full)
     try:
         from bot.app.translations import tr as _tr
         months = _tr("month_names_full", lang=lang)
-        if isinstance(months, list) and len(months) >= month:
+        if isinstance(months, list) and len(months) >= month and months[month - 1]:
             return f"{months[month - 1]} {year}"
     except Exception:
         pass
-    # fallback abbreviated month names reused from keyboard module
-    fallback = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+    # 2) Fallback to Babel month names if available
     try:
-        return f"{fallback[month - 1]} {year}"
+        from babel.dates import get_month_names  # type: ignore
+
+        locale = (lang or "").replace("-", "_") or "en"
+        names = get_month_names(width="wide", context="format", locale=locale)
+        month_name = names.get(month)
+        if month_name:
+            return f"{month_name} {year}"
+    except Exception:
+        pass
+
+    # 3) Final fallback: numeric month/year
+    try:
+        return f"{int(month):02d}.{year}"
     except Exception:
         return f"{month}/{year}"
 
@@ -350,7 +389,7 @@ class BookingRepo:
         """Return conflict code string if a conflicting booking exists for the
         given client or master in the provided time interval, otherwise None.
         """
-        from bot.app.domain.models import Booking, BookingItem, ServiceProfile, BookingStatus
+        from bot.app.domain.models import Booking, BookingItem, BookingStatus, Service
 
         if window_back is None:
             window_back = timedelta(hours=12)
@@ -387,21 +426,19 @@ class BookingRepo:
                 booking_service_map.setdefault(int(bid), []).append(str(sid))
 
         for b in list(master_rows) + list(user_rows):
+            # If no booking_items exist for this booking, treat as empty list.
             if int(getattr(b, "id", 0)) not in booking_service_map:
-                try:
-                    booking_service_map[int(b.id)] = [str(getattr(b, "service_id"))]
-                except Exception:
-                    booking_service_map[int(b.id)] = []
+                booking_service_map[int(getattr(b, "id", 0))] = []
 
         svc_ids = {sid for sids in booking_service_map.values() for sid in sids if sid}
         svc_durations: dict[str, int] = {}
         if svc_ids:
-            prof_rows = (await session.execute(select(ServiceProfile).where(ServiceProfile.service_id.in_(list(svc_ids))))).scalars().all()
-            for p in prof_rows:
+            svc_rows = await session.execute(select(Service).where(Service.id.in_(list(svc_ids))))
+            for s in svc_rows.scalars().all():
                 try:
-                    svc_durations[str(p.service_id)] = int(getattr(p, "duration_minutes", 0) or 0)
+                    svc_durations[str(s.id)] = int(getattr(s, "duration_minutes", 0) or 0)
                 except Exception:
-                    svc_durations[str(p.service_id)] = 0
+                    svc_durations[str(s.id)] = 0
 
         default_slot = await SettingsRepo.get_slot_duration()
 
@@ -456,7 +493,19 @@ class BookingRepo:
         excluded_statuses: Sequence[Any] | None = None,
         return_ids_only: bool = False,
     ) -> list[int] | list[BookingConflictRow]:
-        """Return bookings that overlap configured windows (by master and datetime range)."""
+        """Return bookings that overlap configured windows (by master and datetime range).
+        
+        Args:
+            master_id: The ID of the master.
+            windows: A sequence of tuples containing day, start minute, and end minute.
+            start: The start datetime for the query.
+            end: The end datetime for the query.
+            excluded_statuses: Optional list of statuses to exclude from the results.
+            return_ids_only: If True, return only the booking IDs.
+        
+        Returns:
+            A list of booking IDs or BookingConflictRow objects.
+        """
         if not windows:
             return []
         from bot.app.domain.models import Booking, BookingStatus, User
@@ -529,11 +578,18 @@ class BookingRepo:
     @staticmethod
     async def update_status(booking_id: int, new_status) -> bool:
         async with get_session() as session:
-            from bot.app.domain.models import Booking
+            from bot.app.domain.models import Booking, BookingStatusHistory
             booking = await session.get(Booking, booking_id)
             if not booking:
                 return False
-            booking.status = new_status
+            old = getattr(booking, "status", None)
+            booking.status = new_status  # Update the booking status
+            try:
+                hist = BookingStatusHistory(booking_id=booking.id, old_status=old, new_status=new_status)
+                session.add(hist)
+            except Exception:
+                # best-effort: do not fail status update if history insert has issues
+                pass
             await session.commit()
             return True
 
@@ -558,13 +614,19 @@ class BookingRepo:
     @staticmethod
     async def confirm_cash(booking_id: int) -> bool:
         async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus
+            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
             booking = await session.get(Booking, booking_id)
             if not booking:
                 return False
+            old = getattr(booking, "status", None)
             booking.status = BookingStatus.CONFIRMED
             try:
                 booking.cash_hold_expires_at = None
+            except Exception:
+                pass
+            try:
+                hist = BookingStatusHistory(booking_id=booking.id, old_status=old, new_status=BookingStatus.CONFIRMED)
+                session.add(hist)
             except Exception:
                 pass
             await session.commit()
@@ -577,7 +639,17 @@ class BookingRepo:
             b = await session.get(Booking, booking_id)
             if not b:
                 return False
+
+            # Keep end time consistent with existing duration
+            duration = timedelta(minutes=60)
+            if b.ends_at and b.starts_at:
+                duration = b.ends_at - b.starts_at
+            elif getattr(b, "duration_minutes", None):
+                duration = timedelta(minutes=int(b.duration_minutes))
+
             b.starts_at = new_starts_at
+            b.ends_at = new_starts_at + duration
+
             try:
                 b.cash_hold_expires_at = None
             except Exception:
@@ -588,14 +660,20 @@ class BookingRepo:
     @staticmethod
     async def mark_paid(booking_id: int) -> bool:
         async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus
+            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
             b = await session.get(Booking, booking_id)
             if not b:
                 return False
+            old = getattr(b, "status", None)
             b.status = BookingStatus.PAID
             try:
                 b.paid_at = utc_now()
                 b.cash_hold_expires_at = None
+            except Exception:
+                pass
+            try:
+                hist = BookingStatusHistory(booking_id=b.id, old_status=old, new_status=BookingStatus.PAID)
+                session.add(hist)
             except Exception:
                 pass
             await session.commit()
@@ -604,13 +682,39 @@ class BookingRepo:
     @staticmethod
     async def set_cancelled(booking_id: int) -> bool:
         async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus
+            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
             b = await session.get(Booking, booking_id)
             if not b:
                 return False
+            old = getattr(b, "status", None)
             b.status = BookingStatus.CANCELLED
+            try:
+                hist = BookingStatusHistory(booking_id=b.id, old_status=old, new_status=BookingStatus.CANCELLED)
+                session.add(hist)
+            except Exception:
+                pass
             await session.commit()
             return True
+
+    @staticmethod
+    async def delete_booking(booking_id: int) -> bool:
+        """Permanently delete a booking row (and cascade delete related items).
+
+        Intended for lightweight cleanup when a client abandons payment.
+        Returns True if deletion occurred, False if booking not found.
+        """
+        async with get_session() as session:
+            from bot.app.domain.models import Booking
+            b = await session.get(Booking, booking_id)
+            if not b:
+                return False
+            try:
+                await session.delete(b)
+                await session.commit()
+                return True
+            except Exception:
+                await session.rollback()
+                return False
 
     @staticmethod
     async def list_active_by_user(user_id: int) -> list[Booking]:
@@ -641,10 +745,11 @@ class BookingRepo:
     @staticmethod
     async def set_pending_payment(booking_id: int) -> bool:
         async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus
+            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
             b = await session.get(Booking, booking_id)
             if not b:
                 return False
+            old = getattr(b, "status", None)
             b.status = BookingStatus.PENDING_PAYMENT
             # Extend hold window to give the user time to finish payment/confirmation
             try:
@@ -653,6 +758,11 @@ class BookingRepo:
                 hold_min = 5
             try:
                 b.cash_hold_expires_at = utc_now() + timedelta(minutes=max(1, int(hold_min or 0)))
+            except Exception:
+                pass
+            try:
+                hist = BookingStatusHistory(booking_id=b.id, old_status=old, new_status=BookingStatus.PENDING_PAYMENT)
+                session.add(hist)
             except Exception:
                 pass
             await session.commit()
@@ -717,8 +827,8 @@ class BookingRepo:
             )).all())
             if rows:
                 return " + ".join([r[1] or str(r[0]) for r in rows])
-            svc = await session.get(Service, getattr(b, 'service_id', ''))
-            return getattr(svc, 'name', None) or str(getattr(b, 'service_id', ''))
+            # No booking_items: return booking id as a fallback display.
+            return str(booking_id)
 
     @staticmethod
     async def _prepare_pagination_context(
@@ -824,8 +934,18 @@ class BookingRepo:
             .join(Service, Service.id == BookingItem.service_id)
             .group_by(BookingItem.booking_id)
         ).subquery()
+        # Also provide a canonical representative service_id per booking (first/min)
+        service_first_subq = (
+            select(
+                BookingItem.booking_id.label("booking_id"),
+                func.min(BookingItem.service_id).label("service_id"),
+            )
+            .group_by(BookingItem.booking_id)
+        ).subquery()
+
         # Prefer aggregated booking item names; fall back to empty string when missing.
         service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label("service_name")
+        service_first_expr = func.coalesce(service_first_subq.c.service_id, "").label("service_id")
         async with get_session() as session:
             base_where = [Booking.user_id == user_id]
             where_clause, order_expr, meta, total_pages, p, offset = await BookingRepo._prepare_pagination_context(
@@ -852,11 +972,13 @@ class BookingRepo:
                     Booking.final_price_cents,
                     Master.name.label("master_name"),
                     service_name_expr,
+                    service_first_expr,
                 )
                 .join(Master, Master.id == Booking.master_id, isouter=True)
                 .outerjoin(service_items_subq, service_items_subq.c.booking_id == Booking.id)
+                .outerjoin(service_first_subq, service_first_subq.c.booking_id == Booking.id)
                 # Do not join Service by the removed Booking.service_id column; aggregated names
-                # are provided by `service_items_subq` and are sufficient for listing.
+                # are provided by `service_items_subq` and representative id by `service_first_subq`.
                 .where(*where_clause)
                 .order_by(order_expr)
             )
@@ -866,6 +988,13 @@ class BookingRepo:
 
             result = await session.execute(stmt)
             raw_rows = result.all()
+            # Resolve global currency once for the mapper
+            try:
+                global_currency = await SettingsRepo.get_currency()
+            except Exception:
+                from bot.app.services.shared_services import _default_currency
+                global_currency = _default_currency()
+
             booking_infos: list[BookingInfo] = []
             for (
                 booking_id,
@@ -876,21 +1005,19 @@ class BookingRepo:
                 final_price_cents,
                 master_name,
                 service_name,
+                service_first_id,
             ) in raw_rows:
-                # `service_id` column was removed; keep `service_id` as None and
-                # use aggregated `service_name` for display. Currency is not
-                # available from Booking anymore so default to 'UAH' in mapper.
                 booking_infos.append(
                     booking_info_from_mapping(
                         {
                             "id": booking_id,
                             "master_id": master_id,
-                            "service_id": None,
+                            "service_id": service_first_id or None,
                             "status": status,
                             "starts_at": starts_at,
                             "original_price_cents": original_price_cents,
                             "final_price_cents": final_price_cents,
-                            "currency": "UAH",
+                            "currency": global_currency,
                             "master_name": master_name,
                             "service_name": service_name,
                             "client_id": user_id,
@@ -954,6 +1081,16 @@ class BookingRepo:
                 stmt = stmt.limit(page_size).offset(offset)
             result = await session.execute(stmt)
             raw_rows = list(result.all())
+            # Resolve global currency once to avoid hardcoded fallbacks in multiple rows
+            try:
+                from bot.app.services.shared_services import get_global_currency
+
+                global_currency = await get_global_currency()
+            except Exception:
+                from bot.app.services.shared_services import _default_currency
+
+                global_currency = _default_currency()
+
             booking_infos: list[BookingInfo] = []
             for b, client_name, svc_name in raw_rows:
                 booking_infos.append(
@@ -966,7 +1103,7 @@ class BookingRepo:
                             "starts_at": getattr(b, "starts_at", None),
                             "original_price_cents": getattr(b, "original_price_cents", None),
                             "final_price_cents": getattr(b, "final_price_cents", None),
-                            "currency": getattr(b, "currency", "UAH"),
+                            "currency": getattr(b, "currency", None) or global_currency,
                             "master_name": None,
                             "client_name": client_name,
                             "client_id": getattr(b, "user_id", None),
@@ -1066,6 +1203,15 @@ async def build_booking_details(
         data = None
 
     if not data:
+        try:
+            from bot.app.services.shared_services import get_global_currency
+
+            global_currency = await get_global_currency()
+        except Exception:
+            from bot.app.services.shared_services import _default_currency
+
+            global_currency = _default_currency()
+
         data = {
             "booking_id": getattr(booking, "id", booking if isinstance(booking, int) else 0),
             "service_name": service_name,
@@ -1073,7 +1219,7 @@ async def build_booking_details(
             "price_cents": getattr(booking, "final_price_cents", None)
             or getattr(booking, "original_price_cents", None)
             or 0,
-            "currency": getattr(booking, "currency", "UAH"),
+            "currency": getattr(booking, "currency", None) or global_currency,
             "starts_at": getattr(booking, "starts_at", None),
             "client_id": user_id,
         }
@@ -1120,19 +1266,27 @@ async def build_booking_details(
     # from SettingsRepo (passed here) to avoid hidden cfg dependencies and
     # improve testability.
     try:
-        lock_r_val = await SettingsRepo.get_client_reschedule_lock_hours()
-        lock_c_val = await SettingsRepo.get_client_cancel_lock_hours()
+        lock_r_val = await SettingsRepo.get_client_reschedule_lock_minutes()
+        lock_c_val = await SettingsRepo.get_client_cancel_lock_minutes()
     except Exception:
         lock_r_val = None
         lock_c_val = None
-    can_cancel, can_reschedule = await calculate_booking_permissions(data, lock_r_hours=lock_r_val, lock_c_hours=lock_c_val)
+    can_cancel, can_reschedule = await calculate_booking_permissions(data, lock_r_minutes=lock_r_val, lock_c_minutes=lock_c_val)
+
+    try:
+        from bot.app.services.shared_services import get_global_currency
+        global_currency = await get_global_currency()
+    except Exception:
+        from bot.app.services.shared_services import _default_currency
+
+        global_currency = _default_currency()
 
     return BookingDetails(
         booking_id=int(data.get("booking_id", 0) or 0),
         service_name=data.get("service_name"),
         master_name=data.get("master_name"),
         price_cents=int(data.get("price_cents", 0) or 0),
-        currency=data.get("currency", "UAH"),
+        currency=data.get("currency") or global_currency,
         starts_at=data.get("starts_at"),
         ends_at=data.get("ends_at"),
         duration_minutes=(int(data.get("duration_minutes")) if data.get("duration_minutes") is not None else None),
@@ -1147,102 +1301,6 @@ async def build_booking_details(
         can_cancel=bool(can_cancel),
         can_reschedule=bool(can_reschedule),
     )
-
-
-async def send_booking_notification(
-    bot: Bot,
-    booking_id: int,
-    event_type: str,
-    recipients: Sequence[int],
-    *,
-    previous_starts_at: datetime | None = None,
-) -> None:
-    from bot.app.translations import tr
-
-    try:
-        booking = await BookingRepo.get(booking_id)
-        if not booking:
-            return
-        logger.info("send_booking_notification: booking=%s event=%s recipients=%s", booking_id, event_type, recipients)
-        from bot.app.services.master_services import MasterRepo
-        from bot.app.services.client_services import UserRepo
-
-        for rid in recipients:
-            try:
-                rid_int = int(rid)
-            except Exception:
-                logger.warning("send_booking_notification: invalid recipient id, skipping: %r", rid)
-                continue
-
-            # Ensure recipient is a Telegram chat id. Some callers historically
-            # passed a surrogate master id (masters.id). Try to resolve that
-            # into a master.telegram_id when no user exists for `rid_int`.
-            try:
-                u = await UserRepo.get_by_telegram_id(rid_int)
-            except Exception:
-                u = None
-            if not u:
-                try:
-                    # Treat rid_int as surrogate master id and lookup telegram_id
-                    from bot.app.core.db import get_session
-                    from sqlalchemy import select
-                    async with get_session() as session:
-                        from bot.app.domain.models import Master
-                        res = await session.execute(select(Master.telegram_id).where(Master.id == int(rid_int)))
-                        tg = res.scalar_one_or_none()
-                        if tg:
-                            try:
-                                rid_int = int(tg)
-                            except Exception:
-                                logger.warning("send_booking_notification: invalid master.telegram_id for master %s: %r", rid, tg)
-                                continue
-                except Exception:
-                    # best-effort: continue with original rid_int (may fail below)
-                    pass
-            lang = await safe_get_locale(rid_int)
-            try:
-                bd = await build_booking_details(booking, user_id=rid_int, lang=lang)
-            except Exception as be:
-                logger.exception("send_booking_notification: build_booking_details failed: %s", be)
-                continue
-
-            svc_names = bd.service_name or ""
-            starts = bd.starts_at
-            dt_txt = format_date(starts) if starts else ""
-            client_line = bd.client_name or ""
-            master_id_val = getattr(booking, "master_id", None)
-            client_tg_id = bd.client_telegram_id
-
-            try:
-                if event_type == "paid":
-                    title = tr("notif_paid_confirmed", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
-                elif event_type == "cash_confirmed":
-                    title = tr("notif_cash_confirmed", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
-                elif event_type == "cancelled":
-                    title = tr("notif_client_cancelled", lang=lang).format(id=booking_id, user=client_line)
-                elif event_type == "rescheduled_by_client":
-                    if int(rid_int) == int(master_id_val or 0):
-                        title = tr("notif_master_rescheduled_client", lang=lang).format(service=svc_names, dt=dt_txt)
-                    else:
-                        title = tr("notif_client_rescheduled", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
-                elif event_type == "rescheduled_by_master":
-                    if client_tg_id and int(rid_int) == int(client_tg_id):
-                        title = tr("notif_master_rescheduled_client", lang=lang).format(service=svc_names, dt=dt_txt)
-                    else:
-                        title = tr("notif_master_rescheduled_admin", lang=lang).format(master=master_id_val or "", id=booking_id, service=svc_names, dt=dt_txt)
-                else:
-                    title = f"#{booking_id}: {svc_names} {dt_txt}".strip()
-            except Exception:
-                title = f"#{booking_id}"
-
-            body = format_booking_details_text(bd, lang)
-            try:
-                await bot.send_message(chat_id=rid_int, text=f"{title}\n\n{body}".strip())
-                logger.info("send_booking_notification: sent to %s", rid_int)
-            except Exception as se:
-                logger.warning("Failed to send notification to %s: %s", rid_int, se)
-    except Exception as e:
-        logger.exception("send_booking_notification failed: %s", e)
 
 
 # Wrapper `get_bookings_list` removed; use `BookingRepo.get_paginated_list`.
@@ -1350,19 +1408,15 @@ class UserRepo:
 
 
 
-async def get_or_create_user(telegram_id: int, name: str | None = None, username: str | None = None) -> User:
-    """Delegate user lookup/creation to UserRepo."""
-    try:
-        return await UserRepo.get_or_create(telegram_id, name=name, username=username)
-    except Exception as e:
-        logger.error("get_or_create_user(repo) failed for %s: %s", telegram_id, e)
-        raise
+# Thin wrapper `get_or_create_user` removed; call `UserRepo.get_or_create` directly.
 
 
 async def get_available_time_slots_for_services(
     date: datetime,
     master_id: int,
-    service_durations: list[int]
+    service_durations: list[int],
+    *,
+    exclude_booking_id: int | None = None,
 ) -> List[dtime]:
     """
     Calculates available slots based on 'Gap' logic:
@@ -1376,9 +1430,23 @@ async def get_available_time_slots_for_services(
         return []
 
     try:
+        # Normalize input `date` into an aware local datetime representing
+        # the target day in the business/local timezone. Callers typically
+        # pass a naive ISO date (e.g. 2025-12-10) — treat those as local-day
+        # references rather than guessing UTC.
+        local_tz = get_local_tz() or UTC
+        if isinstance(date, datetime):
+            if date.tzinfo is None:
+                ref_local = date.replace(tzinfo=local_tz)
+            else:
+                ref_local = date.astimezone(local_tz)
+        else:
+            # If a plain date was passed, construct a midnight-local datetime
+            ref_local = datetime.combine(date, dtime()).replace(tzinfo=local_tz)
+
         # 1. Get Work Windows (Local Time)
-        # Returns list of (start_time, end_time)
-        windows_local = await master_services.get_work_windows_for_day(master_id, date)
+        # Returns list of (start_time, end_time) as time objects
+        windows_local = await master_services.get_work_windows_for_day(master_id, ref_local)
     except Exception:
         windows_local = [(dtime(hour=9), dtime(hour=18))]
     
@@ -1386,20 +1454,23 @@ async def get_available_time_slots_for_services(
         return []
 
     # 2. Get Bookings (UTC)
-    # We need the full day in UTC to catch all relevant bookings
-    local_day_start = date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=LOCAL_TZ)
+    # Compute the local-day boundaries (aware datetimes) and convert them
+    # to UTC for DB-range queries. All DB timestamps are stored in UTC.
+    local_day_start = ref_local.replace(hour=0, minute=0, second=0, microsecond=0)
     local_day_end = local_day_start + timedelta(days=1)
     day_start_utc = local_day_start.astimezone(UTC)
     day_end_utc = local_day_end.astimezone(UTC)
 
     async with get_session() as session:
-        result = await session.execute(
-            select(Booking).where(
-                Booking.master_id == master_id,
-                Booking.starts_at >= day_start_utc,
-                Booking.starts_at < day_end_utc,
-            ).order_by(Booking.starts_at)
+        stmt = select(Booking).where(
+            Booking.master_id == master_id,
+            Booking.starts_at >= day_start_utc,
+            Booking.starts_at < day_end_utc,
         )
+        if exclude_booking_id is not None:
+            stmt = stmt.where(Booking.id != int(exclude_booking_id))
+        stmt = stmt.order_by(Booking.starts_at)
+        result = await session.execute(stmt)
         bookings_objs = result.scalars().all()
 
     hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
@@ -1430,11 +1501,13 @@ async def get_available_time_slots_for_services(
                 merged_busy.append((b_start, b_end))
     
     # 3. Calculate Gaps
-    # Convert windows to UTC intervals for calculation
+    # Convert windows (local times) into UTC-aware intervals for gap
+    # calculations. Use the `ref_local` date so we map times to the
+    # correct calendar day in local timezone.
     window_intervals_utc = []
     for ws, we in windows_local:
-        w_start = datetime.combine(date.date(), ws).replace(tzinfo=LOCAL_TZ).astimezone(UTC)
-        w_end = datetime.combine(date.date(), we).replace(tzinfo=LOCAL_TZ).astimezone(UTC)
+        w_start = datetime.combine(ref_local.date(), ws).replace(tzinfo=local_tz).astimezone(UTC)
+        w_end = datetime.combine(ref_local.date(), we).replace(tzinfo=local_tz).astimezone(UTC)
         window_intervals_utc.append((w_start, w_end))
 
     free_gaps = []
@@ -1462,7 +1535,8 @@ async def get_available_time_slots_for_services(
     # 4. Filter and Collect Slots
     slots = []
     lead_min = await SettingsRepo.get_same_day_lead_minutes()
-    now_local = local_now()
+    now_utc = utc_now()
+    now_local = now_utc.astimezone(local_tz)
     is_today = (local_day_start.date() == now_local.date())
 
     for gap_start, gap_end in free_gaps:
@@ -1497,14 +1571,15 @@ async def get_available_time_slots_for_services(
                 # Check lead time if it's today (compare in local timezone)
                 if is_today and lead_min:
                     try:
-                        candidate_local = current.astimezone(LOCAL_TZ)
+                        candidate_local = current.astimezone(local_tz)
                         if (candidate_local - now_local).total_seconds() / 60 < lead_min:
                             current = current + timedelta(minutes=slot_step_min)
                             continue
                     except Exception:
                         pass
 
-                slots.append(current.astimezone(LOCAL_TZ).time())
+                # Return time objects in local tz for UI (buttons expect local times)
+                slots.append(current.astimezone(local_tz).time())
                 current = current + timedelta(minutes=slot_step_min)
 
     logger.debug("Slots (Gap-based) for master %s on %s: %s", master_id, date, slots)
@@ -1523,13 +1598,14 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
 
         _, days_in_month = monthrange(year, month)
 
-        # 1. Определяем границы месяца
-        month_start_local = datetime(year, month, 1).replace(tzinfo=LOCAL_TZ)
+        # 1. Определяем границы месяца (в локальном часовом поясе бизнеса)
+        local_tz = get_local_tz() or UTC
+        month_start_local = datetime(year, month, 1, tzinfo=local_tz)
         if month == 12:
-            next_month_local = datetime(year + 1, 1, 1).replace(tzinfo=LOCAL_TZ)
+            next_month_local = datetime(year + 1, 1, 1, tzinfo=local_tz)
         else:
-            next_month_local = datetime(year, month + 1, 1).replace(tzinfo=LOCAL_TZ)
-        
+            next_month_local = datetime(year, month + 1, 1, tzinfo=local_tz)
+
         month_start_utc = month_start_local.astimezone(UTC)
         next_month_utc = next_month_local.astimezone(UTC)
         now_utc = utc_now()
@@ -1557,11 +1633,10 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
             bookings_raw_objs = bookings_result.scalars().all()
 
             # 3. Загружаем расписание из SQL (master_schedules)
-            # Джойним через MasterProfile, так как расписание привязано к профилю
+            # Теперь расписание привязано напрямую к мастеру по master_id
             schedule_stmt = (
                 select(MasterSchedule)
-                .join(MasterProfile, MasterSchedule.master_profile_id == MasterProfile.id)
-                .where(MasterProfile.master_id == real_master_id)
+                .where(MasterSchedule.master_id == real_master_id)
             )
             schedule_result = await session.execute(schedule_stmt)
             schedule_rows = schedule_result.scalars().all()
@@ -1586,11 +1661,11 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
         available_days: set[int] = set()
         step = timedelta(minutes=service_duration_min)
         lead_min = await SettingsRepo.get_same_day_lead_minutes()
-        now_local = local_now()
+        now_local = now_utc.astimezone(local_tz)
 
         # 6. Проходим по каждому дню месяца
         for day in range(1, days_in_month + 1):
-            day_date_local = datetime(year, month, day).replace(tzinfo=LOCAL_TZ)
+            day_date_local = datetime(year, month, day, tzinfo=local_tz)
             weekday = day_date_local.weekday()
 
             # Получаем окна работы для этого дня недели из словаря
@@ -1603,8 +1678,8 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
             # Конвертируем окна (time) в полные datetime для текущего дня
             windows_local = []
             for start_t, end_t in windows_time:
-                w_start = datetime.combine(day_date_local.date(), start_t).replace(tzinfo=LOCAL_TZ)
-                w_end = datetime.combine(day_date_local.date(), end_t).replace(tzinfo=LOCAL_TZ)
+                w_start = datetime.combine(day_date_local.date(), start_t).replace(tzinfo=local_tz)
+                w_end = datetime.combine(day_date_local.date(), end_t).replace(tzinfo=local_tz)
                 windows_local.append((w_start, w_end))
 
             # Фильтруем брони, относящиеся к этому дню (в UTC)
@@ -1634,7 +1709,7 @@ async def get_available_days_for_month(master_id: int, year: int, month: int, se
                     if lead_min and is_today:
                         try:
                             # Сравниваем в локальном времени
-                            local_slot_dt = slot_start.astimezone(LOCAL_TZ)
+                            local_slot_dt = slot_start.astimezone(local_tz)
                             if (local_slot_dt - now_local).total_seconds() / 60 < lead_min:
                                 current_utc += step
                                 continue
@@ -1769,10 +1844,9 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
             except Exception as e:
                 # If locking fails (e.g., DB backend limitations), log the failure.
                 # In some deployments row-locking is critical to avoid races; enable
-                # strict behavior by setting env `REQUIRE_ROW_LOCK=1` to raise.
-                import os
+                # strict behavior via `REQUIRE_ROW_LOCK` flag in constants.
                 logger.exception("Row-level locking failed while creating booking: %s", e)
-                if os.getenv("REQUIRE_ROW_LOCK", "0").lower() in ("1", "true", "yes"):
+                if REQUIRE_ROW_LOCK_STRICT:
                     raise
 
             # Snapshot service price at booking time and create booking via helper
@@ -1818,12 +1892,21 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
     """Return total duration (minutes) and total price_cents for selected services without N+1 queries.
 
     - Loads all Services in a single query.
-    - Loads all ServiceProfiles in a single query.
-    If ServiceProfile.duration_minutes is missing, falls back to 60 per service.
+    Uses `Service.duration_minutes` as the canonical duration; falls back to 60 per service.
     """
     total_minutes = 0
     total_price = 0
-    currency = "UAH"
+    # Resolve global currency once (single source of truth).
+    from bot.app.services.shared_services import _default_currency
+    try:
+        from bot.app.services.admin_services import SettingsRepo
+
+        try:
+            currency = await SettingsRepo.get_currency()
+        except Exception:
+            currency = _default_currency()
+    except Exception:
+        currency = _default_currency()
     try:
         if not service_ids:
             return {"total_minutes": 0, "total_price_cents": 0, "currency": currency}
@@ -1831,9 +1914,7 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
             # Bulk load services
             svc_rows = await session.execute(select(Service).where(Service.id.in_(list(service_ids))))
             services = {str(s.id): s for s in svc_rows.scalars().all()}
-            # Bulk load profiles
-            prof_rows = await session.execute(select(ServiceProfile).where(ServiceProfile.service_id.in_(list(service_ids))))
-            profiles = {str(p.service_id): p for p in prof_rows.scalars().all()}
+            # ServiceProfile removed; durations come from Service or MasterService overrides
             overrides: dict[str, int] = {}
             if master_id is not None:
                 from bot.app.domain.models import MasterService, Master
@@ -1862,16 +1943,32 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
                 if svc:
                     if isinstance(getattr(svc, "price_cents", None), int):
                         total_price += int(svc.price_cents or 0)
-                    if getattr(svc, "currency", None):
-                        currency = svc.currency or currency
-                prof = profiles.get(str(sid))
+                    # Per-service currency column is ignored; global env/default is authoritative
+                    pass
                 if str(sid) in overrides:
                     dur = overrides[str(sid)]
                 else:
-                    dur = int(getattr(prof, "duration_minutes", 0) or 0) if prof else 0
+                    if svc:
+                        try:
+                            dur = int(getattr(svc, "duration_minutes", 0) or 0)
+                        except Exception:
+                            dur = 0
+                    else:
+                        dur = 0
                 total_minutes += dur if dur > 0 else 60
         if online_payment and total_price > 0:
-            total_price = int(total_price * 0.95)
+            try:
+                # Allow override of the discount percent via SettingsRepo; fall back to module default.
+                dp = await SettingsRepo.get_setting(ONLINE_PAYMENT_DISCOUNT_SETTING, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
+                try:
+                    discount_percent = float(dp)
+                except Exception:
+                    discount_percent = float(ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
+                multiplier = max(0.0, 1.0 - (discount_percent / 100.0))
+                total_price = int(total_price * multiplier)
+            except Exception:
+                # On any error, fall back to the previous fixed 5% discount multiplier
+                total_price = int(total_price * (1.0 - (ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT / 100.0)))
         return {"total_minutes": total_minutes, "total_price_cents": total_price, "currency": currency}
     except Exception as e:
         logger.warning("Ошибка расчета суммы длительности/цены для %s: %s", service_ids, e)
@@ -1928,9 +2025,8 @@ async def create_composite_booking(client_id: int, master_id: int, service_ids: 
                     ).with_for_update()
                 )
             except Exception as e:
-                import os
                 logger.exception("Row-level locking failed while creating composite booking: %s", e)
-                if os.getenv("REQUIRE_ROW_LOCK", "0").lower() in ("1", "true", "yes"):
+                if REQUIRE_ROW_LOCK_STRICT:
                     raise
 
             price_cents = int(totals.get("total_price_cents", 0) or 0) or None
@@ -1994,20 +2090,14 @@ async def book_slot(
         except ValueError:
             return {"ok": False, "error": "invalid_data"}
         # Use the same local timezone as display/rendering to avoid shifts
-        try:
-            from bot.app.services.shared_services import LOCAL_TZ
-            biz_tz = LOCAL_TZ
-        except Exception:
-            biz_tz = None
-        if biz_tz is None:
-            # Fallback to UTC only if local timezone is not resolvable
-            biz_tz = UTC
+        # Resolve business/local timezone at runtime
+        biz_tz = get_local_tz() or UTC
         local_dt = local_dt.replace(tzinfo=biz_tz)
         slot_dt = local_dt.astimezone(UTC)
 
-        # Ensure user exists
+        # Ensure user exists (call repo directly)
         user_full_name = None
-        booking_user = await get_or_create_user(user_telegram_id, user_full_name)
+        booking_user = await UserRepo.get_or_create(user_telegram_id, name=user_full_name)
 
         # Short initial hold to reduce zombie reservations before payment
         try:
@@ -2141,17 +2231,57 @@ async def calculate_price(service_id: str, online_payment: bool) -> Dict[str, An
             service = await session.get(Service, service_id)
             if not service or service.price_cents is None:
                 logger.warning("Услуга %s не найдена или цена отсутствует", service_id)
-                return {"final_price_cents": 0, "currency": "UAH"}
+                # Use global currency (single source of truth)
+                from bot.app.services.shared_services import _default_currency
+                try:
+                    from bot.app.services.admin_services import SettingsRepo
+
+                    try:
+                        cur = await SettingsRepo.get_currency()
+                    except Exception:
+                        cur = _default_currency()
+                except Exception:
+                    cur = _default_currency()
+                return {"final_price_cents": 0, "currency": cur}
 
             price = service.price_cents
             if online_payment:
-                price = int(price * 0.95)  # 5% скидка
-            result = {"final_price_cents": price, "currency": service.currency or "UAH"}
+                try:
+                    dp = await SettingsRepo.get_setting(ONLINE_PAYMENT_DISCOUNT_SETTING, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
+                    try:
+                        discount_percent = float(dp)
+                    except Exception:
+                        discount_percent = float(ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
+                    multiplier = max(0.0, 1.0 - (discount_percent / 100.0))
+                    price = int(price * multiplier)
+                except Exception:
+                    # conservative fallback to default 5% discount
+                    price = int(price * (1.0 - (ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT / 100.0)))
+            # Resolve global currency once (avoid per-service currency fields).
+            from bot.app.services.shared_services import _default_currency
+            try:
+                from bot.app.services.admin_services import SettingsRepo
+
+                try:
+                    cur = await SettingsRepo.get_currency()
+                except Exception:
+                    cur = _default_currency()
+            except Exception:
+                cur = _default_currency()
+            result = {"final_price_cents": price, "currency": cur}
             logger.debug("Рассчитана цена для услуги %s (онлайн=%s): %s", service_id, online_payment, result)
             return result
     except SQLAlchemyError as e:
         logger.error("Ошибка расчета цены для услуги %s: %s", service_id, e)
-        return {"final_price_cents": 0, "currency": "UAH"}
+        try:
+            from bot.app.services.shared_services import get_global_currency
+
+            cur = await get_global_currency()
+        except Exception:
+            from bot.app.services.shared_services import _default_currency
+
+            cur = _default_currency()
+        return {"final_price_cents": 0, "currency": cur}
 
 async def process_successful_payment(booking_id: int, charge_id: str) -> bool:
     """Обрабатывает успешный платеж и обновляет статус записи.
@@ -2185,8 +2315,8 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
     Returns (ok, message_key, params). On success notifications are sent when bot provided.
     """
     try:
-        # Resolve internal user and ensure ownership
-        user = await get_or_create_user(user_telegram_id, None)
+        # Resolve internal user and ensure ownership (call repo directly)
+        user = await UserRepo.get_or_create(user_telegram_id, name=None)
         b = await BookingRepo.ensure_owner(int(user.id), int(booking_id))
         if not b:
             return False, "booking_not_found", {}
@@ -2203,11 +2333,11 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
 
         # Lock window
         try:
-            lock_h = int(await SettingsRepo.get_client_cancel_lock_hours())
+            lock_m = int(await SettingsRepo.get_client_cancel_lock_minutes())
         except Exception:
-            lock_h = 3
-        if starts_at and (starts_at - utc_now()).total_seconds() < lock_h * 3600:
-            return False, "cancel_too_close", {"hours": lock_h}
+            lock_m = 60
+        if starts_at and (starts_at - utc_now()).total_seconds() < lock_m * 60:
+            return False, "cancel_too_close", {"minutes": lock_m}
 
         # Perform cancellation
         ok = await BookingRepo.set_cancelled(int(booking_id))
@@ -2229,6 +2359,8 @@ async def cancel_client_booking(booking_id: int, user_telegram_id: int, *, bot=N
                 recipients.extend(get_admin_ids())
                 # Only send if we have at least one valid recipient
                 if recipients:
+                    from bot.app.core.notifications import send_booking_notification
+
                     await send_booking_notification(bot, int(booking_id), "cancelled", recipients)
             except Exception:
                 logger.exception("cancel_client_booking: notification failed for %s", booking_id)
@@ -2244,7 +2376,7 @@ async def can_client_reschedule(booking_id: int, user_telegram_id: int) -> tuple
     Only centralizes permission/lock checks; actual calendar assembly remains in handler.
     """
     try:
-        user = await get_or_create_user(user_telegram_id, None)
+        user = await UserRepo.get_or_create(user_telegram_id, name=None)
         b = await BookingRepo.ensure_owner(int(user.id), int(booking_id))
         if not b:
             return False, "booking_not_found"
@@ -2253,11 +2385,11 @@ async def can_client_reschedule(booking_id: int, user_telegram_id: int) -> tuple
             return False, "booking_not_active"
         # Reschedule lock window
         try:
-            lock_h = int(await SettingsRepo.get_client_reschedule_lock_hours())
+            lock_m = int(await SettingsRepo.get_client_reschedule_lock_minutes())
         except Exception:
-            lock_h = 3
+            lock_m = 180
         starts_at = getattr(b, "starts_at", None)
-        if starts_at and (starts_at - utc_now()).total_seconds() < lock_h * 3600:
+        if starts_at and (starts_at - utc_now()).total_seconds() < lock_m * 60:
             return False, "reschedule_too_close"
         return True, None
     except Exception:

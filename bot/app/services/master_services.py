@@ -44,6 +44,25 @@ from datetime import timezone
 logger = logging.getLogger(__name__)
 
 
+# --- Master formatters ------------------------------------------------------
+def format_master_booking_row(fields: dict[str, str]) -> str:
+    """Format booking row for master-facing compact lists."""
+    status_label = str(fields.get("status_label") or "")
+    st = str(fields.get("st") or "")
+    dt = str(fields.get("dt") or "")
+    client_name = str(fields.get("client_name") or "")
+    service_name = str(fields.get("service_name") or "")
+    price_txt = str(fields.get("price_txt") or "")
+    # Keep status label at front, then use bullets between datetime, client, and service+price
+    datetime_part = f"{dt} {st}".strip()
+    service_part = f"{service_name[:24]} {price_txt}".strip()
+    parts = [datetime_part, client_name[:20].strip(), service_part]
+    parts = [p for p in parts if p]
+    body = " • ".join(parts)
+    return (f"{status_label} " + body).strip()
+
+
+
 def compute_time_end_items(day: int, start_time: str, *, end_hour: int = DEFAULT_DAY_END_HOUR, step_min: int = DEFAULT_TIME_STEP_MINUTES) -> list[tuple[str, str]]:
     """Compute end-time button items for a given day and chosen start_time.
 
@@ -123,91 +142,77 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
 
         lines: list[str] = []
         if with_title:
-            title = tr("profile_title", lang=lang)
-            lines.append(title)
+            lines.append(tr("profile_title", lang=lang))
+
         uname = getattr(master, "username", None)
         master_name = getattr(master, "name", "")
         master_tid = getattr(master, "telegram_id", "")
-        lines.append(f"👤 {master_name} (@{uname})" if uname else f"👤 {master_name}")
-        lines.append(f"🆔 {master_tid}")
-        if getattr(master, "phone", None):
-            lines.append(f"📞 {getattr(master, 'phone', '')}")
-        if getattr(master, "email", None):
-            lines.append(f"✉️ {getattr(master, 'email', '')}")
+        contact_block = [
+            f"👤 {master_name} (@{uname})" if uname else f"👤 {master_name}",
+            f"🆔 {master_tid}",
+        ]
+        phone = getattr(master, "phone", None)
+        email = getattr(master, "email", None)
+        if phone:
+            contact_block.append(f"📞 {phone}")
+        if email:
+            contact_block.append(f"✉️ {email}")
+        lines.extend(contact_block)
 
         if services:
             lines.append("")
             lines.append(tr("services_list_title", lang=lang))
+            svc_lines = []
             for sid, sname, category, price_cents, currency in services:
                 dur = durations_map.get(str(sid))
                 dur_txt = f"{dur} {tr('minutes_short', lang=lang)}" if isinstance(dur, int) and dur > 0 else None
-                price_txt = format_money_cents(price_cents or 0, currency or "UAH")
-                tail = []
-                if dur_txt:
-                    tail.append(f"({dur_txt})")
-                if price_txt:
-                    tail.append(f"— {price_txt}")
+                price_txt = format_money_cents(price_cents or 0, currency)
+                tail = " ".join(filter(None, [f"({dur_txt})" if dur_txt else None, f"— {price_txt}" if price_txt else None]))
                 head = f"• {sname}" if not category else f"• {category} → {sname}"
-                lines.append(" ".join([head] + tail) if tail else head)
+                svc_lines.append(f"{head} {tail}".strip())
+            lines.extend(svc_lines or [])
         else:
-            lines.append("")
-            lines.append("❌ " + tr("no_services_for_master", lang=lang))
+            lines.extend(["", "❌ " + tr("no_services_for_master", lang=lang)])
 
-        if getattr(master, "rating", None):
+        rating_val = getattr(master, "rating", None)
+        if rating_val is not None:
             lines.append("")
             rating_label = tr("rating_label", lang=lang)
             orders_word = tr("orders", lang=lang)
-            lines.append(
-                f"⭐ {rating_label}: {getattr(master, 'rating', 0):.1f}/5 ({int(getattr(master, 'completed_orders', 0) or 0)} {orders_word})"
-            )
+            completed = int(getattr(master, "completed_orders", 0) or 0)
+            ratings_count = int(getattr(master, "ratings_count", 0) or 0)
+            # Show simplified rating: average /5 and completed orders count
+            # Example: "⭐ Рейтинг: 4.8/5 (120 замовлень)"
+            lines.append(f"⭐ {rating_label}: {float(rating_val or 0.0):.1f}/5 ({completed} {orders_word})")
 
         if about_text:
-            lines.append("")
-            about_title = tr("about_title", lang=lang)
-            lines.append(about_title)
-            lines.append(str(about_text))
-
-        reviews = data.get("reviews") or []
-        if reviews:
-            lines.append("")
-            rv_title = tr("reviews_title", lang=lang)
-            lines.append(rv_title)
-            for rating, comment in reviews:
-                if comment:
-                    lines.append(f"• \"{comment}\"")
-                else:
-                    lines.append(f"• ⭐ {rating}/5")
+            lines.extend(["", tr("about_title", lang=lang), str(about_text)])
 
         sched = data.get("schedule") or {}
         if isinstance(sched, dict):
             try:
                 lines.append("")
-                sched_title = tr("schedule_title", lang=lang)
-                lines.append(f"{sched_title}:")
+                lines.append(f"{tr('schedule_title', lang=lang)}:")
                 wd_full = tr("weekday_full", lang=lang)
-                for i in range(7):
-                    # Support both string and integer keys in stored schedule dicts.
-                    windows = sched.get(str(i)) if isinstance(sched, dict) else None
-                    if not windows:
-                        windows = sched.get(i) if isinstance(sched, dict) else None
-                    if not windows:
-                        windows = []
-                    if not windows:
-                        lines.append(f"• {wd_full[i]}: —")
-                        continue
-                    parts: list[str] = []
+
+                def fmt_windows(windows: list[Any]) -> str:
+                    formatted = []
                     for w in windows:
                         try:
                             if isinstance(w, (list, tuple)) and len(w) >= 2:
-                                parts.append(f"{w[0]}–{w[1]}")
+                                formatted.append(f"{w[0]}–{w[1]}")
                             else:
                                 s = str(w)
                                 if "-" in s:
-                                    a,b = s.split("-",1)
-                                    parts.append(f"{a.strip()}–{b.strip()}")
+                                    a, b = s.split("-", 1)
+                                    formatted.append(f"{a.strip()}–{b.strip()}")
                         except Exception:
                             continue
-                    lines.append(f"• {wd_full[i]}: {', '.join(parts) if parts else '—'}")
+                    return ", ".join(formatted) if formatted else "—"
+
+                for i in range(7):
+                    windows = sched.get(str(i)) or sched.get(i) or []
+                    lines.append(f"• {wd_full[i]}: {fmt_windows(windows)}")
             except Exception:
                 pass
         return "\n".join(lines)
@@ -217,6 +222,7 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
 
 # ---------------- Masters cache (moved here from shared_services) ----------------
 _masters_cache_store: dict[int, str] | None = None
+_resolve_master_cache: dict[int, int] = {}
 
 # ---------------- Master schedule caching (removed) ----------------
 # DB-only strategy: previous in-memory read-through cache removed to avoid
@@ -278,37 +284,6 @@ _MASTER_TEXT_DEFAULTS: dict[str, str] = {
 
 
 
-# Role-based booking formatting now uses shared `format_booking_list_item(..., role="master")`.
-
-
-async def get_master_bookings(
-    *,
-    master_id: int,
-    mode: str = "upcoming",
-    page: int = 1,
-    page_size: int | None = 5,
-    start: datetime | None = None,
-    end: datetime | None = None,
-) -> tuple[Sequence[Any], dict[str, Any]]:
-    """
-    # Master-specific pagination: delegates directly to BookingRepo.get_paginated_list.
-    """
-    # Resolve provided identifier (may be a telegram id or surrogate id)
-    try:
-        from bot.app.services.client_services import BookingRepo
-        # Prefer canonical surrogate id; allow callers to pass telegram id for convenience
-        try:
-            resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
-        except Exception:
-            resolved_mid = None
-        if not resolved_mid:
-            return [], {"total": 0, "total_pages": 1, "page": 1, "done_count": 0, "cancelled_count": 0, "noshow_count": 0, "upcoming_count": 0}
-        return await BookingRepo.get_paginated_list(master_id=resolved_mid, mode=mode, page=page, page_size=page_size, start=start, end=end)
-    except Exception:
-        # Fallback: return empty page
-        return [], {"total": 0, "total_pages": 1, "page": 1, "done_count": 0, "cancelled_count": 0, "noshow_count": 0, "upcoming_count": 0}
-
-
 async def get_master_dashboard_summary(master_id: int, *, lang: str | None = None) -> str:
     """Build a small "today" dashboard summary string for a master.
 
@@ -316,6 +291,50 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
     """
     try:
         l = lang or await SettingsRepo.get_setting("language", default_language())
+
+        # Normalize provided identifier (surrogate id or telegram id) to canonical masters.id
+        try:
+            resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
+        except Exception:
+            resolved_mid = None
+        mid = resolved_mid or int(master_id)
+
+        # Pre-compute rating summary for header (always show, default 0.0)
+        rating_line = ""
+        try:
+            async with get_session() as session:
+                from sqlalchemy import select
+                from bot.app.domain.models import BookingRating, Booking
+
+                res = await session.execute(
+                    select(func.avg(BookingRating.rating), func.count(BookingRating.rating))
+                    .select_from(BookingRating)
+                    .join(Booking, Booking.id == BookingRating.booking_id)
+                    .where(Booking.master_id == mid)
+                )
+                rating_avg, ratings_count = res.one_or_none() or (0.0, 0)
+
+                completed_orders = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Booking)
+                            .where(Booking.master_id == mid, Booking.status == BookingStatus.DONE)
+                        )
+                    ).scalar()
+                    or 0
+                )
+
+                rating_label = tr("rating_label", lang=l)
+                orders_word = tr("orders", lang=l)
+                rating_line = f"⭐ {rating_label}: {float(rating_avg or 0.0):.1f}/5 ({completed_orders} {orders_word})"
+        except Exception:
+            try:
+                rating_label = tr("rating_label", lang=l)
+                orders_word = tr("orders", lang=l)
+                rating_line = f"⭐ {rating_label}: 0.0/5 (0 {orders_word})"
+            except Exception:
+                rating_line = ""
 
         # compute local day bounds and convert to UTC
         local_tz = get_local_tz() or UTC
@@ -333,14 +352,22 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             local_day_start = day_start_utc.astimezone(local_tz)
 
         # Optimized: fetch top N upcoming bookings for today (for list display)
-        rows, _meta = await get_master_bookings(
-            master_id=int(master_id),
-            start=day_start_utc,
-            end=day_end_utc,
-            mode="upcoming",
-            page=1,
-            page_size=DEFAULT_PAGE_SIZE,
-        )
+        try:
+            from bot.app.services.client_services import BookingRepo
+        except Exception:
+            BookingRepo = None  # type: ignore
+
+        if resolved_mid and BookingRepo:
+            rows, _meta = await BookingRepo.get_paginated_list(
+                master_id=resolved_mid,
+                start=day_start_utc,
+                end=day_end_utc,
+                mode="upcoming",
+                page=1,
+                page_size=DEFAULT_PAGE_SIZE,
+            )
+        else:
+            rows = []
         # Format rows inline using shared formatter (role-aware).
         formatted_rows: list[tuple[str, int]] = []
         for r in rows:
@@ -364,7 +391,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                         func.sum(case((Booking.status == BookingStatus.CANCELLED, 1), else_=0)).label("cancelled"),
                     )
                     .where(
-                        Booking.master_id == int(master_id),
+                        Booking.master_id == int(mid),
                         Booking.starts_at >= day_start_utc,
                         Booking.starts_at < day_end_utc,
                     )
@@ -396,6 +423,8 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             pending_lbl = tr("dashboard_pending_label", lang=l).replace("{count}", "").strip() or "Pending"
 
             lines = [header]
+            if rating_line:
+                lines.append(rating_line)
             lines.append(f"{today_lbl}: {total}")
             lines.append(f"{done_lbl}: {done}")
             lines.append(f"{cancelled_lbl}: {cancelled}")
@@ -406,11 +435,14 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 lines.append(txt)
             summary = "\n".join(lines)
         else:
-            summary = tr("master_no_bookings_today", lang=l)
+            base = [tr("master_no_bookings_today", lang=l)]
+            if rating_line:
+                base.insert(0, rating_line)
+            summary = "\n".join(base)
 
         # also fetch a 7-day stats summary and append to dashboard
         try:
-            stats = await get_master_stats_summary(int(master_id), days=7)
+            stats = await get_master_stats_summary(int(mid), days=7)
         except Exception:
             stats = {"total_bookings": 0, "completed_bookings": 0, "no_shows": 0, "next_booking_time": None}
         try:
@@ -424,10 +456,17 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             seven_lines.append(f"{noshow7_lbl}: {stats.get('no_shows', 0)}")
             # Revenue (format cents to human-friendly string)
             try:
-                rev_cents = int(stats.get('revenue_cents', 0) or 0)
-                from bot.app.services.shared_services import format_money_cents
+                    rev_cents = int(stats.get('revenue_cents', 0) or 0)
+                    from bot.app.services.shared_services import format_money_cents, normalize_currency
+                    from bot.app.services.admin_services import SettingsRepo
 
-                rev_txt = format_money_cents(rev_cents, 'UAH')
+                    # Use the service-level currency when available, otherwise fall back
+                    # to the global SettingsRepo currency (normalized ISO code).
+                    global_cur = await SettingsRepo.get_currency()
+                    from bot.app.services.shared_services import _default_currency
+
+                    cur_code = normalize_currency(global_cur) or _default_currency()
+                    rev_txt = format_money_cents(rev_cents, cur_code)
             except Exception:
                 rev_txt = str(int(stats.get('revenue_cents', 0) or 0) / 100.0)
             # Revenue (localized label)
@@ -570,6 +609,11 @@ def invalidate_masters_cache() -> None:
     """Invalidate masters cache (useful after CRUD)."""
     global _masters_cache_store
     _masters_cache_store = None
+    # Also clear resolve cache so future lookups hit DB once and refresh.
+    try:
+        _resolve_master_cache.clear()
+    except Exception:
+        pass
 
 
 
@@ -584,6 +628,29 @@ class MasterRepo:
     """
 
     @staticmethod
+    async def _resolve_mid(session, master_identifier: int) -> int | None:
+        """Resolve surrogate master id using an existing session.
+
+        Accepts either surrogate id or telegram_id. Returns None if not found.
+        """
+        try:
+            key = int(master_identifier)
+        except Exception:
+            return None
+        try:
+            from bot.app.domain.models import Master
+            from sqlalchemy import select
+
+            mid = await session.scalar(select(Master.id).where(Master.id == key))
+            if mid:
+                return int(mid)
+            mid = await session.scalar(select(Master.id).where(Master.telegram_id == key))
+            return int(mid) if mid else None
+        except Exception as e:
+            logger.exception("MasterRepo._resolve_mid failed for %s: %s", master_identifier, e)
+            return None
+
+    @staticmethod
     async def get_schedule(master_id: int) -> dict:
         """Return normalized schedule dict (DB-only).
 
@@ -594,19 +661,12 @@ class MasterRepo:
         try:
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import MasterProfile, MasterSchedule, Master
-                # Prefer surrogate id. If no such master exists, try resolving
-                # the provided value as telegram_id (legacy case).
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
+                from bot.app.domain.models import MasterSchedule
+                mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
-                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
-                if not mid:
-                    return {}
-                prof = await session.scalar(select(MasterProfile.id).where(MasterProfile.master_id == int(mid)))
-                if prof is None:
                     return {}
                 ms_stmt = select(MasterSchedule.day_of_week, MasterSchedule.start_time, MasterSchedule.end_time).where(
-                    MasterSchedule.master_profile_id == prof
+                    MasterSchedule.master_id == int(mid)
                 ).order_by(MasterSchedule.day_of_week, MasterSchedule.start_time)
                 ms_res = await session.execute(ms_stmt)
                 rows = ms_res.all()
@@ -629,37 +689,43 @@ class MasterRepo:
 
     @staticmethod
     async def set_schedule(master_id: int, schedule: dict[str, Any]) -> bool:
-        """Persist canonical schedule into MasterProfile.bio.schedule (legacy store).
+        """Persist canonical schedule into `master_schedules` rows.
 
-        After full migration, this should write into `master_schedules` rows instead
-        of the JSON bio; retained here for transitional compatibility.
+        Replaces any existing rows for the master with the provided schedule.
         """
         try:
             if not isinstance(schedule, dict):
                 logger.warning("MasterRepo.set_schedule: rejecting non-dict schedule for %s", master_id)
                 return False
-            import json
             async with get_session() as session:
-                from bot.app.domain.models import MasterProfile, Master
-                from sqlalchemy import select
-                # Prefer surrogate id; fall back to telegram id
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
-                if not mid:
-                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                from bot.app.domain.models import MasterSchedule
+                mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
                     return False
-                prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == int(mid)))
                 canonical = schedule or {}
-                if not prof:
-                    prof = MasterProfile(master_id=int(mid), bio=json.dumps({"schedule": canonical}))
-                    session.add(prof)
-                else:
+                # Remove existing schedule rows
+                await session.execute(
+                    sa.text("DELETE FROM master_schedules WHERE master_id = :mid").bindparams(mid=int(mid))
+                )
+                # Insert new rows
+                for dow_str, slots in canonical.items():
                     try:
-                        bio_obj = json.loads(prof.bio or "{}") or {}
+                        dow = int(dow_str)
                     except Exception:
-                        bio_obj = {}
-                    bio_obj["schedule"] = {str(k): v for k, v in canonical.items()}
-                    prof.bio = json.dumps(bio_obj)
+                        continue
+                    if not isinstance(slots, (list, tuple)):
+                        continue
+                    for slot in slots:
+                        try:
+                            start_label, end_label = slot
+                        except Exception:
+                            continue
+                        await session.execute(
+                            sa.text(
+                                "INSERT INTO master_schedules (master_id, day_of_week, start_time, end_time, is_day_off, updated_at) "
+                                "VALUES (:mid, :dow, :st::time, :et::time, FALSE, now())"
+                            ).bindparams(mid=int(mid), dow=dow, st=str(start_label), et=str(end_label))
+                        )
                 await session.commit()
             logger.info("MasterRepo.set_schedule: schedule set for %s", master_id)
             return True
@@ -699,11 +765,7 @@ class MasterRepo:
                 from bot.app.domain.models import Booking, BookingStatus
                 from sqlalchemy import select
 
-                # Prefer surrogate id; fall back to telegram id
-                from bot.app.domain.models import Master
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
-                if not mid:
-                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
                     return []
                 stmt = select(Booking).where(Booking.master_id == int(mid))
@@ -775,19 +837,35 @@ class MasterRepo:
         This central helper unifies resolution logic used across handlers.
         """
         try:
+            key = int(master_identifier)
+        except Exception:
+            return None
+
+        # Fast path: in-memory cache to avoid repeated DB hits for the same id/tid.
+        try:
+            if key in _resolve_master_cache:
+                return _resolve_master_cache[key]
+        except Exception:
+            pass
+
+        try:
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import Master
 
-                # Prefer direct match on surrogate id
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_identifier)))
+                mid = await session.scalar(select(Master.id).where(Master.id == key))
                 if mid:
-                    return int(mid)
-                # Fallback: treat provided value as telegram_id
-                mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_identifier)))
-                if mid:
-                    return int(mid)
-                return None
+                    resolved = int(mid)
+                else:
+                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == key))
+                    resolved = int(mid) if mid else None
+
+            if resolved is not None:
+                try:
+                    _resolve_master_cache[key] = resolved
+                except Exception:
+                    pass
+            return resolved
         except Exception as e:
             logger.exception("MasterRepo.resolve_master_id failed for %s: %s", master_identifier, e)
             return None
@@ -806,9 +884,10 @@ class MasterRepo:
                 from sqlalchemy import func, cast, String
 
                 # Aggregate booking item names; fall back to empty string when
-                # there are no BookingItem rows.
+                # there are no BookingItem rows. We intentionally avoid selecting
+                # per-service currency values here because currency is sourced
+                # from environment configuration (DEFAULT_CURRENCY).
                 service_expr = func.coalesce(func.string_agg(Svc.name, ' + '), "").label("service_name")
-                currency_expr = func.max(Svc.currency).label("currency")
 
                 stmt = (
                     select(
@@ -817,7 +896,6 @@ class MasterRepo:
                         Master.name.label("master_name"),
                         MasterClientNote.note.label("client_note"),
                         service_expr,
-                        currency_expr,
                     )
                     .outerjoin(User, User.id == Booking.user_id)
                     .outerjoin(Master, Master.id == Booking.master_id)
@@ -846,14 +924,17 @@ class MasterRepo:
                 service_name = row[4] or ""
 
                 # currency_expr is selected as the next column after service_name
-                currency = None
+                # Currency is read from global configuration (env), not from
+                # per-service DB column. Use SettingsRepo to resolve the
+                # canonical currency for this deployment.
+                from bot.app.services.admin_services import SettingsRepo
                 try:
-                    currency = getattr(row, "currency", None) or row[5]
+                    currency = await SettingsRepo.get_currency()
                 except Exception:
-                    currency = None
+                    from bot.app.services.shared_services import _default_currency
+                    currency = _default_currency()
 
                 price_cents = getattr(booking_obj, "final_price_cents", None) or getattr(booking_obj, "original_price_cents", None) or 0
-                currency = currency or getattr(booking_obj, "currency", None) or "UAH"
 
                 data = {
                     "booking_id": getattr(booking_obj, "id", booking_id),
@@ -954,21 +1035,22 @@ class MasterRepo:
 
     @staticmethod
     async def get_master_bio(master_telegram_id: int) -> dict[str, Any]:
-        """Return full parsed MasterProfile.bio as dict or {} on error/not found."""
+        """Return master's bio from `masters.bio` as dict or {}."""
         try:
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import MasterProfile, Master
+                from bot.app.domain.models import Master
                 # Resolve surrogate id and select by master_id
                 mid = await session.scalar(select(Master.id).where(Master.telegram_id == master_telegram_id))
                 if not mid:
                     return {}
-                prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == int(mid)))
-                if not prof or not getattr(prof, "bio", None):
+                # Read bio from masters table
+                bio_text = await session.scalar(sa.text("SELECT bio FROM masters WHERE id = :mid").bindparams(mid=int(mid)))
+                if not bio_text:
                     return {}
                 import json
                 try:
-                    return json.loads(prof.bio or "{}") or {}
+                    return json.loads(bio_text or "{}") or {}
                 except Exception:
                     return {}
         except Exception as e:
@@ -977,22 +1059,19 @@ class MasterRepo:
 
     @staticmethod
     async def update_master_bio(master_telegram_id: int, bio: dict[str, Any]) -> bool:
-        """Overwrite MasterProfile.bio with given dict (stores JSON)."""
+        """Overwrite master's bio in `masters.bio` with given dict."""
         try:
             import json
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import MasterProfile, Master
-                # Resolve surrogate id and select/create profile by master_id
+                from bot.app.domain.models import Master
+                # Resolve surrogate id
                 mid = await session.scalar(select(Master.id).where(Master.telegram_id == master_telegram_id))
                 if not mid:
                     return False
-                prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == int(mid)))
-                if not prof:
-                    prof = MasterProfile(master_id=int(mid), bio=json.dumps(bio or {}))
-                    session.add(prof)
-                else:
-                    prof.bio = json.dumps(bio or {})
+                await session.execute(
+                    sa.text("UPDATE masters SET bio = :bio WHERE id = :mid").bindparams(bio=json.dumps(bio or {}), mid=int(mid))
+                )
                 await session.commit()
             # Legacy schedule key (if present) is ignored; schedule now lives solely
             # in master_schedules table via set_master_schedule.
@@ -1071,11 +1150,18 @@ class MasterRepo:
 
                 user = await session.get(User, user_id)
                 texts = _MASTER_TEXT_DEFAULTS
+                # Use configured currency (SettingsRepo) rather than hardcoded UAH
+                try:
+                    cur_code = await SettingsRepo.get_currency()
+                except Exception:
+                    from bot.app.services.shared_services import _default_currency
+
+                    cur_code = _default_currency()
                 history = {
                     "name": getattr(user, "name", None) if user else texts.get("unknown_client", "unknown"),
                     "visits": len(all_bookings),
                     "total_spent_cents": total_spent_cents,
-                    "total_spent": format_money_cents(total_spent_cents, "UAH"),
+                    "total_spent": format_money_cents(total_spent_cents, cur_code),
                     "last_visit": format_date(all_bookings[0].starts_at, '%d.%m.%Y') if all_bookings else texts.get("no_visits", "Нет"),
                     "note": note or texts.get("no_notes", ""),
                 }
@@ -1123,7 +1209,7 @@ class MasterRepo:
         try:
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import Master, Service, MasterService, MasterProfile, BookingRating, Booking
+                from bot.app.domain.models import Master, Service, MasterService, BookingRating, Booking
 
                 master = await session.get(Master, master_id)
                 if not master:
@@ -1131,18 +1217,65 @@ class MasterRepo:
 
                 # services offered by master
                 svc_stmt = (
-                    select(Service.id, Service.name, Service.category, Service.price_cents, Service.currency)
+                    select(Service.id, Service.name, Service.category, Service.price_cents)
                     .join(MasterService, MasterService.service_id == Service.id)
                     .where(MasterService.master_id == master_id)
                 )
                 res = await session.execute(svc_stmt)
-                services = [(str(r[0]), r[1], r[2], r[3], r[4]) for r in res.all()]
-
-                # profile bio -> durations and about
+                # Map rows to tuples: id, name, category, price_cents
+                rows = res.all()
                 try:
-                    prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == master_id))
+                    from bot.app.services.admin_services import SettingsRepo
+                    global_currency = await SettingsRepo.get_currency()
+                except Exception:
+                    from bot.app.services.shared_services import _default_currency
+                    global_currency = _default_currency()
+
+                services = [(str(r[0]), r[1], r[2], r[3], global_currency) for r in rows]
+
+                # Aggregate rating and completed orders for the profile header
+                rating_avg = None
+                ratings_count = 0
+                completed_orders = 0
+                try:
+                    rating_row = await session.execute(
+                        select(func.avg(BookingRating.rating), func.count(BookingRating.rating))
+                        .select_from(BookingRating)
+                        .join(Booking, Booking.id == BookingRating.booking_id)
+                        .where(Booking.master_id == master_id)
+                    )
+                    rating_avg, ratings_count = rating_row.one_or_none() or (None, 0)
+                except Exception:
+                    rating_avg, ratings_count = None, 0
+
+                try:
+                    completed_orders = int(
+                        (
+                            await session.execute(
+                                select(func.count())
+                                .select_from(Booking)
+                                .where(Booking.master_id == master_id, Booking.status == BookingStatus.DONE)
+                            )
+                        ).scalar()
+                        or 0
+                    )
+                except Exception:
+                    completed_orders = 0
+
+                # Attach metrics to master instance for downstream formatter
+                try:
+                    if rating_avg is not None:
+                        setattr(master, "rating", float(rating_avg))
+                    setattr(master, "completed_orders", completed_orders)
+                    setattr(master, "ratings_count", int(ratings_count or 0))
+                except Exception:
+                    pass
+
+                # profile bio -> durations and about (now stored on masters.bio)
+                try:
                     import json
-                    bio = json.loads(prof.bio or "{}") if prof and getattr(prof, "bio", None) else {}
+                    bio_text = await session.scalar(sa.text("SELECT bio FROM masters WHERE id = :mid").bindparams(mid=int(master_id)))
+                    bio = json.loads(bio_text or "{}") if bio_text else {}
                 except Exception:
                     bio = {}
 
@@ -1209,6 +1342,9 @@ class MasterRepo:
                     "durations_map": durations_map,
                     "about_text": about_text,
                     "reviews": reviews,
+                    "rating": rating_avg,
+                    "ratings_count": ratings_count,
+                    "completed_orders": completed_orders,
                 }
                 return data
         except Exception as e:
@@ -1278,12 +1414,8 @@ class MasterRepo:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Master
-                from sqlalchemy import select
 
-                # Resolve the provided identifier: prefer direct surrogate id, fall back to telegram_id.
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
-                if not mid:
-                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
                     # Nothing to delete
                     return False
@@ -1325,16 +1457,12 @@ class MasterRepo:
                 from bot.app.domain.models import (
                     Master,
                     MasterService,
-                    MasterProfile,
                     MasterClientNote,
                     Booking,
                 )
                 from sqlalchemy import select, delete, update
 
-                # Resolve provided identifier (prefer surrogate id)
-                mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
-                if not mid:
-                    mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+                mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
                     return False, {}
 
@@ -1366,11 +1494,11 @@ class MasterRepo:
                     })
                 data["master_services"] = ms_rows
 
-                # profile
-                prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == int(mid)))
-                if prof:
-                    data["profile"] = {"id": getattr(prof, "id", None), "bio": getattr(prof, "bio", None)}
-                else:
+                # profile: store bio text from masters
+                try:
+                    bio_text = await session.scalar(sa.text("SELECT bio FROM masters WHERE id = :mid").bindparams(mid=int(mid)))
+                    data["profile"] = {"bio": bio_text}
+                except Exception:
                     data["profile"] = None
 
                 # client notes
@@ -1430,9 +1558,7 @@ class MasterRepo:
                 # 2) Delete master_services rows
                 await session.execute(delete(MasterService).where(MasterService.master_id == int(mid)))
 
-                # 3) Delete explicit profile and notes (cascade would handle these on physical master delete,
-                #    but we explicitly remove them to keep counts predictable)
-                await session.execute(delete(MasterProfile).where(MasterProfile.master_id == int(mid)))
+                # 3) Delete notes (profile table removed)
                 await session.execute(delete(MasterClientNote).where(MasterClientNote.master_id == int(mid)))
 
                 # 4) Delete the master row physically
@@ -1451,7 +1577,7 @@ class MasterRepo:
                 "deleted_master_id": int(mid),
                 "deleted_master_services": len(ms_rows),
                 "deleted_client_notes": len(notes_rows),
-                "deleted_profile": 1 if prof else 0,
+                "deleted_profile": 1 if data.get("profile") else 0,
                 "unassigned_bookings": len(bk_rows),
             }
             return True, metadata
@@ -1529,7 +1655,7 @@ class MasterRepo:
 
         The priority for effective duration is:
             1. MasterService.duration_minutes override if >0
-            2. ServiceProfile.duration_minutes if >0
+            2. Service.duration_minutes if >0
             3. slot duration fallback from SettingsRepo
         """
         slot_default = DEFAULT_SERVICE_FALLBACK_DURATION
@@ -1546,7 +1672,7 @@ class MasterRepo:
         try:
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import Service, MasterService, ServiceProfile, Master
+                from bot.app.domain.models import Service, MasterService, Master
 
                 # Resolve provided identifier (could be surrogate id or telegram id)
                 mid = await session.scalar(select(Master.id).where(Master.id == int(master_identifier)))
@@ -1560,25 +1686,24 @@ class MasterRepo:
                         Service.id,
                         Service.name,
                         MasterService.duration_minutes,
-                        ServiceProfile.duration_minutes,
+                        Service.duration_minutes,
                     )
                     .select_from(MasterService)
                     .join(Service, Service.id == MasterService.service_id)
-                    .outerjoin(ServiceProfile, ServiceProfile.service_id == Service.id)
                     .where(MasterService.master_id == int(mid))
                     .order_by(Service.name)
                 )
                 rows = (await session.execute(stmt)).all()
                 out: list[tuple[str, str, int | None]] = []
-                for sid, name, ms_dur, sp_dur in rows:
+                for sid, name, ms_dur, svc_dur in rows:
                     eff = None
                     try:
                         ms_val = int(ms_dur) if ms_dur is not None else None
-                        sp_val = int(sp_dur) if sp_dur is not None else None
+                        svc_val = int(svc_dur) if svc_dur is not None else None
                         if ms_val and ms_val > 0:
                             eff = ms_val
-                        elif sp_val and sp_val > 0:
-                            eff = sp_val
+                        elif svc_val and svc_val > 0:
+                            eff = svc_val
                         else:
                             eff = slot_default
                     except Exception:
@@ -1665,31 +1790,33 @@ class MasterRepo:
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import Master, MasterService
-                # Defensive two-step query: first fetch master IDs from junction
-                # table, then load Master rows. This avoids subtle JOIN issues
-                # when the DB has inconsistent rows or different typing.
-                mid_rows = await session.execute(select(MasterService.master_telegram_id).where(MasterService.service_id == service_id))
+
+                # Fetch master surrogate IDs from the junction table, then
+                # load Master rows by id. This avoids scalar subqueries using
+                # Master.telegram_id and uses the indexed surrogate key.
+                mid_rows = await session.execute(
+                    select(MasterService.master_id).where(MasterService.service_id == service_id)
+                )
                 raw_mid_rows = mid_rows.all()
-                mids = [int(r[0]) for r in raw_mid_rows]
-                # Always emit debug about raw junction rows to aid diagnosis of
-                # cases where the junction seems to contain values but the
-                # in_(mids) query later doesn't match (type/coercion issues,
-                # whitespace, different DB/schema instance, etc.).
+                mids = [int(r[0]) for r in raw_mid_rows if r and r[0] is not None]
+
                 logger.info(
                     "get_masters_for_service: service_id=%r -> raw_mid_rows=%r -> mids=%s",
                     service_id,
                     raw_mid_rows,
                     mids,
                 )
+
                 if not mids:
-                    # Additional debug: list distinct service_ids present in master_services
+                    # Debug: sample master_services rows if none found
                     try:
-                        all_rows = await session.execute(select(MasterService.master_telegram_id, MasterService.service_id))
+                        all_rows = await session.execute(select(MasterService.master_id, MasterService.service_id))
                         logger.info("get_masters_for_service: master_services full sample=%r", all_rows.all())
                     except Exception:
                         logger.info("get_masters_for_service: failed to fetch master_services sample for debugging")
                     return []
-                res = await session.execute(select(Master).where(Master.telegram_id.in_(mids)))
+
+                res = await session.execute(select(Master).where(Master.id.in_(mids)))
                 masters = list(res.scalars().all())
                 logger.info("get_masters_for_service: service_id=%s -> master_ids=%s, masters_found=%d", service_id, mids, len(masters))
                 return masters
@@ -1756,7 +1883,7 @@ class MasterRepo:
             async with get_session() as session:
                 stmt = (
                     select(Master.telegram_id, Master.name)
-                    .join(MasterService, MasterService.master_telegram_id == Master.telegram_id)
+                    .join(MasterService, MasterService.master_id == Master.id)
                     .where(MasterService.service_id.in_(list(service_ids)))
                     .group_by(Master.telegram_id, Master.name)
                     .having(func.count(func.distinct(MasterService.service_id)) == len(service_ids))
@@ -1833,83 +1960,30 @@ def format_client_history(hist: Mapping, user_id: int, lang: str | None = None) 
     keys (via tr/t) for all visible labels so the output is localized.
     """
     try:
-        # Resolve language (caller may pass None)
         l = lang or default_language()
 
         header = tr("master_client_history_header", lang=l)
-        # Keep id in header for clarity (translations generally don't include id)
         lines: list[str] = [f"{header} #{user_id}"]
 
         visits = hist.get("visits", 0)
         spent = hist.get("total_spent_cents", 0)
+        rating = hist.get("rating")
+        rating_txt = f"{rating}⭐" if isinstance(rating, (int, float)) else None
 
-        # Prepare localized labels with safe fallbacks when translations are missing
-        name_lbl = tr("client_label", lang=l) or "Name"
-        visits_lbl = tr("master_total_visits", lang=l) or "Visits"
-        spent_lbl = tr("master_total_spent", lang=l) or "Spent"
-        last_visit_lbl = tr("master_last_visit", lang=l) or "Last visit"
-        rating_lbl = tr("rating_label", lang=l) or "Rating"
-        note_lbl = tr("master_note", lang=l) or "Note"
-
-        basic_fields = [
-            (name_lbl, hist.get("name")),
-            (visits_lbl, visits),
-            (spent_lbl, format_money_cents(spent)),
-            (last_visit_lbl, hist.get("last_visit")),
-            (rating_lbl, (f"{hist.get('rating')}⭐" if isinstance(hist.get("rating"), (int, float)) else None)),
-            (note_lbl, hist.get("note")),
+        fields = [
+            (tr("client_label", lang=l) or "Name", hist.get("name")),
+            (tr("master_total_visits", lang=l) or "Visits", visits),
+            (tr("master_total_spent", lang=l) or "Spent", format_money_cents(spent)),
+            (tr("master_last_visit", lang=l) or "Last visit", hist.get("last_visit")),
+            (tr("rating_label", lang=l) or "Rating", rating_txt),
+            (tr("master_note", lang=l) or "Note", hist.get("note")),
         ]
 
-        for label, value in basic_fields:
-            if value is None or value == "":
-                continue
-            lines.append(f"{label}: {value}")
+        lines.extend([f"{label}: {value}" for label, value in fields if value not in (None, "")])
         return "\n".join(lines)
     except Exception as e:
         logger.warning("format_client_history failed: %s", e)
         return ""
-
-
-async def get_master_bookings_for_period(
-    master_telegram_id: int,
-    *,
-    start: datetime | None = None,
-    end: datetime | None = None,
-    days: int | None = 7,
-) -> Sequence[BookingInfo]:
-    """Получает записи мастера за указанный период.
-
-    This function supports two calling conventions for backward compatibility:
-    - legacy: pass `days=int` (as before) — it will use now..now+days
-    - preferred: pass explicit `start` (datetime) and optional `end` (datetime)
-
-    If neither `start` nor `days` is provided, `days=7` is used.
-    """
-    try:
-        # Prefer canonical BookingRepo.get_paginated_list which centralizes
-        # all booking list logic and supports start/end filtering.
-        from bot.app.services.client_services import BookingRepo
-
-        # Legacy behaviour: if start not provided and days given, compute range
-        if start is None and days:
-            now = utc_now()
-            start = now
-            end = now + timedelta(days=int(days))
-
-        # Resolve provided identifier (legacy telegram id or surrogate id)
-        try:
-            resolved_mid = await MasterRepo.resolve_master_id(int(master_telegram_id))
-        except Exception:
-            resolved_mid = None
-        if not resolved_mid:
-            # No such master — return empty list for compatibility
-            return []
-
-        rows, _meta = await BookingRepo.get_paginated_list(master_id=resolved_mid, start=start, end=end, page_size=None)
-        return list(rows or [])
-    except Exception as e:
-        logger.exception("get_master_bookings_for_period (shared) failed for %s: %s", master_telegram_id, e)
-        return []
 
 
 async def check_future_booking_conflicts(
@@ -1933,7 +2007,8 @@ async def check_future_booking_conflicts(
     try:
         now = utc_now()
         end = now + timedelta(days=horizon_days)
-        sched = _normalize_schedule(await get_master_schedule(master_telegram_id) or {})
+        from bot.app.services.master_services import MasterRepo
+        sched = _normalize_schedule(await MasterRepo.get_schedule(master_telegram_id) or {})
 
         if clear_all:
             days_to_check = set(range(7))
@@ -2020,7 +2095,7 @@ async def cancel_bookings_and_notify(bot, booking_ids: list[int] | None, *, noti
         logger.exception("cancel_bookings_and_notify: BookingRepo unavailable: %s", e)
         return 0
     try:
-        from bot.app.services.client_services import send_booking_notification
+        from bot.app.core.notifications import send_booking_notification
     except Exception:
         send_booking_notification = None
 
@@ -2085,31 +2160,10 @@ async def ensure_booking_owner(user_id: int, booking_id: int) -> Optional[Bookin
 
 
 
-async def get_master_profile_data(master_id: int) -> Optional[Dict[str, Any]]:
-    """Fetch master profile data only (no formatting).
-
-    Returns a dict with keys: master, services, durations_map, about_text, reviews
-    or None if master not found.
-    """
-    try:
-        from bot.app.services.master_services import MasterRepo
-        return await MasterRepo.get_master_profile_data(master_id)
-    except Exception as e:
-        logger.exception("get_master_profile_data (repo) failed: %s", e)
-        return None
-async def get_master_schedule(master_telegram_id: int) -> dict:
-    """Возвращает расписание мастера, хранящееся в MasterProfile.bio как JSON.
-
-    Формат: {"schedule": {"0": [["09:00","12:00"], ...], "1": [...], ...}}
-    Возвращает пустой dict при отсутствии данных или на ошибке.
-    """
-    # Delegate to repository to centralize DB access
-    try:
-        from bot.app.services.master_services import MasterRepo
-        return await MasterRepo.get_schedule(master_telegram_id)
-    except Exception as e:
-        logger.warning("get_master_schedule (repo) failed for %s: %s", master_telegram_id, e)
-        return {}
+# Removed thin wrappers `get_master_profile_data` and `get_master_schedule`.
+# Call `MasterRepo.get_master_profile_data(...)` and
+# `MasterRepo.get_schedule(...)` directly from handlers when repo access
+# is required. These wrappers previously hid errors and added indirection.
 
 
 def _parse_master_schedule_time(value: str | _time | None) -> _time | None:
@@ -2137,20 +2191,14 @@ async def set_master_schedule(master_telegram_id: int, schedule: dict) -> bool:
         canonical = _normalize_schedule(schedule or {})
         async with get_session() as session:
             from sqlalchemy import select, delete
-            from bot.app.domain.models import MasterProfile, MasterSchedule, Master
+            from bot.app.domain.models import MasterSchedule, Master
             # Resolve surrogate master.id from telegram id
             mid = await session.scalar(select(Master.id).where(Master.telegram_id == master_telegram_id))
             if not mid:
                 # Unknown master; nothing to store
                 return False
-            # Ensure master_profile exists by surrogate id
-            prof = await session.scalar(select(MasterProfile).where(MasterProfile.master_id == int(mid)))
-            if not prof:
-                prof = MasterProfile(master_id=int(mid), bio=None)
-                session.add(prof)
-                await session.flush()
-            # Delete existing rows
-            await session.execute(delete(MasterSchedule).where(MasterSchedule.master_profile_id == prof.id))
+            # Delete existing rows for this master
+            await session.execute(delete(MasterSchedule).where(MasterSchedule.master_id == int(mid)))
             # Insert new windows
             now_ts = utc_now()
             to_add = []
@@ -2166,7 +2214,7 @@ async def set_master_schedule(master_telegram_id: int, schedule: dict) -> bool:
                     end_time = _parse_master_schedule_time(win[1])
                     if not start_time or not end_time:
                         continue
-                    to_add.append(MasterSchedule(master_profile_id=prof.id, day_of_week=dow, start_time=start_time, end_time=end_time, updated_at=now_ts))
+                    to_add.append(MasterSchedule(master_id=int(mid), day_of_week=dow, start_time=start_time, end_time=end_time, updated_at=now_ts))
             for obj in to_add:
                 session.add(obj)
             await session.commit()
@@ -2182,7 +2230,8 @@ async def set_master_schedule_day(master_telegram_id: int, day: int, windows: li
     windows should be list of [start, end] pairs as strings.
     """
     try:
-        sched = await get_master_schedule(master_telegram_id) or {}
+        from bot.app.services.master_services import MasterRepo
+        sched = await MasterRepo.get_schedule(master_telegram_id) or {}
         sched[str(day)] = windows
         return await set_master_schedule(master_telegram_id, sched)
     except Exception as e:
@@ -2207,21 +2256,18 @@ async def remove_schedule_window_by_value(master_telegram_id: int, day: int, sta
     except Exception:
         return False, []
     # Normalize input times to HH:MM (window storage format)
-    def _norm(x: str) -> str | None:
-        try:
-            x = x.strip()
-            h, m = map(int, x.split(":"))
-            if 0 <= h < 24 and 0 <= m < 60:
-                return f"{h:02d}:{m:02d}"
-        except Exception:
-            return None
-        return None
-    a = _norm(str(start))
-    b = _norm(str(end))
+    try:
+        a_min = _parse_hm_to_minutes(start)
+        b_min = _parse_hm_to_minutes(end)
+        a = _minutes_to_hm(a_min)
+        b = _minutes_to_hm(b_min)
+    except Exception:
+        return False, []
     if not a or not b:
         return False, []
     try:
-        sched = await get_master_schedule(mid)
+        from bot.app.services.master_services import MasterRepo
+        sched = await MasterRepo.get_schedule(mid)
         day_slots = sched.get(str(d)) if isinstance(sched, dict) else []
         if not isinstance(day_slots, list) or not day_slots:
             return False, []
@@ -2248,18 +2294,13 @@ async def remove_schedule_window_by_value(master_telegram_id: int, day: int, sta
             return False, []
         # Reuse conflict detection logic (specialize for single window)
         conflicts: list[str] = []
-        now = datetime.now(timezone.utc)
+        # Use shared utc_now() helper to obtain an aware UTC datetime
+        now = utc_now()
         try:
             bookings = await MasterRepo.get_bookings_for_period(mid, start=now, days=365)
         except SQLAlchemyError:
             bookings = []
-        try:
-            a_h, a_m = map(int, a.split(":"))
-            b_h, b_m = map(int, b.split(":"))
-            a_min = a_h * 60 + a_m
-            b_min = b_h * 60 + b_m
-        except Exception:
-            return False, []
+        # a_min and b_min already computed above
         for booking in (bookings or []):
             try:
                 starts = getattr(booking, "starts_at", None)
@@ -2368,37 +2409,7 @@ def _normalize_schedule(schedule: dict | None) -> dict:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Facade functions (thin delegators) for handlers
-# Handlers should import these functions instead of touching Repo classes.
-# ---------------------------------------------------------------------------
-async def get_master_name(master_id: int) -> str | None:
-    try:
-        return await MasterRepo.get_master_name(master_id)
-    except Exception as e:
-        logger.exception("get_master_name failed for %s: %s", master_id, e)
-        return None
-
-
-async def get_master(master_id: int):
-    try:
-        return await MasterRepo.get_master(master_id)
-    except Exception as e:
-        logger.exception("get_master failed for %s: %s", master_id, e)
-        return None
-
-
-# Note: compatibility shims were removed — use the canonical MasterRepo
-# methods implemented above in this module (`MasterRepo.get_master_name`,
-# `MasterRepo.get_services_for_master`, etc.).
-
-
-async def find_masters_for_services(service_ids: Sequence[str]) -> list[tuple[int, str | None]]:
-    try:
-        return await MasterRepo.find_masters_for_services(service_ids)
-    except Exception as e:
-        logger.exception("find_masters_for_services failed: %s", e)
-        return []
+# Thin delegator facades removed; use `MasterRepo` methods directly.
 
 async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) -> dict[str, Any]:
     """Return a small stats summary for a master for the given period.
@@ -2407,6 +2418,11 @@ async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) ->
     """
     try:
         local_tz = get_local_tz() or UTC
+        try:
+            resolved_mid = await MasterRepo.resolve_master_id(int(master_telegram_id))
+        except Exception:
+            resolved_mid = None
+        master_id = resolved_mid or int(master_telegram_id)
         from sqlalchemy import select, func, case
         from bot.app.domain.models import Booking, BookingStatus
         now = utc_now()
@@ -2422,7 +2438,7 @@ async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) ->
                     func.coalesce(func.sum(func.coalesce(Booking.final_price_cents, Booking.original_price_cents)), 0).label("revenue_cents"),
                 )
                 .where(
-                    Booking.master_id == int(master_telegram_id),
+                    Booking.master_id == int(master_id),
                     Booking.starts_at.between(start, end),
                 )
             )
@@ -2446,7 +2462,7 @@ async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) ->
             no_show_rate = (noshow / total * 100.0) if total > 0 else 0.0
 
             # find next upcoming booking (after now)
-            next_stmt = select(Booking.starts_at).where(Booking.master_id == int(master_telegram_id), Booking.starts_at >= now).order_by(Booking.starts_at.asc()).limit(1)
+            next_stmt = select(Booking.starts_at).where(Booking.master_id == int(master_id), Booking.starts_at >= now).order_by(Booking.starts_at.asc()).limit(1)
             nb = await session.execute(next_stmt)
             next_row = nb.first()
             next_time = None
@@ -2469,124 +2485,9 @@ async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) ->
         return {"total_bookings": 0, "completed_bookings": 0, "no_shows": 0, "next_booking_time": None}
 
 
-async def get_masters_for_service(service_id: str) -> list[Any]:
-    try:
-        return await MasterRepo.get_masters_for_service(service_id)
-    except Exception as e:
-        logger.exception("get_masters_for_service failed for %s: %s", service_id, e)
-        return []
-
-
-async def services_with_masters(wanted_ids: set[str]) -> set[str]:
-    try:
-        return await MasterRepo.services_with_masters(wanted_ids)
-    except Exception as e:
-        logger.info("MasterRepo.services_with_masters failed, falling back to module query: %s", e)
-    try:
-        if not wanted_ids:
-            return set()
-        async with get_session() as session:
-            from sqlalchemy import select
-            from bot.app.domain.models import MasterService
-            stmt = select(MasterService.service_id).where(MasterService.service_id.in_(wanted_ids)).distinct()
-            res = await session.execute(stmt)
-            return {str(r[0]) for r in res.all()}
-    except Exception as e:
-        logger.exception("module.services_with_masters fallback failed: %s", e)
-        return set()
-
-
-
-def _parse_windows_from_bio(bio: dict | None, target_date: _date | datetime) -> list[tuple[_time, _time]]:
-    """Parse MasterProfile.bio dict and return list of (time, time) windows for target_date.
-
-    This encapsulates exceptions, weekly schedule and settings fallbacks. It accepts
-    a pre-parsed bio dictionary (as returned by get_master_bio) so callers that already
-    loaded bio can reuse it without causing extra DB queries.
-    """
-    try:
-        if bio is None:
-            return [( _time(hour=9), _time(hour=18) )]
-        # Normalize target_date to a date object
-        if isinstance(target_date, datetime):
-            td = target_date.date()
-        else:
-            td = target_date
-
-        # Exceptions override specific dates
-        exceptions = bio.get("exceptions") or {}
-        day_key = td.isoformat()
-        windows: list[tuple[_time, _time]] = []
-        if exceptions and day_key in exceptions:
-            exc = exceptions.get(day_key) or {}
-            if exc.get("off"):
-                return []
-            date_windows = exc.get("windows") or []
-            for rng in date_windows:
-                try:
-                    if isinstance(rng, (list, tuple)) and len(rng) >= 2:
-                        a = str(rng[0])
-                        b = str(rng[1])
-                    else:
-                        s = str(rng)
-                        if "-" in s:
-                            a, b = s.split("-", 1)
-                        else:
-                            continue
-                    a = a.strip()
-                    b = b.strip()
-                    # validate HH:MM
-                    if re.match(r"^\d{1,2}:\d{2}$", a) and re.match(r"^\d{1,2}:\d{2}$", b):
-                        a_h, a_m = list(map(int, a.split(":")))
-                        b_h, b_m = list(map(int, b.split(":")))
-                        windows.append((_time(hour=a_h, minute=a_m), _time(hour=b_h, minute=b_m)))
-                except Exception:
-                    continue
-            return windows
-
-        # No date-specific exception -> check canonical weekly schedule
-        schedule = bio.get("schedule") or {}
-        # Ensure schedule is normalized shape (strings 'HH:MM') using existing normalizer
-        try:
-            schedule_norm = _normalize_schedule(schedule)
-        except Exception:
-            schedule_norm = {}
-
-        wd = td.weekday()
-        day_windows = schedule_norm.get(str(wd)) or []
-        for rng in day_windows:
-            try:
-                a = str(rng[0]).strip()
-                b = str(rng[1]).strip()
-                a_h, a_m = list(map(int, a.split(":")))
-                b_h, b_m = list(map(int, b.split(":")))
-                windows.append((_time(hour=a_h, minute=a_m), _time(hour=b_h, minute=b_m)))
-            except Exception:
-                continue
-
-        # If still empty, check settings for defaults
-        if not windows:
-            settings = bio.get("settings") or {}
-            from typing import Any
-            start_h: Any = settings.get("start_hour")
-            end_h: Any = settings.get("end_hour")
-            try:
-                if start_h and end_h:
-                    sh_parts = [int(x) for x in str(start_h).split(":")[:2]]
-                    eh_parts = [int(x) for x in str(end_h).split(":")[:2]]
-                    windows = [(_time(hour=sh_parts[0], minute=sh_parts[1]), _time(hour=eh_parts[0], minute=eh_parts[1]))]
-            except Exception:
-                windows = []
-
-        if not windows:
-            windows = [(_time(hour=9), _time(hour=18))]
-        return windows
-    except Exception:
-        return [(_time(hour=9), _time(hour=18))]
-
 
 async def get_work_windows_for_day(master_id: int, target_date: _date | datetime) -> list[tuple[_time, _time]]:
-    """Async helper: fetch MasterProfile.bio or MasterSchedule rows and return
+    """Async helper: fetch MasterSchedule rows and return
     work windows for target_date.
 
     IMPORTANT: this function accepts only the surrogate `masters.id` value.
@@ -2595,6 +2496,20 @@ async def get_work_windows_for_day(master_id: int, target_date: _date | datetime
     telegram IDs, schedules may not be found — callers should resolve
     telegram->id before calling this helper.
     """
+    def _default_window() -> list[tuple[_time, _time]]:
+        """Return the configured default working window using constants.
+
+        Falls back to 09:00–18:00 if constants are missing/invalid.
+        """
+        try:
+            start_h = int(DEFAULT_DAY_START_HOUR)
+            end_h = int(DEFAULT_DAY_END_HOUR)
+            if 0 <= start_h < 24 and 0 < end_h <= 24 and start_h < end_h:
+                return [(_time(hour=start_h), _time(hour=end_h))]
+        except Exception:
+            pass
+        return [(_time(hour=9), _time(hour=18))]
+
     try:
         # Normalize target_date to a date object
         if isinstance(target_date, datetime):
@@ -2604,22 +2519,19 @@ async def get_work_windows_for_day(master_id: int, target_date: _date | datetime
         # Use relational tables only: check per-date exceptions first, then
         # weekly schedules (respecting `is_day_off`), and finally default
         # working hours. We no longer read `master_profiles.bio` for schedules.
-        prof_id = None
         async with get_session() as session:
             from sqlalchemy import select
-            from bot.app.domain.models import MasterProfile, MasterSchedule, MasterScheduleException
+            from bot.app.domain.models import MasterSchedule, MasterScheduleException
 
-            prof_id = await session.scalar(select(MasterProfile.id).where(MasterProfile.master_id == int(master_id)))
-            # If a profile exists, inspect exceptions for the target date
-            if prof_id is not None:
-                stmt_exc = (
-                    select(MasterScheduleException.start_time, MasterScheduleException.end_time, MasterScheduleException.reason)
-                    .where(MasterScheduleException.master_profile_id == prof_id, MasterScheduleException.exception_date == td)
-                    .order_by(MasterScheduleException.start_time)
-                )
-                res_exc = await session.execute(stmt_exc)
-                exc_rows = res_exc.all()
-                if exc_rows:
+            # Inspect exceptions for the target date by master_id
+            stmt_exc = (
+                select(MasterScheduleException.start_time, MasterScheduleException.end_time, MasterScheduleException.reason)
+                .where(MasterScheduleException.master_id == int(master_id), MasterScheduleException.exception_date == td)
+                .order_by(MasterScheduleException.start_time)
+            )
+            res_exc = await session.execute(stmt_exc)
+            exc_rows = res_exc.all()
+            if exc_rows:
                     # If any exception row is a sentinel off-day (start==end==00:00 or reason=='off'), treat as day off
                     for st, et, reason in exc_rows:
                         try:
@@ -2646,16 +2558,15 @@ async def get_work_windows_for_day(master_id: int, target_date: _date | datetime
                         return windows
 
             # No per-date exceptions -> consider weekly schedules
-            if prof_id is not None:
-                wd = int(td.weekday())
-                stmt = (
-                    select(MasterSchedule.start_time, MasterSchedule.end_time, MasterSchedule.is_day_off)
-                    .where(MasterSchedule.master_profile_id == prof_id, MasterSchedule.day_of_week == wd)
-                    .order_by(MasterSchedule.start_time)
-                )
-                res = await session.execute(stmt)
-                rows = res.all()
-                if rows:
+            wd = int(td.weekday())
+            stmt = (
+                select(MasterSchedule.start_time, MasterSchedule.end_time, MasterSchedule.is_day_off)
+                .where(MasterSchedule.master_id == int(master_id), MasterSchedule.day_of_week == wd)
+                .order_by(MasterSchedule.start_time)
+            )
+            res = await session.execute(stmt)
+            rows = res.all()
+            if rows:
                     # If any row marks the weekday as a day off, return empty
                     for st, et, is_off in rows:
                         try:
@@ -2666,8 +2577,9 @@ async def get_work_windows_for_day(master_id: int, target_date: _date | datetime
                     windows = []
                     for st, et, _ in rows:
                         try:
-                            s = st.strftime('%H:%M') if hasattr(st, 'strftime') else str(st)
-                            e = et.strftime('%H:%M') if hasattr(et, 'strftime') else str(et)
+                            from bot.app.services.shared_services import format_slot_label
+                            s = format_slot_label(st, fmt='%H:%M') if st is not None else str(st)
+                            e = format_slot_label(et, fmt='%H:%M') if et is not None else str(et)
                         except Exception:
                             s = str(st)
                             e = str(et)
@@ -2681,9 +2593,9 @@ async def get_work_windows_for_day(master_id: int, target_date: _date | datetime
                         return windows
 
             # No schedules found: return default working window
-            return [(_time(hour=9), _time(hour=18))]
+            return _default_window()
     except Exception:
-        return [(_time(hour=9), _time(hour=18))]
+        return _default_window()
 
 
 def insert_window(schedule: dict | None, day: int, start: str, end: str, adjacency_min: int = 0) -> dict:
@@ -2780,15 +2692,20 @@ def copy_day(schedule: dict | None, target_day: int, source_day: int, mode: str 
     return tmp
 
 
-def render_schedule_table(schedule: dict | None) -> str:
-    """Render schedule dict into human-readable multi-line table for Mon..Sun."""
+def render_schedule_table(schedule: dict | None, lang: str | None = None) -> str:
+    """Render schedule dict into human-readable multi-line table for Mon..Sun.
+
+    Accepts optional `lang` so output can be localized. Uses the translation
+    key `closed_label` when a day has no windows.
+    """
     sched = schedule or {}
-    days = tr("weekday_short")
+    days = tr("weekday_short", lang=lang) or ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    closed_lbl = tr("closed_label", lang=lang) or "Closed"
     lines: list[str] = []
     for idx, name in enumerate(days):
         w = sched.get(str(idx)) or sched.get(idx) or []
         if not w:
-            lines.append(f"{name}: выходной")
+            lines.append(f"{name}: {closed_lbl}")
             continue
         parts = []
         for rng in (w or []):
@@ -2796,8 +2713,11 @@ def render_schedule_table(schedule: dict | None) -> str:
                 parts.append(f"{str(rng[0])}-{str(rng[1])}")
             except Exception:
                 continue
-        lines.append(f"{name}: {', '.join(parts) if parts else 'выходной'}")
+        if parts:
+            lines.append(f"{name}: {', '.join(parts)}")
+        else:
+            lines.append(f"{name}: {closed_lbl}")
     return "\n".join(lines)
 
 
-# Note: public facades are defined above as thin delegators to MasterRepo.
+# Public facades are implemented as thin delegators to `MasterRepo`.

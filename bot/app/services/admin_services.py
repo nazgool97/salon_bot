@@ -2,7 +2,6 @@ from __future__ import annotations
 import csv
 import io
 import logging
-import os
 import re
 import time
 from datetime import UTC, datetime, timedelta
@@ -18,7 +17,6 @@ from bot.app.domain.models import Booking, Master, Service, User, BookingStatus,
 from bot.app.core.db import get_session
 from bot.app.services.shared_services import (
     BookingInfo,
-    LOCAL_TZ,
     booking_info_from_mapping,
     format_booking_list_item,
     format_date,
@@ -27,46 +25,14 @@ from bot.app.services.shared_services import (
     default_language,
     local_now,
     utc_now,
+    get_local_tz,
+    get_env_int,
+    _parse_setting_value,
+    _coerce_int,
 )
 from bot.app.translations import tr, t
 
 logger = logging.getLogger(__name__)
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Invalid %s=%r, defaulting to %s", name, raw, default)
-        return default
-
-
-def _parse_setting_value(raw: Any) -> Any:
-    """Parse a Setting.value string into bool/int/float when reasonable."""
-    if raw is None:
-        return raw
-    try:
-        s = str(raw).strip()
-    except Exception:
-        return raw
-    low = s.lower()
-    if low in {"true", "yes", "on", "1"}:
-        return True
-    if low in {"false", "no", "off", "0"}:
-        return False
-    try:
-        if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
-            return int(s)
-    except Exception:
-        pass
-    try:
-        if "." in s:
-            return float(s)
-    except Exception:
-        pass
-    return s
 
 
 def validate_contact_phone(value: str, lang: str) -> tuple[str | None, str | None]:
@@ -88,16 +54,29 @@ def validate_instagram_handle(value: str, lang: str) -> tuple[str | None, str | 
     return None, "invalid_instagram"
 
 
-DEFAULT_DAILY_SLOTS = _env_int("DEFAULT_DAILY_SLOTS", 8)
-DEFAULT_SAME_DAY_LEAD_MINUTES = _env_int("SAME_DAY_LEAD_MINUTES", 0)
-DEFAULT_CALENDAR_MAX_DAYS_AHEAD = _env_int("CALENDAR_MAX_DAYS_AHEAD", 365)
-DEFAULT_REMINDER_LEAD_MINUTES = _env_int("DEFAULT_REMINDER_LEAD_MINUTES", 60)
+def validate_contact_address(value: str, lang: str) -> tuple[str | None, str | None]:
+    """Validate free-form contact address from admin input.
+
+    Basic checks: trim whitespace, require non-empty, and limit length to avoid
+    storing excessively large values. Returns (cleaned, None) on success or
+    (None, "invalid_address") on failure.
+    """
+    try:
+        v = (value or "").strip()
+        if not v:
+            return None, "invalid_address"
+        if len(v) > 1024:
+            return None, "invalid_address"
+        return v, None
+    except Exception:
+        return None, "invalid_address"
 
 
-# NOTE: Payments/provider helpers live in `shared_services`.
-# We intentionally do not re-export them here to avoid namespace proxying.
-# Callers should import payment helpers directly from
-# `bot.app.services.shared_services`.
+DEFAULT_DAILY_SLOTS = get_env_int("DEFAULT_DAILY_SLOTS", 8)
+DEFAULT_CALENDAR_MAX_DAYS_AHEAD = get_env_int("CALENDAR_MAX_DAYS_AHEAD", 365)
+
+
+# Payments/provider helpers live in `shared_services` (import from there).
 
 
 # Backwards-compatible lazy accessor for stats rendering. Importing the
@@ -106,9 +85,8 @@ DEFAULT_REMINDER_LEAD_MINUTES = _env_int("DEFAULT_REMINDER_LEAD_MINUTES", 60)
 def render_stats_overview(data: Mapping[str, Any], *, title_key: str = "stats_overview", lang: str = "uk") -> str:
     """Render a simple stats overview with a localized title and k:v pairs.
 
-    Canonical admin implementation. This was moved here from
-    `shared_services` to keep admin analytics helpers colocated with
-    `AdminRepo` and avoid circular imports.
+    Canonical admin implementation. Moved from `shared_services`; see
+    migration/CHANGELOG for history.
     """
     try:
         title = tr(title_key, lang=lang)
@@ -156,11 +134,26 @@ _services_cache_store: dict[str, str] | None = None
 _settings_cache: dict[str, Any] | None = None
 _settings_last_checked: datetime | None = None
 
-DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "uk")
-DEFAULT_SLOT_DURATION = _env_int("SLOT_DURATION", 60)
-DEFAULT_RESERVATION_HOLD_MINUTES = _env_int("RESERVATION_HOLD_MINUTES", 5)
-DEFAULT_CLIENT_RESCHEDULE_LOCK_HOURS = _env_int("CLIENT_RESCHEDULE_LOCK_HOURS", 3)
-DEFAULT_CLIENT_CANCEL_LOCK_HOURS = _env_int("CLIENT_CANCEL_LOCK_HOURS", 3)
+from bot.app.core.constants import (
+    ADMIN_IDS_LIST,
+    DEFAULT_CURRENCY,
+    DEFAULT_LANGUAGE,
+    DEFAULT_LOCAL_TIMEZONE,
+    DEFAULT_CANCEL_LOCK_MINUTES,
+    DEFAULT_RESCHEDULE_LOCK_MINUTES,
+    DEFAULT_REMINDER_LEAD_MINUTES as ENV_REMINDER_LEAD_MINUTES,
+    DEFAULT_REMINDER_SAME_DAY_MINUTES as ENV_REMINDER_SAME_DAY_MINUTES,
+    MASTER_IDS_LIST,
+    PRIMARY_ADMIN_TG_ID,
+)
+
+DEFAULT_SAME_DAY_LEAD_MINUTES = ENV_REMINDER_SAME_DAY_MINUTES
+DEFAULT_REMINDER_LEAD_MINUTES = ENV_REMINDER_LEAD_MINUTES
+
+DEFAULT_SLOT_DURATION = get_env_int("SLOT_DURATION", 60)
+DEFAULT_RESERVATION_HOLD_MINUTES = get_env_int("RESERVATION_HOLD_MINUTES", 5)
+DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES = DEFAULT_RESCHEDULE_LOCK_MINUTES
+DEFAULT_CLIENT_CANCEL_LOCK_MINUTES = DEFAULT_CANCEL_LOCK_MINUTES
 
 
 def invalidate_services_cache() -> None:
@@ -212,16 +205,17 @@ class ServiceRepo:
 
     @staticmethod
     async def get_services_page(page: int = 1, page_size: int = 10) -> list[tuple[str, str]]:
-        if page < 1:
-            page = 1
-        if page_size < 1:
-            page_size = 10
+        from bot.app.services.shared_services import compute_pagination
+        # Compute offset/limit using centralized helper; we don't know total here, so fake it
+        # with a large number to keep page within sensible bounds.
+        _, _, offset, limit = compute_pagination(10**9, page, page_size)
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
                 from sqlalchemy import select
-                offset = (page - 1) * page_size
-                stmt = select(Service.id, Service.name).order_by(Service.id).offset(offset).limit(page_size)
+                stmt = select(Service.id, Service.name).order_by(Service.id)
+                if limit is not None:
+                    stmt = stmt.offset(offset).limit(limit)
                 rows = (await session.execute(stmt)).all()
                 return [(str(r[0]), str(r[1]) if r[1] is not None else "") for r in rows]
         except Exception as e:
@@ -230,6 +224,27 @@ class ServiceRepo:
 
 
     # Role-based booking formatting now uses shared `format_booking_list_item(..., role="admin")`.
+
+
+    # --- Admin formatters -------------------------------------------------------
+    @staticmethod
+    def format_admin_booking_row(fields: dict[str, str]) -> str:
+        """Format booking row for admin-facing compact lists."""
+        status_label = str(fields.get("status_label") or "")
+        st = str(fields.get("st") or "")
+        dt = str(fields.get("dt") or "")
+        master_name = str(fields.get("master_name") or "")
+        client_name = str(fields.get("client_name") or "")
+        service_name = str(fields.get("service_name") or "")
+        price_txt = str(fields.get("price_txt") or "")
+        # Keep status label at the front, then compact parts separated by bullets.
+        datetime_part = f"{dt} {st}".strip()
+        service_part = f"{service_name[:20]} {price_txt}".strip()
+        parts = [datetime_part, master_name[:20].strip(), client_name[:20].strip(), service_part]
+        parts = [p for p in parts if p]
+        body = " • ".join(parts)
+        return (f"{status_label} " + body).strip()
+
 
 
     @staticmethod
@@ -241,6 +256,7 @@ class ServiceRepo:
         start: datetime | None = None,
         end: datetime | None = None,
         optimized: bool = False,
+        master_id: int | None = None,
     ) -> tuple[list[BookingInfo], dict[str, Any]]:
         """Возвращает страницу записей для админа.
 
@@ -253,14 +269,22 @@ class ServiceRepo:
         now = utc_now()
         async with get_session() as session:
             base_where: list[Any] = []  # Админ видит всё
+            # Optional filter for master-specific view (passed from admin UI)
+            if master_id is not None:
+                try:
+                    base_where.append(Booking.master_id == int(master_id))
+                except Exception:
+                    # Ignore invalid master_id and do not filter
+                    pass
 
-            # Логика подсчета вкладок (такая же, как у мастера, но без base_where)
+            # Логика подсчета вкладок — учитываем optional `base_where` (например, master filter)
             try:
-                done_count = int((await session.execute(select(func.count()).select_from(Booking).where(Booking.status == BookingStatus.DONE))).scalar() or 0)
-                cancelled_count = int((await session.execute(select(func.count()).select_from(Booking).where(Booking.status == BookingStatus.CANCELLED))).scalar() or 0)
-                noshow_count = int((await session.execute(select(func.count()).select_from(Booking).where(Booking.status == BookingStatus.NO_SHOW))).scalar() or 0)
+                done_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.DONE))).scalar() or 0)
+                cancelled_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.CANCELLED))).scalar() or 0)
+                noshow_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.NO_SHOW))).scalar() or 0)
                 upcoming_count = int((await session.execute(
                     select(func.count()).select_from(Booking).where(
+                        *base_where,
                         Booking.starts_at >= now,
                         Booking.status.notin_([
                             BookingStatus.CANCELLED,
@@ -306,15 +330,9 @@ class ServiceRepo:
             except Exception:
                 total = 0
 
-            # Логика пагинации
-            if page_size:
-                total_pages = max(1, (total + page_size - 1) // page_size)
-                p = max(1, min(int(page or 1), total_pages))
-                offset = (p - 1) * page_size
-            else:
-                total_pages = 1
-                p = 1
-                offset = 0
+            # Логика пагинации (централизовано)
+            from bot.app.services.shared_services import compute_pagination
+            p, total_pages, offset, limit = compute_pagination(total, page, page_size)
 
             if not optimized:
                 service_items_subq = (
@@ -342,17 +360,15 @@ class ServiceRepo:
                     .where(*where_clause)
                     .order_by(order_expr)
                     .join(User, User.id == Booking.user_id, isouter=True)
-                    .join(Master, Master.telegram_id == Booking.master_id, isouter=True)
+                    .join(Master, Master.id == Booking.master_id, isouter=True)
                     .outerjoin(service_items_subq, service_items_subq.c.booking_id == Booking.id)
                 )
-                if page_size:
-                    stmt = stmt.limit(page_size).offset(offset)
+                if limit is not None:
+                    stmt = stmt.limit(limit).offset(offset)
                 result = await session.execute(stmt)
                 raw_rows = list(result.all())
                 norm_rows: list[dict[str, Any]] = []
                 for b, client_name, master_name, service_name in raw_rows:
-                    # result rows do not include currency separately; derive from booking if present
-                    currency_val = getattr(b, "currency", None)
                     norm_rows.append({
                         "id": getattr(b, "id", None),
                         "master_id": getattr(b, "master_id", None),
@@ -363,14 +379,13 @@ class ServiceRepo:
                         "final_price_cents": getattr(b, "final_price_cents", None),
                         "master_name": master_name,
                         "client_name": client_name,
-                        "currency": currency_val or getattr(b, "currency", "UAH"),
                         "user_id": getattr(b, "user_id", None),
                         "service_name": service_name,
                     })
             else:
                 id_stmt = select(Booking.id).where(*where_clause).order_by(order_expr)
-                if page_size:
-                    id_stmt = id_stmt.limit(page_size).offset(offset)
+                if limit is not None:
+                    id_stmt = id_stmt.limit(limit).offset(offset)
                 id_rows = await session.execute(id_stmt)
                 booking_ids = [int(x) for x in id_rows.scalars().all()]
                 norm_rows = []
@@ -382,7 +397,7 @@ class ServiceRepo:
                             Master.name.label("master_name"),
                         )
                         .join(User, User.id == Booking.user_id, isouter=True)
-                        .join(Master, Master.telegram_id == Booking.master_id, isouter=True)
+                        .join(Master, Master.id == Booking.master_id, isouter=True)
                         .where(Booking.id.in_(booking_ids))
                     )
                     core_rows = await session.execute(core_stmt)
@@ -393,7 +408,6 @@ class ServiceRepo:
                             bid = int(bid_raw)
                         except Exception:
                             bid = 0
-                        currency_val = getattr(b, "currency", None)
                         core_map[bid] = {
                             "id": bid,
                             "master_id": getattr(b, "master_id", None),
@@ -404,7 +418,6 @@ class ServiceRepo:
                             "final_price_cents": getattr(b, "final_price_cents", None),
                             "master_name": master_name,
                             "client_name": client_name,
-                            "currency": currency_val or getattr(b, "currency", "UAH"),
                             "user_id": getattr(b, "user_id", None),
                             "service_name": None,
                         }
@@ -601,24 +614,7 @@ class ServiceRepo:
         except Exception:
             return {}
 
-    @staticmethod
-    async def update_currency(service_id: str, currency: str) -> bool:
-        try:
-            async with get_session() as session:
-                from bot.app.domain.models import Service
-                svc = await session.get(Service, service_id)
-                if not svc:
-                    return False
-                try:
-                    svc.currency = currency
-                except Exception:
-                    pass
-                await session.commit()
-            invalidate_services_cache()
-            return True
-        except Exception as e:
-            logger.exception("ServiceRepo.update_currency failed for %s: %s", service_id, e)
-            return False
+    
 
     @staticmethod
     async def update_price_cents(service_id: int | str, new_cents: int):
@@ -647,20 +643,17 @@ class ServiceRepo:
             return None
 
     @staticmethod
-    async def aggregate_services(service_ids: list[str]) -> dict[str, int | str]:
+    async def aggregate_services(service_ids: list[str]) -> dict[str, int]:
         total_minutes = 0
         total_price = 0
-        currency = "UAH"
         try:
             if not service_ids:
-                return {"total_minutes": 0, "total_price_cents": 0, "currency": currency}
+                return {"total_minutes": 0, "total_price_cents": 0}
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import Service, ServiceProfile
+                from bot.app.domain.models import Service
                 svc_rows = await session.execute(select(Service).where(Service.id.in_(list(service_ids))))
                 services = {str(s.id): s for s in svc_rows.scalars().all()}
-                prof_rows = await session.execute(select(ServiceProfile).where(ServiceProfile.service_id.in_(list(service_ids))))
-                profiles = {str(p.service_id): p for p in prof_rows.scalars().all()}
                 for sid in service_ids:
                     svc = services.get(str(sid))
                     if svc:
@@ -670,21 +663,17 @@ class ServiceRepo:
                                 total_price += int(pc_raw)
                             except Exception:
                                 pass
-                        if getattr(svc, "currency", None):
-                            currency = svc.currency or currency
-                    prof = profiles.get(str(sid))
-                    if prof:
                         try:
-                            dur = int(getattr(prof, "duration_minutes", 0))
+                            dur = int(getattr(svc, "duration_minutes", 0) or 0)
                         except Exception:
                             dur = 0
                     else:
                         dur = 0
                     total_minutes += dur if dur > 0 else 60
-            return {"total_minutes": total_minutes, "total_price_cents": total_price, "currency": currency}
+            return {"total_minutes": total_minutes, "total_price_cents": total_price}
         except Exception as e:
             logger.warning("ServiceRepo.aggregate_services error for %s: %s", service_ids, e)
-            return {"total_minutes": total_minutes, "total_price_cents": 0, "currency": currency}
+            return {"total_minutes": total_minutes, "total_price_cents": 0}
 
 
 async def generate_bookings_csv(
@@ -779,6 +768,34 @@ async def generate_bookings_csv(
     except Exception as e:
         logger.exception("generate_bookings_csv failed: %s", e)
         raise
+
+
+async def export_month_bookings_csv(mode: str, *, reference: datetime | None = None) -> tuple[str, str]:
+    """Helper to export the current calendar month for the given mode.
+
+    Moves date-bound computation out of handlers to keep view layer lean.
+    Returns the CSV path and file name.
+    """
+    ref = reference or local_now()
+    try:
+        month_start = ref.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if month_start.month == 12:
+            next_month = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            next_month = month_start.replace(month=month_start.month + 1)
+        month_end = next_month
+        start_utc = month_start.astimezone(ZoneInfo("UTC"))
+        end_utc = month_end.astimezone(ZoneInfo("UTC"))
+    except Exception:
+        logger.exception("export_month_bookings_csv: failed to compute month bounds; falling back to reference day")
+        start_utc = ref.astimezone(ZoneInfo("UTC"))
+        end_utc = start_utc + timedelta(days=30)
+    return await generate_bookings_csv(
+        mode=mode,
+        start=start_utc,
+        end=end_utc,
+        reference=ref,
+    )
 
 
 async def generate_unique_slug_from_name(name: str) -> str:
@@ -914,20 +931,46 @@ class SettingsRepo:
         """Return configured currency (ISO 4217) with ENV fallback.
 
         Precedence:
-        1. settings table key 'currency'
-        2. ENV var CURRENCY
-        3. hardcoded 'UAH'
+        1. ENV var `DEFAULT_CURRENCY` then legacy `CURRENCY`
+        2. hardcoded 'USD' as final fallback
         """
         try:
-            cur = await SettingsRepo.get_setting("currency", None)
-            if cur:
-                return str(cur).upper()
-            env_cur = os.getenv("CURRENCY")
-            if env_cur:
-                return env_cur.upper()
+            # Always prefer explicit environment configuration for currency.
+            return DEFAULT_CURRENCY
         except Exception:
             pass
-        return "UAH"
+        # Final hard fallback
+        return "USD"
+
+    @staticmethod
+    async def can_update_currency() -> bool:
+        """Return True when global currency can be changed via the UI.
+
+        Protects against changing the global currency when a payment provider
+        token is configured or when online payments are explicitly enabled.
+
+        This helper centralizes the guard so handlers do not duplicate logic
+        and so policy changes can be made in one place.
+        """
+        try:
+            # Check provider token first (most decisive signal)
+            token = await SettingsRepo.get_setting("telegram_provider_token", None)
+            if token:
+                return False
+            # Also respect feature flag if set in settings (or env fallback)
+            payments_enabled = await SettingsRepo.get_setting("telegram_payments_enabled", None)
+            if isinstance(payments_enabled, str):
+                try:
+                    payments_enabled = str(payments_enabled).strip().lower() in {"1", "true", "yes", "on"}
+                except Exception:
+                    payments_enabled = False
+            if bool(payments_enabled):
+                return False
+            return True
+        except Exception:
+            # Be conservative on error: disallow changes to avoid accidental
+            # mismatch with payment provider configuration.
+            return False
 
     @staticmethod
     async def get_reservation_hold_minutes() -> int:
@@ -943,12 +986,29 @@ class SettingsRepo:
         return SettingsRepo._coerce_int(await SettingsRepo.get_setting("reservation_expire_check_seconds", 30), 30)
 
     @staticmethod
-    async def get_client_reschedule_lock_hours() -> int:
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("client_reschedule_lock_hours", DEFAULT_CLIENT_RESCHEDULE_LOCK_HOURS), DEFAULT_CLIENT_RESCHEDULE_LOCK_HOURS)
+    async def get_client_reschedule_lock_minutes() -> int:
+        # Prefer minutes setting; fall back to legacy hours if present
+        val = await SettingsRepo.get_setting("client_reschedule_lock_minutes", None)
+        if val is None:
+            legacy = await SettingsRepo.get_setting("client_reschedule_lock_hours", None)
+            if legacy is not None:
+                try:
+                    return int(legacy) * 60
+                except Exception:
+                    pass
+        return SettingsRepo._coerce_int(val if val is not None else DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES, DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES)
 
     @staticmethod
-    async def get_client_cancel_lock_hours() -> int:
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("client_cancel_lock_hours", DEFAULT_CLIENT_CANCEL_LOCK_HOURS), DEFAULT_CLIENT_CANCEL_LOCK_HOURS)
+    async def get_client_cancel_lock_minutes() -> int:
+        val = await SettingsRepo.get_setting("client_cancel_lock_minutes", None)
+        if val is None:
+            legacy = await SettingsRepo.get_setting("client_cancel_lock_hours", None)
+            if legacy is not None:
+                try:
+                    return int(legacy) * 60
+                except Exception:
+                    pass
+        return SettingsRepo._coerce_int(val if val is not None else DEFAULT_CLIENT_CANCEL_LOCK_MINUTES, DEFAULT_CLIENT_CANCEL_LOCK_MINUTES)
 
     @staticmethod
     async def get_same_day_lead_minutes() -> int:
@@ -1023,36 +1083,6 @@ class SettingsRepo:
             return await SettingsRepo.update_setting("work_hours_json", json.dumps(serial, ensure_ascii=False))
         except Exception as e:
             logger.warning("update_work_hours_map failed: %s", e)
-            return False
-
-    @staticmethod
-    async def migrate_legacy_work_hours_if_needed() -> bool:
-        """If JSON hours missing but legacy start/end present, persist JSON for all days.
-
-        Returns True if migration performed, False otherwise.
-        """
-        try:
-            if await SettingsRepo.get_setting("work_hours_json", None):
-                return False
-            s = await SettingsRepo.get_setting("work_hours_start", None)
-            e = await SettingsRepo.get_setting("work_hours_end", None)
-            if s is None or e is None:
-                return False
-            try:
-                s_i = SettingsRepo._coerce_int(s, 9)
-                e_i = SettingsRepo._coerce_int(e, 18)
-            except Exception:
-                return False
-            if s_i >= e_i:
-                return False
-            serial = {d: [s_i, e_i] for d in range(7)}
-            # Best-effort sync update; ignore failure silently
-            try:
-                ok = await SettingsRepo.update_setting("work_hours_json", json.dumps(serial, ensure_ascii=False))
-                return bool(ok)
-            except Exception:
-                return False
-        except Exception:
             return False
 
     @staticmethod
@@ -1135,16 +1165,9 @@ class SettingsRepo:
             except Exception as db_e:
                 logger.warning("SettingsRepo.update_setting: DB persist failed for %s: %s", key, db_e)
                 # still consider update successful for runtime
-            # Call optional hook for consumers. Import _safe_call lazily to
-            # avoid circular imports with shared_services.
-            try:
-                from bot.app.services.shared_services import _safe_call as _safe_call_fn
-                try:
-                    _safe_call_fn("on_setting_update", key, value)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+            # Note: previously this code called an optional `_safe_call` hook
+            # (on_setting_update) if provided by `bot.config`. That hook was
+            # removed to simplify the codebase and avoid silent failures.
             return True
         except Exception as e:
             logger.exception("SettingsRepo.update_setting failed: %s", e)
@@ -1152,27 +1175,7 @@ class SettingsRepo:
 
     @staticmethod
     def _coerce_int(value: Any, default: int) -> int:
-        """Coerce a value to int using single try/except.
-
-        Accepts ints, floats, numeric strings ("60", "60.0"). Returns default on failure.
-        """
-        try:
-            if value is None or value == "":
-                return default
-            if isinstance(value, int):
-                return value
-            if isinstance(value, float):
-                return int(value)
-            return int(float(str(value).strip()))
-        except (ValueError, TypeError):
-            return default
-        except Exception:
-            return default
-
-
-# Backwards-compatible module-level wrappers were removed in favor of
-# calling repository APIs directly. Use `ServiceRepo.get_admin_bookings`
-# plus the shared `format_booking_list_item(..., role="admin")` for list formatting.
+        return _coerce_int(value, default)
 
 
 class AdminRepo:
@@ -1259,7 +1262,36 @@ class AdminRepo:
 
                 res = await session.execute(select(User.id, User.telegram_id, User.name).where(User.is_admin == True).order_by(User.id))
                 rows = res.all()
-                return [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+                admins: list[tuple[int, int, str]] = [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+                # Include primary admin from environment if not present in DB
+                env_tid: int | None = PRIMARY_ADMIN_TG_ID
+                if env_tid is not None:
+                    present_tids = {tid for _, tid, _ in admins}
+                    if env_tid not in present_tids:
+                        # Try to fetch name from DB by telegram_id; fall back to #tid
+                        try:
+                            user = await session.scalar(select(User).where(User.telegram_id == env_tid))
+                            name = getattr(user, "name", None) or f"#{env_tid}"
+                        except Exception:
+                            name = f"#{env_tid}"
+                        # uid=0 indicates non-revokable env admin; handler protects via is_primary flag
+                        admins.append((0, env_tid, name))
+                # Also include any env-configured admin ids from `ADMIN_IDS` (CSV of telegram ids)
+                if ADMIN_IDS_LIST:
+                    present_tids = {tid for _, tid, _ in admins}
+                    for tid_val in ADMIN_IDS_LIST:
+                        if tid_val in present_tids:
+                            continue
+                        # Resolve display name from DB if present; else use #tid
+                        try:
+                            user = await session.scalar(select(User).where(User.telegram_id == tid_val))
+                            name = getattr(user, "name", None) or f"#{tid_val}"
+                            uid = int(getattr(user, "id", 0) or 0)
+                        except Exception:
+                            name = f"#{tid_val}"
+                            uid = 0
+                        admins.append((uid, tid_val, name))
+                return admins
         except Exception as e:
             logger.exception("AdminRepo.list_admins failed: %s", e)
             return []
@@ -1311,7 +1343,8 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, or_
                 from bot.app.domain.models import Booking, BookingStatus
-                now_utc = datetime.now(ZoneInfo("UTC"))
+                # Use shared utc_now() helper to obtain an aware UTC datetime
+                now_utc = utc_now()
                 terminal = [
                     BookingStatus.CANCELLED,
                     BookingStatus.DONE,
@@ -1343,8 +1376,16 @@ class AdminRepo:
 
                 base_pred = Booking.starts_at.between(start, end)
                 if master_id is not None:
-                    total = await session.scalar(select(func.count(Booking.id)).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
-                    unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
+                    try:
+                        from bot.app.services.master_services import MasterRepo
+
+                        resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
+                    except Exception:
+                        resolved_mid = None
+                    if resolved_mid is None:
+                        return {"bookings": 0, "unique_users": 0, "masters": 0, "avg_per_day": 0.0}
+                    total = await session.scalar(select(func.count(Booking.id)).where(and_(base_pred, Booking.master_id == int(resolved_mid)))) or 0
+                    unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(and_(base_pred, Booking.master_id == int(resolved_mid)))) or 0
                     masters = 1
                 else:
                     total = await session.scalar(select(func.count(Booking.id)).where(base_pred)) or 0
@@ -1367,7 +1408,7 @@ class AdminRepo:
                 from bot.app.domain.models import Booking, Master
                 stmt = (
                     select(Master.name, func.count(Booking.id).label("count"))
-                    .join(Master, Booking.master_id == Master.telegram_id)
+                    .join(Master, Booking.master_id == Master.id)
                     .where(Booking.starts_at.between(start, end))
                     .group_by(Master.name)
                     .order_by(func.count(Booking.id).desc())
@@ -1415,7 +1456,15 @@ class AdminRepo:
                 from bot.app.domain.models import Booking
                 preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
                 if master_id is not None:
-                    preds.append(Booking.master_id == int(master_id))
+                    try:
+                        from bot.app.services.master_services import MasterRepo
+
+                        resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
+                    except Exception:
+                        resolved_mid = None
+                    if resolved_mid is None:
+                        return 0
+                    preds.append(Booking.master_id == int(resolved_mid))
                 stmt = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds))
                 revenue = int(await session.scalar(stmt) or 0)
                 return revenue
@@ -1438,7 +1487,7 @@ class AdminRepo:
                         func.sum(_price_expr()).label("revenue_cents"),
                         func.count(Booking.id).label("bookings"),
                     )
-                    .join(Master, Booking.master_id == Master.telegram_id)
+                    .join(Master, Booking.master_id == Master.id)
                     .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
                     .group_by(Master.telegram_id, Master.name)
                     .order_by(func.sum(_price_expr()).desc())
@@ -1569,7 +1618,12 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking
-                date_trunc = func.date_trunc('day', Booking.starts_at)
+                # Use configured local timezone when truncating to day so that
+                # daily buckets align with salon local time instead of UTC.
+                tz_name = DEFAULT_LOCAL_TIMEZONE
+                # Convert booking timestamptz into local timestamp then truncate
+                # to day. SQL: date_trunc('day', timezone(tz_name, Booking.starts_at))
+                date_trunc = func.date_trunc('day', func.timezone(tz_name, Booking.starts_at))
                 stmt = (
                     select(func.date(date_trunc).label('day'), func.count(Booking.id).label('bookings'), func.sum(_price_expr()).label('revenue_cents'))
                     .where(Booking.starts_at.between(start, end))
@@ -1596,7 +1650,175 @@ class AdminRepo:
             logger.exception("AdminRepo.get_aov failed: %s", e)
             return 0.0
 
-async def get_admin_dashboard_summary(lang: str | None = None) -> str:
+
+async def _stats_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> dict[str, Any]:
+    """Return bookings/unique_users/masters/avg_per_day for explicit bounds.
+
+    This mirrors AdminRepo.get_range_stats but accepts explicit datetimes.
+    """
+    try:
+        async with get_session() as session:
+            from sqlalchemy import select, func, and_
+            from bot.app.domain.models import Booking, Master
+
+            base_pred = Booking.starts_at.between(start, end)
+            if master_id is not None:
+                total = await session.scalar(select(func.count(Booking.id)).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
+                unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
+                masters = 1
+            else:
+                total = await session.scalar(select(func.count(Booking.id)).where(base_pred)) or 0
+                unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(base_pred)) or 0
+                masters = await session.scalar(select(func.count(func.distinct(Booking.master_id))).where(base_pred)) or 0
+
+            days = max(1, (end - start).days)
+            avg_per_day = (int(total) / days) if days else 0.0
+            return {"bookings": int(total), "unique_users": int(unique_users), "masters": int(masters), "avg_per_day": avg_per_day}
+    except Exception as e:
+        logger.exception("_stats_for_bounds failed: %s", e)
+        return {"bookings": 0, "unique_users": 0, "masters": 0, "avg_per_day": 0.0}
+
+
+async def _revenue_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> int:
+    try:
+        async with get_session() as session:
+            from sqlalchemy import select, func, and_
+            from bot.app.domain.models import Booking
+            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
+            if master_id is not None:
+                preds = [*preds, Booking.master_id == int(master_id)]
+            stmt = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds))
+            revenue = int(await session.scalar(stmt) or 0)
+            return revenue
+    except Exception as e:
+        logger.exception("_revenue_for_bounds failed: %s", e)
+        return 0
+
+
+async def _revenue_count_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> int:
+    """Return number of bookings contributing to revenue in the given bounds.
+
+    This counts bookings whose status is in `REVENUE_STATUSES`.
+    """
+    try:
+        async with get_session() as session:
+            from sqlalchemy import select, func, and_
+            from bot.app.domain.models import Booking
+            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
+            if master_id is not None:
+                preds.append(Booking.master_id == int(master_id))
+            stmt = select(func.count(Booking.id)).where(and_(*preds))
+            cnt = int(await session.scalar(stmt) or 0)
+            return cnt
+    except Exception as e:
+        logger.exception("_revenue_count_for_bounds failed: %s", e)
+        return 0
+
+
+async def _revenue_split_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> dict[str, int]:
+    """Return split revenue for explicit bounds.
+
+    Returns dict with keys:
+      - in_cash: revenue already in cash (PAID, DONE)
+      - expected: revenue expected (CONFIRMED, RESERVED)
+
+    master_id can be used to restrict aggregation.
+    """
+    try:
+        async with get_session() as session:
+            from sqlalchemy import select, func, and_
+            from bot.app.domain.models import Booking, BookingStatus
+
+            # Normalize to surrogate master id when provided (supports telegram_id inputs)
+            if master_id is not None:
+                try:
+                    from bot.app.services.master_services import MasterRepo
+
+                    resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
+                except Exception:
+                    resolved_mid = None
+                if resolved_mid is None:
+                    return {"in_cash": 0, "expected": 0}
+                master_id = resolved_mid
+
+            in_cash_statuses = (BookingStatus.PAID, BookingStatus.DONE)
+            expected_statuses = (BookingStatus.CONFIRMED, BookingStatus.RESERVED)
+
+            preds_base = [Booking.starts_at.between(start, end)]
+            if master_id is not None:
+                preds_base = [*preds_base, Booking.master_id == int(master_id)]
+
+            stmt_in_cash = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds_base, Booking.status.in_(in_cash_statuses)))
+            stmt_expected = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds_base, Booking.status.in_(expected_statuses)))
+
+            in_cash = int(await session.scalar(stmt_in_cash) or 0)
+            expected = int(await session.scalar(stmt_expected) or 0)
+            return {"in_cash": in_cash, "expected": expected}
+    except Exception as e:
+        logger.exception("_revenue_split_for_bounds failed: %s", e)
+        return {"in_cash": 0, "expected": 0}
+
+
+async def _lost_revenue_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> int:
+    """Return revenue (cents) that was lost due to cancellations and no-shows in bounds.
+
+    This sums booking prices for statuses CANCELLED and NO_SHOW.
+    """
+    try:
+        async with get_session() as session:
+            from sqlalchemy import select, func, and_
+            from bot.app.domain.models import Booking, BookingStatus
+
+            if master_id is not None:
+                try:
+                    from bot.app.services.master_services import MasterRepo
+
+                    resolved_mid = await MasterRepo.resolve_master_id(int(master_id))
+                except Exception:
+                    resolved_mid = None
+                if resolved_mid is None:
+                    return 0
+                master_id = resolved_mid
+
+            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_((BookingStatus.CANCELLED, BookingStatus.NO_SHOW))]
+            if master_id is not None:
+                preds = [*preds, Booking.master_id == int(master_id)]
+            stmt = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds))
+            lost = int(await session.scalar(stmt) or 0)
+            return lost
+    except Exception as e:
+        logger.exception("_lost_revenue_for_bounds failed: %s", e)
+        return 0
+
+
+def _format_trend_text(current: int | float, previous: int | float, *, lang: str = "uk") -> str:
+    """Return localized formatted trend suffix for a numeric metric.
+
+    Examples: " (🟢 +15% vs previous period)" or " (🔴 -5% vs previous period)".
+    """
+    try:
+        # Normalize to numbers
+        cur = float(current or 0)
+        prev = float(previous or 0)
+        if prev == 0.0:
+            if cur == 0.0:
+                return tr("trend_no_change", lang=lang) or ""
+            # New non-zero value where previous was zero
+            return tr("trend_new", lang=lang) or ""
+        # Compute percent change
+        pct = (cur - prev) / prev * 100.0
+        pct_abs = abs(pct)
+        if pct > 0:
+            fmt = tr("trend_up", lang=lang) or ""
+            return fmt.format(pct=pct_abs)
+        if pct < 0:
+            fmt = tr("trend_down", lang=lang) or ""
+            return fmt.format(pct=pct_abs)
+        return tr("trend_no_change", lang=lang) or ""
+    except Exception:
+        return ""
+
+async def get_admin_dashboard_summary(kind: str = "today", lang: str | None = None) -> str:
     """Compatibility wrapper: return a localized text summary for admin dashboard.
 
     This function remains for backward compatibility with handlers that expect
@@ -1604,40 +1826,88 @@ async def get_admin_dashboard_summary(lang: str | None = None) -> str:
     returns raw structured data suitable for view-layer formatting.
     """
     try:
-        data = await get_admin_dashboard_data()
+        data = await get_admin_dashboard_data(kind=kind)
         l = lang or data.get("language") or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
-        # Build localized text from data (keeps previous formatting)
-        try:
-            date_label = format_date(local_now(), "%d %B")
-            header_raw = tr("admin_dashboard_header", lang=l)
-            header = header_raw.format(date=date_label) if "{date}" in header_raw else header_raw
-
-            total_line = tr("admin_dashboard_total_bookings", lang=l).format(count=int(data.get("stats", {}).get("bookings", 0)))
-            revenue_line = tr("admin_dashboard_revenue", lang=l).format(amount=(data.get("revenue_cents", 0) // 100))
-            new_clients_line = tr("admin_dashboard_new_clients", lang=l).format(count=int(data.get("stats", {}).get("unique_users", 0)))
-            master_load_header = tr("admin_dashboard_master_load", lang=l)
-
-            masters_load_text_local = data.get("masters_text", "")
-            text_root = "\n".join([header, total_line, revenue_line, new_clients_line, master_load_header, masters_load_text_local])
-        except Exception:
-            text_root = t("admin_panel_title", l)
-        return text_root
+        # Delegate presentation to an internal helper that renders text from structured data
+        return await _format_admin_dashboard_text(data, kind=kind, lang=l)
     except Exception:
         return t("admin_panel_title", lang or default_language())
 
 
-async def get_admin_dashboard_data(lang: str | None = None) -> dict[str, Any]:
+async def _format_admin_dashboard_text(data: dict[str, Any], *, kind: str = "today", lang: str | None = None) -> str:
+    """Render localized admin dashboard text from structured `data`.
+
+    This helper centralizes presentation logic so `get_admin_dashboard_data`
+    remains responsible only for producing structured metrics.
+    """
+    try:
+        l = lang or data.get("language") or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+        date_label = format_date(local_now(), "%d %B")
+        header_raw = tr("admin_dashboard_header", lang=l)
+        header = header_raw.format(date=date_label) if "{date}" in header_raw else header_raw
+
+        total_count = int(data.get("stats", {}).get("bookings", 0))
+        total_line = tr("admin_dashboard_total_bookings", lang=l).format(count=total_count)
+        total_line += (data.get("trends", {}) .get("bookings") or "")
+
+        # Compute split revenue for the requested period (in-cash vs expected)
+        try:
+            start, end = _range_bounds(kind)
+            rev_split = await _revenue_split_for_bounds(start, end)
+            prev_start = start - (end - start)
+            prev_end = start
+            prev_rev_split = await _revenue_split_for_bounds(prev_start, prev_end)
+            in_cash = rev_split.get("in_cash", 0)
+            expected = rev_split.get("expected", 0)
+            prev_in_cash = prev_rev_split.get("in_cash", 0)
+            prev_expected = prev_rev_split.get("expected", 0)
+            in_cash_txt = format_money_cents(in_cash)
+            expected_txt = format_money_cents(expected)
+            in_cash_trend = _format_trend_text(in_cash, prev_in_cash, lang=l)
+            expected_trend = _format_trend_text(expected, prev_expected, lang=l)
+            revenue_line = (
+                f"{tr('admin_dashboard_revenue_in_cash', lang=l)}: {in_cash_txt}{in_cash_trend}\n"
+                f"{tr('admin_dashboard_revenue_expected', lang=l)}: {expected_txt}{expected_trend}"
+            )
+        except Exception:
+            revenue_amount = (data.get("revenue_cents", 0) // 100)
+            revenue_line = tr("admin_dashboard_revenue", lang=l).format(amount=revenue_amount)
+            revenue_line += (data.get("trends", {}) .get("revenue") or "")
+
+        new_clients_count = int(data.get("stats", {}).get("unique_users", 0))
+        new_clients_line = tr("admin_dashboard_new_clients", lang=l).format(count=new_clients_count)
+        new_clients_line += (data.get("trends", {}) .get("unique_users") or "")
+        master_load_header = tr("admin_dashboard_master_load", lang=l)
+
+        masters_load_text_local = data.get("masters_text", "")
+        text_root = "\n".join([header, total_line, revenue_line, new_clients_line, master_load_header, masters_load_text_local])
+        return text_root
+    except Exception:
+        return t("admin_panel_title", l)
+
+
+async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None) -> dict[str, Any]:
     """Return structured admin dashboard data (no presentation).
 
     Returns a dict with keys: language, stats, revenue_cents, masters (list), masters_text.
     Handlers/views should take this data and render localized text/buttons.
     """
     l = lang or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
-    stats = await AdminRepo.get_range_stats("today")
-    revenue_cents = await AdminRepo.get_revenue_total("today")
+    # Use explicit bounds for the requested kind so we can compute previous-period trends
+    start, end = _range_bounds(kind)
+    stats = await _stats_for_bounds(start, end)
+    revenue_cents = await _revenue_for_bounds(start, end)
 
-    # One SQL to get bookings count per master (including zeros) for the same window
-    start, end = _range_bounds("today")
+    # Compute previous comparable period (same length immediately before start)
+    try:
+        delta = end - start
+        prev_start = start - delta
+        prev_end = start
+        prev_stats = await _stats_for_bounds(prev_start, prev_end)
+        prev_revenue = await _revenue_for_bounds(prev_start, prev_end)
+    except Exception:
+        prev_stats = {"bookings": 0, "unique_users": 0}
+        prev_revenue = 0
     async with get_session() as session:
         stmt = (
             select(
@@ -1682,18 +1952,32 @@ async def get_admin_dashboard_data(lang: str | None = None) -> dict[str, Any]:
         {"name": name, "telegram_id": int(tid or 0), "bookings": int(cnt or 0)} for name, tid, cnt in rows
     ]
 
+    # Prepare localized trend suffixes for key metrics
+    try:
+        bookings_trend = _format_trend_text(stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=l)
+    except Exception:
+        bookings_trend = ""
+    try:
+        revenue_trend = _format_trend_text(revenue_cents, prev_revenue, lang=l)
+    except Exception:
+        revenue_trend = ""
+    try:
+        users_trend = _format_trend_text(stats.get("unique_users", 0), prev_stats.get("unique_users", 0), lang=l)
+    except Exception:
+        users_trend = ""
+
     return {
         "language": l,
         "stats": stats,
         "revenue_cents": revenue_cents,
         "masters": masters_raw,
         "masters_text": masters_load_text,
+        "trends": {"bookings": bookings_trend, "revenue": revenue_trend, "unique_users": users_trend},
     }
 
 
-# Note: thin facade helpers (get_service, services_cache, get_service_name,
-# get_setting, get_hold_minutes, update_setting) have been removed. Call
-# the repository APIs directly: `ServiceRepo` and `SettingsRepo`.
+# Legacy: thin facade helpers were removed. Use repository APIs
+# (ServiceRepo, SettingsRepo, AdminRepo) directly where needed.
 
 # Статусы, учитываемые при подсчете выручки
 # Revenue is recognized for PAID and CONFIRMED (cash) and optionally DONE
@@ -1718,19 +2002,32 @@ def _range_bounds(kind: str) -> tuple[datetime, datetime]:
     Returns:
         Кортеж (начало, конец) с локальной временной зоной.
     """
-    now = datetime.now(LOCAL_TZ or UTC)
+    # Use configured local timezone (resolved at runtime) and compute
+    # the current time from UTC to avoid mixing naive datetimes.
+    local_tz = get_local_tz() or UTC
+    now = utc_now().astimezone(local_tz)
     if kind == "week":
         week_start = now - timedelta(days=now.weekday())
         start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-    else:
+    elif kind == "month":
+        # Use a sliding 30-day window for operational analytics so that
+        # statistics don't reset on the 1st of the calendar month.
         try:
-            start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            start_dt = now - timedelta(days=30)
+            start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
         except Exception:
-            # Fallback: construct first-of-month explicitly; do NOT use sliding 30-day window
+            # Fallback to first-of-month behavior if arithmetic fails
             try:
-                start = datetime(year=now.year, month=now.month, day=1, tzinfo=now.tzinfo).replace(hour=0, minute=0, second=0, microsecond=0)
+                start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             except Exception:
-                start = now  # last-resort fallback
+                start = now
+    else:
+        # Unknown kind: default to last 30 days for safety/consistency
+        try:
+            start_dt = now - timedelta(days=30)
+            start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        except Exception:
+            start = now
     logger.debug("Рассчитаны рамки периода %s: start=%s, end=%s", kind, start, now)
     return start, now
 
@@ -1744,13 +2041,6 @@ def _price_expr() -> Any:
     return func.coalesce(Booking.final_price_cents, Booking.original_price_cents, 0)
 
 
-# Note: analytics facades (thin proxies to AdminRepo) were removed to
-# reduce duplication. Callers should import AdminRepo and call the
-# desired async methods directly, for example:
-#   from bot.app.services.admin_services import AdminRepo
-#   totals = await AdminRepo.get_basic_totals()
-
-
 __all__ = [
     # Public repository classes and helpers
     "ServiceRepo",
@@ -1758,7 +2048,7 @@ __all__ = [
     "load_settings_from_db",
     "AdminRepo",
     "invalidate_services_cache",
+    "generate_bookings_csv",
+    "export_month_bookings_csv",
     # Note: lightweight facades were removed; call repository APIs directly
 ]
-# Note: Proxy analytics functions were intentionally removed. Callers should
-# import and call AdminRepo.<method>() directly (e.g. AdminRepo.get_basic_totals()).
