@@ -514,7 +514,7 @@ async def admin_exec_del_admin(callback: CallbackQuery, callback_data: _HasAdmin
         await callback.answer(t("not_found", locale), show_alert=True)
         return
     if int(getattr(user, 'telegram_id', 0) or 0) == int(current_tid or 0):
-        await callback.answer(t("cannot_revoke_self", locale) if t("cannot_revoke_self", locale) != "cannot_revoke_self" else "You cannot revoke your own admin rights.", show_alert=True)
+        await callback.answer(t("cannot_revoke_self", locale), show_alert=True)
         return
     ok = await AdminRepo.revoke_admin_by_id(admin_id)
     if not ok:
@@ -712,11 +712,11 @@ async def admin_view_links_by_master(callback: CallbackQuery, state: FSMContext,
         masters = []
 
     if not masters:
-        await safe_edit(_shared_msg(callback), t("no_masters", lang) if t("no_masters", lang) != "no_masters" else "Нет мастеров.", reply_markup=no_masters_kb(lang))
+        await safe_edit(_shared_msg(callback), t("no_masters", lang), reply_markup=no_masters_kb(lang))
         await callback.answer()
         return
     kb = masters_list_kb(masters, lang=lang)
-    text = (t("select_master_to_view_links", lang) if t("select_master_to_view_links", lang) != "select_master_to_view_links" else "Выберите мастера:")
+    text = t("select_master_to_view_links", lang)
     m = _shared_msg(callback)
     if m:
         await nav_push(state, text, kb, lang=lang)
@@ -734,11 +734,11 @@ async def admin_view_links_by_service(callback: CallbackQuery, state: FSMContext
     except Exception:
         services = []
     if not services:
-        await safe_edit(_shared_msg(callback), t("no_services", lang) if t("no_services", lang) != "no_services" else "Нет услуг.", reply_markup=no_services_kb(lang))
+        await safe_edit(_shared_msg(callback), t("no_services", lang), reply_markup=no_services_kb(lang))
         await callback.answer()
         return
     kb = services_select_kb(services, lang=lang)
-    text = (t("select_service_to_view_links", lang) if t("select_service_to_view_links", lang) != "select_service_to_view_links" else "Выберите услугу:")
+    text = t("select_service_to_view_links", lang)
     m = _shared_msg(callback)
     if m:
         await nav_push(state, text, kb, lang=lang)
@@ -927,7 +927,7 @@ async def admin_show_services_for_master(callback: CallbackQuery, state: FSMCont
     services = await master_services.MasterRepo.get_services_for_master(master_id)  # type: ignore[attr-defined]
     # services: list of tuples (service_id, name)
     if not services:
-        text = (t("master_no_services", lang) if t("master_no_services", lang) != "master_no_services" else "У мастера нет привязанных услуг.")
+        text = t("no_services_for_master", lang)
     else:
         # Use master_id as label; avoid cache dependency
         mname = str(master_id)
@@ -1438,7 +1438,7 @@ async def admin_settings_contacts(callback: CallbackQuery, state: FSMContext, lo
 class EditableSettingMeta:
     prompt_key: str
     success_key: str
-    validator: Callable[[str, str], tuple[str | None, str | None]]
+    validator: Callable[[str], tuple[str | None, str | None]]
     invalid_key: str | None
 
 
@@ -1533,7 +1533,7 @@ async def admin_edit_setting_input(message: Message, state: FSMContext, locale: 
     if not meta:
         return
     raw = message.text or ""
-    value, error_key = meta.validator(raw, lang)
+    value, error_key = meta.validator(raw)
     if value is None or error_key:
         await _reply_invalid_setting_input(message, lang, error_key or meta.invalid_key, str(data.get("edit_setting_old")) if data.get("edit_setting_old") else None)
         return
@@ -1786,22 +1786,6 @@ async def admin_exit(callback: CallbackQuery, state: FSMContext, locale: str) ->
     await callback.answer()
 
 
-@admin_router.callback_query(AdminMenuCB.filter(F.act == "test"))
-async def admin_test_button(callback: CallbackQuery, locale: str) -> None:
-    """Тестовая кнопка для проверки работоспособности.
-
-    Args:
-        callback: CallbackQuery для теста.
-    """
-    
-    try:
-        lang = locale
-        await callback.answer(t("test_ok", lang), show_alert=True)
-        logger.info("Тестовая кнопка нажата пользователем %s", callback.from_user.id)
-    except TelegramAPIError as e:
-        logger.error("Ошибка Telegram API в admin_test_button: %s", e)
-
-
 # --------------------------- Управление записями ---------------------------
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "show_bookings"))
@@ -1951,8 +1935,8 @@ async def _build_admin_bookings_view(state: FSMContext, lang: str, mode: str, pa
         mode_for_header = mode or "upcoming"
         mode_map = {
             "upcoming": (t("upcoming", lang), int(meta.get('upcoming_count', 0) or 0)),
-            "done": (t("done_bookings", lang), int(meta.get('done_count', 0) or 0)),
-            "cancelled": (t("cancelled_bookings", lang), int(meta.get('cancelled_count', 0) or 0)),
+            "done": (t("status_done", lang), int(meta.get('done_count', 0) or 0)),
+            "cancelled": (t("status_cancelled", lang), int(meta.get('cancelled_count', 0) or 0)),
             "no_show": (t("no_show_bookings", lang), int(meta.get('noshow_count', 0) or 0)),
             "all": (t("all_bookings", lang), int(meta.get('total', 0) or 0)),
         }

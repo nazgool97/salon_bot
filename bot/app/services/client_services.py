@@ -49,6 +49,104 @@ from bot.app.services.admin_services import SettingsRepo
 from bot.app.services.admin_services import ServiceRepo
 from bot.app.telegram.common.status import ACTIVE_BLOCKING_STATUSES
 
+
+async def _finalize_booking_payment(
+    booking_id: int,
+    *,
+    target_status: BookingStatus,
+    set_paid_at: bool,
+) -> tuple[bool, str | None]:
+    """Shared payment finalization with slot revalidation.
+
+    Returns (ok, error_code): booking_not_found | booking_not_active | slot_unavailable | None
+    """
+    async with get_session() as session:
+        from sqlalchemy import select
+        from bot.app.domain.models import BookingStatusHistory
+
+        booking_stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
+        booking = (await session.execute(booking_stmt)).scalar_one_or_none()
+        if not booking:
+            return False, "booking_not_found"
+
+        status = getattr(booking, "status", None)
+        if status in TERMINAL_STATUSES or status == target_status or status == BookingStatus.PAID:
+            return False, "booking_not_active"
+
+        try:
+            hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
+        except Exception:
+            hold_minutes = 5
+        try:
+            fallback_slot = await SettingsRepo.get_slot_duration()
+        except Exception:
+            fallback_slot = 60
+
+        now_utc = utc_now()
+        interval = _get_booking_interval(booking, fallback_slot)
+        if not interval:
+            return False, "booking_not_found"
+        start, end = interval
+
+        # If the hold already expired, mark the booking as expired and abort.
+        if not is_booking_slot_blocked(booking, now_utc, hold_minutes):
+            try:
+                booking.status = BookingStatus.EXPIRED
+                booking.cash_hold_expires_at = None
+                await session.commit()
+            except Exception:
+                await session.rollback()
+            return False, "slot_unavailable"
+
+        # Fetch overlapping active bookings for the same master and lock them.
+        try:
+            candidate_stmt = (
+                select(Booking)
+                .where(
+                    Booking.master_id == getattr(booking, "master_id", None),
+                    Booking.id != booking.id,
+                    Booking.status.in_(tuple(ACTIVE_STATUSES)),
+                    Booking.starts_at < end,
+                    Booking.starts_at >= start - timedelta(hours=12),
+                )
+                .with_for_update()
+            )
+            candidates = (await session.execute(candidate_stmt)).scalars().all()
+        except Exception:
+            candidates = []
+
+        for other in candidates:
+            other_interval = _get_booking_interval(other, fallback_slot)
+            if not other_interval:
+                continue
+            if not is_booking_slot_blocked(other, now_utc, hold_minutes):
+                continue
+            o_start, o_end = other_interval
+            if start < o_end and end > o_start:
+                try:
+                    booking.status = BookingStatus.EXPIRED
+                    booking.cash_hold_expires_at = None
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                return False, "slot_unavailable"
+
+        old = getattr(booking, "status", None)
+        booking.status = target_status
+        try:
+            booking.cash_hold_expires_at = None
+            if set_paid_at:
+                booking.paid_at = utc_now()
+        except Exception:
+            pass
+        try:
+            hist = BookingStatusHistory(booking_id=booking.id, old_status=old, new_status=target_status)
+            session.add(hist)
+        except Exception:
+            pass
+        await session.commit()
+        return True, None
+
 logger = logging.getLogger(__name__)
 
 # Online payment discount setting key (percent). Default value centralized
@@ -612,25 +710,9 @@ class BookingRepo:
             return res.scalars().all()
 
     @staticmethod
-    async def confirm_cash(booking_id: int) -> bool:
-        async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
-            booking = await session.get(Booking, booking_id)
-            if not booking:
-                return False
-            old = getattr(booking, "status", None)
-            booking.status = BookingStatus.CONFIRMED
-            try:
-                booking.cash_hold_expires_at = None
-            except Exception:
-                pass
-            try:
-                hist = BookingStatusHistory(booking_id=booking.id, old_status=old, new_status=BookingStatus.CONFIRMED)
-                session.add(hist)
-            except Exception:
-                pass
-            await session.commit()
-            return True
+    async def confirm_cash(booking_id: int) -> tuple[bool, str | None]:
+        """Confirm a cash payment only if the slot is still available."""
+        return await _finalize_booking_payment(booking_id, target_status=BookingStatus.CONFIRMED, set_paid_at=False)
 
     @staticmethod
     async def reschedule(booking_id: int, new_starts_at: datetime) -> bool:
@@ -658,26 +740,15 @@ class BookingRepo:
             return True
 
     @staticmethod
-    async def mark_paid(booking_id: int) -> bool:
-        async with get_session() as session:
-            from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
-            b = await session.get(Booking, booking_id)
-            if not b:
-                return False
-            old = getattr(b, "status", None)
-            b.status = BookingStatus.PAID
-            try:
-                b.paid_at = utc_now()
-                b.cash_hold_expires_at = None
-            except Exception:
-                pass
-            try:
-                hist = BookingStatusHistory(booking_id=b.id, old_status=old, new_status=BookingStatus.PAID)
-                session.add(hist)
-            except Exception:
-                pass
-            await session.commit()
-            return True
+    async def mark_paid(booking_id: int) -> tuple[bool, str | None]:
+        """Mark booking as paid if the slot is still valid and not taken.
+
+        Returns (ok, error_code). error_code is one of:
+        - booking_not_found
+        - booking_not_active
+        - slot_unavailable
+        """
+        return await _finalize_booking_payment(booking_id, target_status=BookingStatus.PAID, set_paid_at=True)
 
     @staticmethod
     async def set_cancelled(booking_id: int) -> bool:
@@ -746,18 +817,38 @@ class BookingRepo:
     async def set_pending_payment(booking_id: int) -> bool:
         async with get_session() as session:
             from bot.app.domain.models import Booking, BookingStatus, BookingStatusHistory
-            b = await session.get(Booking, booking_id)
+            # Lock the row to avoid reviving an already-expired booking concurrently.
+            stmt = select(Booking).where(Booking.id == booking_id).with_for_update()
+            b = (await session.execute(stmt)).scalar_one_or_none()
             if not b:
                 return False
-            old = getattr(b, "status", None)
-            b.status = BookingStatus.PENDING_PAYMENT
-            # Extend hold window to give the user time to finish payment/confirmation
+
+            now_utc = utc_now()
             try:
                 hold_min = await SettingsRepo.get_reservation_hold_minutes()
             except Exception:
                 hold_min = 5
+
+            # Do not revive terminal/confirmed/paid bookings.
+            status = getattr(b, "status", None)
+            if status in TERMINAL_STATUSES or status in {BookingStatus.CONFIRMED, BookingStatus.PAID}:
+                return False
+
+            # If hold already expired, refuse to extend and leave for rebooking.
+            hold_expires = getattr(b, "cash_hold_expires_at", None)
+            created_at = getattr(b, "created_at", None)
+            if hold_expires and hold_expires <= now_utc:
+                return False
+            if not hold_expires:
+                cutoff = now_utc - timedelta(minutes=max(1, int(hold_min or 0)))
+                if created_at is None or created_at <= cutoff:
+                    return False
+
+            old = status
+            b.status = BookingStatus.PENDING_PAYMENT
+            # Extend hold window to give the user time to finish payment/confirmation
             try:
-                b.cash_hold_expires_at = utc_now() + timedelta(minutes=max(1, int(hold_min or 0)))
+                b.cash_hold_expires_at = now_utc + timedelta(minutes=max(1, int(hold_min or 0)))
             except Exception:
                 pass
             try:
@@ -2283,29 +2374,31 @@ async def calculate_price(service_id: str, online_payment: bool) -> Dict[str, An
             cur = _default_currency()
         return {"final_price_cents": 0, "currency": cur}
 
-async def process_successful_payment(booking_id: int, charge_id: str) -> bool:
-    """Обрабатывает успешный платеж и обновляет статус записи.
+async def process_successful_payment(booking_id: int, charge_id: str) -> tuple[bool, str | None]:
+    """Обрабатывает успешный платеж онлайн с повторной проверкой слота.
 
-    Args:
-        booking_id: ID записи.
-        charge_id: ID платежа.
-
-    Returns:
-        True, если обработка успешна, иначе False.
+    Возвращает (ok, error_code) аналогично mark_paid.
     """
     try:
-        async with get_session() as session:
-            booking = await session.get(Booking, booking_id)
-            if not booking:
-                logger.warning("Запись не найдена для обработки платежа: id=%s", booking_id)
-                return False
-            booking.status = BookingStatus.PAID
-            await session.commit()
+        ok, reason = await BookingRepo.mark_paid(booking_id)
+        if ok:
+            try:
+                async with get_session() as session:
+                    booking = await session.get(Booking, booking_id)
+                    if booking:
+                        try:
+                            booking.payment_id = charge_id
+                            booking.payment_provider = "online"
+                            await session.commit()
+                        except Exception:
+                            await session.rollback()
+            except Exception:
+                logger.exception("process_successful_payment: failed to persist payment metadata for %s", booking_id)
             logger.info("Платеж обработан для записи №%s, charge_id=%s", booking_id, charge_id)
-            return True
+        return ok, reason
     except SQLAlchemyError as e:
         logger.error("Ошибка обработки платежа для записи №%s: %s", booking_id, e)
-        return False
+        return False, "payment_failed"
 
 # ---------------- Client-side booking action guards -----------------
 

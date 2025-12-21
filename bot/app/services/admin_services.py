@@ -35,7 +35,7 @@ from bot.app.translations import tr, t
 logger = logging.getLogger(__name__)
 
 
-def validate_contact_phone(value: str, lang: str) -> tuple[str | None, str | None]:
+def validate_contact_phone(value: str) -> tuple[str | None, str | None]:
     """Validate phone input coming from admin wizard forms."""
     cleaned = re.sub(r"[\s\-\(\)]+", "", value or "")
     trimmed = cleaned.strip()
@@ -44,7 +44,7 @@ def validate_contact_phone(value: str, lang: str) -> tuple[str | None, str | Non
     return trimmed, None
 
 
-def validate_instagram_handle(value: str, lang: str) -> tuple[str | None, str | None]:
+def validate_instagram_handle(value: str) -> tuple[str | None, str | None]:
     """Validate Instagram handle input coming from admin wizard forms."""
     handle = value.strip().lstrip("@")
     if not handle:
@@ -54,7 +54,7 @@ def validate_instagram_handle(value: str, lang: str) -> tuple[str | None, str | 
     return None, "invalid_instagram"
 
 
-def validate_contact_address(value: str, lang: str) -> tuple[str | None, str | None]:
+def validate_contact_address(value: str) -> tuple[str | None, str | None]:
     """Validate free-form contact address from admin input.
 
     Basic checks: trim whitespace, require non-empty, and limit length to avoid
@@ -1090,15 +1090,9 @@ class SettingsRepo:
         """Compact human summary, e.g., Mon–Fri 09:00–18:00; Sat 10:00–16:00; Sun Closed"""
         try:
             from bot.app.translations import tr
-            day_labels = [
-                tr("mon_short", lang=lang) or "Mon",
-                tr("tue_short", lang=lang) or "Tue",
-                tr("wed_short", lang=lang) or "Wed",
-                tr("thu_short", lang=lang) or "Thu",
-                tr("fri_short", lang=lang) or "Fri",
-                tr("sat_short", lang=lang) or "Sat",
-                tr("sun_short", lang=lang) or "Sun",
-            ]
+            day_labels = tr("weekday_short", lang=lang)
+            if not isinstance(day_labels, list) or len(day_labels) != 7:
+                day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
             # Normalize map to ordered list by day 0..6
             entries: list[tuple[int, tuple[int, int] | None]] = []
             for d in range(7):

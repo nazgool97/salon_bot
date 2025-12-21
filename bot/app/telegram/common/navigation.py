@@ -200,7 +200,7 @@ async def show_main_client_menu(obj: Union[Message, CallbackQuery], state: Optio
         except Exception:
             logger.exception("show_main_client_menu: logging debug failed")
         lang = await safe_get_locale(user_id)
-        text_root = tr("main_menu", lang=lang) or "Главное меню"
+        text_root = tr("menu", lang=lang) or "🏠 Menu"
 
         # Try to edit existing message when appropriate
         if target_msg is not None and prefer_edit and isinstance(obj, CallbackQuery):

@@ -1,261 +1,151 @@
-# 💇‍♀️ Salon Bot — готовый коробочный бот для салонов красоты
+# Telegram Salon Booking Bot (Open Core)
 
-## 🚀 Executive summary
+A self-hosted Telegram booking system for beauty salons and small service businesses.
 
-**Salon Bot** — готовый Telegram‑бот для салонов красоты, который автоматизирует онлайн‑запись клиентов, управление мастерами и базовую бизнес‑аналитику.
+Clients book appointments, masters manage schedules, and owners see analytics — all inside Telegram.
 
-* ⏱ Запуск за **5–10 минут**
-* 🧩 Без разработки и подписок
-* 🖥 Работает на **вашем сервере**
-* 🔄 Обновляется **одной командой**
-* 🔐 Данные полностью **под вашим контролем**
+This repository contains the open-core version of the project. The production-ready edition with support and updates is available separately.
 
-Один `.env`, один `docker compose up -d` — и бот готов к работе.
+👉 Get the full version: https://ko-fi.com/s/937c0881d1
 
----
+## What is Open Core here?
 
-## 📦 Что это такое
+This repository provides:
 
-Telegram‑бот для записи клиентов, управления мастерами и бизнес‑аналитики.
+- the core booking logic
+- Telegram bot architecture
+- database schema & migrations
+- Docker-based setup
 
-Поставляется как **Docker Compose‑пакет** с конфигурацией через `.env`.
-Один сценарий запуска для локальной машины и сервера:
+The commercial version includes:
 
-```bash
-docker compose up -d
-```
+- guided setup
+- long-term support
+- stable updates
+- production usage license
 
-Все зависимости (Python, библиотеки, PostgreSQL, миграции) находятся внутри контейнеров.
+This approach keeps the project transparent while allowing sustainable development.
 
-Docker‑образ **приватный** (`ghcr.io/nazgool97/salon_bot:latest`):
+## What problem does it solve?
 
-* клиент получает только права на чтение (pull)
-* редактирование образа невозможно
+Many salons still manage bookings using:
 
----
+- Telegram chats
+- spreadsheets
+- manual confirmations
 
-## 🎁 Что вы получаете
+This leads to:
 
-* 📅 Полноценную систему записи: услуги, мастера, расписание, отмены, переносы, напоминания
-* 👥 Роли: администратор, мастер, клиент (всё через Telegram)
-* 📊 Бизнес‑аналитику: выручка, записи, retention, no‑show, экспорт CSV
-* 💳 Готовность к платежам: Telegram Payments (опционально)
-* ⚙️ Единый сценарий запуска: `.env` + `docker compose up -d`
-* 🧱 Полную изоляцию зависимостей — ничего не нужно устанавливать вручную
+- missed messages
+- double bookings
+- extra admin work
 
----
+This bot automates the booking flow while staying simple and human-friendly.
 
-## 🎯 Кому подойдёт
+## Who is this for?
 
-* Салоны красоты, барбершопы, nail‑студии, массажные кабинеты
-* 1–10 мастеров, запись по времени
-* Владельцы, которым нужен **готовый инструмент**, а не разработка
+Designed for:
 
----
+- Beauty salons
+- Barbershops
+- Solo masters
+- Small local service businesses
 
-## 🚫 Кому не подойдёт
+A good fit if you:
 
-* Маркетплейсы мастеров
-* Крупные сетевые франшизы с филиалами (на текущий момент)
-* Нестандартные сценарии:
+- already communicate with clients via Telegram
+- want to reduce manual work
+- prefer self-hosted tools
+- don’t want subscriptions or SaaS platforms
 
-  * абонементы
-  * пакеты услуг
-  * динамическое ценообразование
+## How it works
 
----
+**Clients**
 
-## ✨ Чем Salon Bot отличается от других ботов
+1) Choose service
+2) Choose master
+3) Pick date & time
+4) Confirm booking
 
-* 🏠 **Не SaaS** — все данные хранятся у вас, а не на чужом сервере
-* 📦 **Коробочный продукт** — логика уже продумана и протестирована
-* 🔄 **Обновляется без боли** — `docker compose pull && docker compose up -d`
-* 🔐 **Приватный образ** — код защищён, клиент не может его изменить
-* 🧠 **Продуктовое мышление**, а не набор команд
+**Masters**
 
-Это не конструктор и не фриланс‑бот — это стабильный продукт.
+- View personal schedule
+- See upcoming appointments
+- Manage availability
 
----
+**Owner / Admin**
 
-## ⚠️ Ограничения текущей версии
+- Full booking overview
+- Manage services and masters
+- Basic analytics and stats
 
-* Один салон = один бот
-* Нет абонементов и пакетов услуг
-* Нет онлайн‑кассы (только Telegram Payments)
-* Нет веб‑кабинета (управление только через Telegram)
+Everything works directly inside Telegram.
 
----
+## Features
 
-## 🧰 Требования
+- Telegram-native UX
+- Client self-booking
+- Multi-master support
+- Admin panel
+- Analytics overview
+- Docker-based deployment
+- PostgreSQL database
+- Self-hosted (you own your data)
 
-* Установленные Docker и Docker Compose
-* ~1 GB свободного места (образы + данные БД)
-* Интернет для скачивания образов из GHCR
-* Порт 5432 (если нужен внешний доступ к БД)
-
----
-
-## 🔐 Доступ к приватному образу GHCR (обязательно)
-
-Docker‑образ приватный:
+## Project structure
 
 ```
-ghcr.io/nazgool97/salon_bot:latest
+bot/
+├── app/
+│   ├── core        # DB, logging, notifications
+│   ├── domain      # Business models
+│   ├── services    # Booking logic
+│   ├── telegram    # Handlers & keyboards
+│   └── workers     # Reminders & background jobs
+├── migrations      # Alembic migrations
+docker-compose.yml
+Dockerfile
 ```
 
-Для запуска требуется **read‑only токен GHCR**.
-Токен выдаётся после покупки или обращения к поставщику.
+The codebase is structured for clarity and long-term maintenance.
 
-После логина команды `docker compose pull` и `docker compose up -d` смогут скачать образ.
-
----
-
-## ⚡ Быстрый старт (3 шага)
-
-1. Получите проект (архив или git‑репозиторий)
-2. Создайте `.env` из примера и заполните значения
+## Running locally (for evaluation)
 
 ```bash
 cp .env.example .env
-```
-
-3. Авторизуйтесь в GHCR и запустите:
-
-```bash
 docker compose up -d
 ```
 
-Через 10–20 секунд бот будет готов к работе.
+This setup is intended for evaluation and development.
 
----
+For production use, please refer to the commercial edition.
 
-## 🧭 Подробный мастер запуска
+## License & usage
 
-1. Проверить Docker:
+This repository is provided under an open-core model. You are free to:
 
-   ```bash
-   docker --version
-   docker compose version
-   ```
-2. Выполнить логин в GHCR
-3. Скопировать `.env.example` → `.env` и заполнить переменные
-4. Запустить `docker compose up -d`
-5. Проверить БД: `docker compose logs -f db` → `database system is ready`
-6. Проверить миграции: `docker compose logs -f migrations` → `success`
-7. Проверить бот: `docker compose logs -f salon-bot` → `Bot started`
-8. Открыть бота в Telegram
+- explore the code
+- run it locally
+- learn from the architecture
 
----
+Commercial and production usage requires a paid license. Support, updates, and long-term maintenance are included in the paid version.
 
-## ⚙️ Переменные окружения (.env)
+## Support
 
-Минимально обязательны:
+Friendly support is available with the commercial edition:
 
-* `BOT_TOKEN`
-* `DATABASE_URL`
-* `ADMIN_IDS`
+- help with setup
+- usage questions
+- updates and fixes
 
-(остальные — с разумными значениями по умолчанию)
+Custom development and feature requests are not included.
 
----
+## Philosophy
 
-## 🧩 Сервисы в docker-compose
+I build tools for real businesses.
 
-* **db** — PostgreSQL 15 + volume `db_data`
-* **migrations** — однократный запуск Alembic
-* **salon-bot** — Telegram‑бот (aiogram)
+- No overengineering.
+- No unnecessary complexity.
+- Just practical automation that saves time and reduces stress.
 
----
-
-## 👥 Возможности по ролям
-
-### 👑 Администратор
-
-* Управление услугами и мастерами
-* Просмотр и фильтрация записей
-* Аналитика и бизнес‑настройки
-
-### ✂️ Мастер
-
-* Личное расписание
-* Уведомления о новых и изменённых записях
-
-### 💬 Клиент
-
-* Быстрая запись
-* Перенос и отмена визитов
-* История посещений
-
----
-
-## 🧠 Типичные вопросы (FAQ)
-
-**Можно ли поставить на VPS?**
-Да, рекомендуется.
-
-**Нужно ли разбираться в Linux?**
-Минимально — достаточно уметь запускать Docker.
-
-**Можно ли перенести бота на другой сервер?**
-Да, лицензия это разрешает.
-
-**Есть ли абонементы и пакеты услуг?**
-Нет, в текущей версии.
-
-**Это SaaS?**
-Нет. Бот работает полностью на вашем сервере.
-
----
-
-## 🔄 Обновления
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
----
-
-## 🧪 Логи и диагностика
-
-* Бот: `docker compose logs -f salon-bot`
-* Миграции: `docker compose logs -f migrations`
-* БД: `docker compose logs -f db`
-
----
-
-## 💾 Резервное копирование
-
-```bash
-docker run --rm \
-  -v salon_bot-deploy_db_data:/var/lib/postgresql/data \
-  -v /backup:/backup alpine \
-  tar czf /backup/db_backup.tar.gz /var/lib/postgresql/data
-```
-
----
-
-## 🛑 Остановка и удаление
-
-* Остановка: `docker compose down`
-* Полное удаление данных: `docker compose down -v`
-
----
-
-## 🧾 Лицензия и поддержка
-
-* Лицензия: **один салон — один бот**
-* Обновления включены
-* Поддержка: Telegram `@tartz_brewer`
-* Время реакции: до 24 часов в рабочие дни
-
----
-
-## ✅ Итог
-
-* Один `.env` — все настройки
-* Один Compose‑стек — вся система
-* Один образ — простые обновления
-* Данные в volume — сохранность при перезапусках
-
-**Запускайте, обновляйте и делайте бэкапы — всё несколькими командами.**
+If your business already lives in Telegram — this bot was built for you.

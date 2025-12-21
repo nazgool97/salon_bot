@@ -423,8 +423,6 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             pending_lbl = tr("dashboard_pending_label", lang=l).replace("{count}", "").strip() or "Pending"
 
             lines = [header]
-            if rating_line:
-                lines.append(rating_line)
             lines.append(f"{today_lbl}: {total}")
             lines.append(f"{done_lbl}: {done}")
             lines.append(f"{cancelled_lbl}: {cancelled}")
@@ -436,8 +434,6 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             summary = "\n".join(lines)
         else:
             base = [tr("master_no_bookings_today", lang=l)]
-            if rating_line:
-                base.insert(0, rating_line)
             summary = "\n".join(base)
 
         # also fetch a 7-day stats summary and append to dashboard

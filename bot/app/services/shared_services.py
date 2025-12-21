@@ -1065,6 +1065,8 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
         currency = _get("currency") or _default_currency()
         service_name = _get("service_name", None)
         master_name = _get("master_name", None)
+        status_raw = _get("status", None)
+        paid_at = _get("paid_at", None)
         date_str = _get("date_str", None)
         starts_at = _get("starts_at", None)
         ends_at = _get("ends_at", None)
@@ -1113,7 +1115,9 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
             lines.append(f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}")
         except Exception:
             pass
-        lines.append(f"{__("amount_label")}: {human_price}")
+        status_str = str(status_raw).lower() if status_raw is not None else ""
+        amount_label = __("amount_paid_label") if (paid_at or status_str == "paid") else __("amount_label")
+        lines.append(f"{amount_label}: {human_price}")
 
         if str(role).lower() == "master":
             try:

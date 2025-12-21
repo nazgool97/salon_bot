@@ -88,6 +88,8 @@ from bot.app.services.client_services import (
     BookingRepo,
     UserRepo,
     book_slot,
+    is_booking_slot_blocked,
+    _get_booking_interval,
 )
 from bot.app.core.notifications import send_booking_notification
 from bot.app.services.admin_services import ServiceRepo
@@ -367,29 +369,6 @@ async def cmd_start_plaintext(message: Message, state: FSMContext, locale: str) 
     await cmd_start(message, state, locale)
 
 
-@client_router.message(Command("whoami"))
-async def cmd_whoami(message: Message, locale: str) -> None:
-    """Показывает Telegram ID пользователя для отладки (например, для ADMIN_IDS)."""
-    user_id = message.from_user.id if message.from_user else 0
-    logger.info("Команда /whoami вызвана для пользователя %s", user_id)
-    lang = locale
-    await message.answer(f"{i18n.t('your_telegram_id', lang)} {user_id}")
-    logger.info("Telegram ID отправлен для пользователя %s", user_id)
-    # Unexpected exceptions will be handled by router-level error handlers
-
-
-@client_router.message(Command("ping"))
-async def cmd_ping(message: Message) -> None:
-    """Проверка работоспособности: отвечает 'pong'.
-
-    Args:
-        message: Входящее сообщение от пользователя.
-    """
-    logger.info("Команда /ping вызвана для пользователя %s", message.from_user.id if message.from_user else 0)
-    await message.answer("pong")
-    # Let centralized error handlers handle unexpected exceptions
-
-
 @client_router.callback_query(ClientMenuCB.filter(F.act == "booking_service"))
 async def start_booking(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
     """Инициирует процесс бронирования, показывая меню услуг.
@@ -484,19 +463,12 @@ async def cancel_reservation_and_root(cb: CallbackQuery, callback_data, state: F
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
 
-    # Disallow deleting terminal bookings
-    if getattr(b, "status", None):
-        status_attr = getattr(b, 'status', None)
-        try:
-            status_val = status_attr.value
-        except Exception:
-            status_val = status_attr
-        if str(status_val).lower() in {"cancelled", "done", "no_show", "expired"}:
-            lang = locale
-            await cb.answer(t("booking_not_active", lang), show_alert=True)
-            return
-
-    # Delete booking row
+    # If бронь уже терминальная/истекла — просто удаляем и возвращаемся в меню
+    status_attr = getattr(b, 'status', None)
+    try:
+        status_val = status_attr.value
+    except Exception:
+        status_val = status_attr
     await BookingRepo.delete_booking(booking_id)
 
     # Always show main menu
@@ -1949,11 +1921,6 @@ async def pay_cash_prepare(cb: CallbackQuery, callback_data: HasBookingId, local
 
         extra_lines = []
         try:
-            if start_time_str:
-                extra_lines.append(f"{t('time_label', lang)}: {start_time_str}")
-        except Exception:
-            pass
-        try:
             slot_label = t('slot_duration_label', lang)
             # Only append duration if canonical details text doesn't already include it
             if (not slot_label) or (slot_label not in details):
@@ -2057,7 +2024,11 @@ async def pay_cash(cb: CallbackQuery, callback_data: HasBookingId, state: FSMCon
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
     master_id = int(getattr(b, 'master_id', 0) or 0)
-    await BookingRepo.confirm_cash(booking_id)
+    ok, reason = await BookingRepo.confirm_cash(booking_id)
+    if not ok:
+        err = "slot_unavailable" if reason in {"slot_unavailable", "booking_not_active"} else "booking_not_found"
+        await cb.answer(t(err, lang) or "Слот недоступен, выберите другое время", show_alert=True)
+        return
 
     # Update client's bookings view (prefer back to bookings list rather than jumping to main menu)
     try:
@@ -2296,19 +2267,12 @@ async def cancel_reservation_and_go_back(cb: CallbackQuery, callback_data, state
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
 
-    # Disallow cancelling terminal bookings
-    if getattr(b, "status", None):
-        status_attr = getattr(b, 'status', None)
-        try:
-            status_val = status_attr.value
-        except Exception:
-            status_val = status_attr
-        if str(status_val).lower() in {"cancelled", "done", "no_show", "expired"}:
-            lang = locale
-            await cb.answer(t("booking_not_active", lang), show_alert=True)
-            return
-
-    # Perform deletion via service/repo (remove DB row instead of updating status)
+    # Если бронь уже не активна/истекла — удаляем тихо и выходим в меню/назад
+    status_attr = getattr(b, 'status', None)
+    try:
+        status_val = status_attr.value
+    except Exception:
+        status_val = status_attr
     await BookingRepo.delete_booking(booking_id)
 
     # Try to navigate back to previous screen; if none, show main menu
@@ -2379,7 +2343,7 @@ async def show_master_profile(cb: CallbackQuery, master_id: int, service_id: str
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from typing import cast, Any
     builder = InlineKeyboardBuilder()
-    book_text = t("book_button", lang) if t("book_button", lang) != "book_button" else "Записатися"
+    book_text = t("book", lang)
     # If service_id is empty (master-first flow), go to services filtered by master
     if not service_id:
         builder.button(
@@ -2392,7 +2356,7 @@ async def show_master_profile(cb: CallbackQuery, master_id: int, service_id: str
             callback_data=pack_cb(MasterSelectCB, service_id=service_id, master_id=master_id),
         )
     builder.button(
-        text=t("back", lang) if t("back", lang) != "back" else "⬅️ Назад",
+        text=t("back", lang),
         callback_data=pack_cb(NavCB, act="back"),
     )
     builder.adjust(1, 1)
@@ -2643,6 +2607,26 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
         await cb.answer(t("booking_not_found", locale))
         return
 
+    # Revalidate hold before issuing invoice so we don't charge for expired slots.
+    try:
+        hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
+    except Exception:
+        hold_minutes = 5
+    try:
+        fallback_slot = await SettingsRepo.get_slot_duration()
+    except Exception:
+        fallback_slot = 60
+    now_utc = utc_now()
+    interval = _get_booking_interval(booking, fallback_slot)
+    slot_alive = interval is not None and is_booking_slot_blocked(booking, now_utc, hold_minutes)
+    if not slot_alive:
+        try:
+            await BookingRepo.update_status(booking_id, BookingStatus.EXPIRED)
+        except Exception:
+            pass
+        await cb.answer(t("slot_unavailable", locale) or "Слот недоступен, выберите другое время", show_alert=True)
+        return
+
     service_name = await BookingRepo.get_booking_service_names(booking_id)
     if not service_name:
         service_name = t("service_label", locale)
@@ -2773,7 +2757,12 @@ async def pay_online_prepare(
             start_time_str = None
 
     if start_time_str:
-        extra_lines.append(f"{t('time_label', lang)}: {start_time_str}")
+        time_label = t("time_label", lang)
+        # Avoid duplicating if the base details already carry the time (either with label or the time string itself)
+        if time_label and (time_label in header_body or start_time_str in header_body):
+            pass
+        else:
+            extra_lines.append(f"{time_label}: {start_time_str}")
 
     # Duration
     duration_minutes = None
@@ -2870,11 +2859,20 @@ async def handle_successful_payment(message: Message, locale: str) -> None:
             return
         booking_id = int(m.group(1))
 
-        # Persist payment status
+        # Persist payment status with slot revalidation
         try:
-            await BookingRepo.mark_paid(booking_id)
+            ok, reason = await BookingRepo.mark_paid(booking_id)
         except Exception:
+            ok, reason = False, "payment_failed"
             logger.exception("Failed to mark booking %s as paid", booking_id)
+
+        if not ok:
+            err_key = "slot_unavailable" if reason in {"slot_unavailable", "booking_not_active"} else "booking_not_found"
+            try:
+                await message.answer(t(err_key, locale) or "Слот недоступен, выберите другое время")
+            except Exception:
+                pass
+            return
 
         # Notify master and admins
         try:

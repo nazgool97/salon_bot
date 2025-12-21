@@ -575,7 +575,7 @@ async def master_client_note_cancel(cb: CallbackQuery, callback_data, state: FSM
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "schedule"))
 async def show_schedule(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
-	"""Show weekly schedule (placeholder)."""
+	"""Show weekly schedule overview and controls."""
 	logger.debug("show_schedule invoked by user=%s data=%s", cb.from_user.id, getattr(cb, 'data', None))
 	master_id = cb.from_user.id
 	if master_id is None:
@@ -1023,6 +1023,7 @@ async def schedule_edit_day(cb: CallbackQuery, callback_data, state: FSMContext,
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "noop"))
 async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+	"""No-op handler for non-clickable schedule cells (headers/empty slots)."""
 	master_id = cb.from_user.id
 	day = getattr(callback_data, "day", None)
 	try:
@@ -1308,7 +1309,7 @@ async def show_bookings_menu(cb: CallbackQuery, state: FSMContext, locale: str) 
         page = int(meta.get("page", 1) or 1)
         total_pages = int(meta.get("total_pages", 1) or 1)
 
-        # Формируем динамический заголовок
+		        # Формируем динамический заголовок
         dynamic_header = f"{title_for_mode} ({tab_count})"
         if total_pages > 1:
             dynamic_header += f" ({t('page_short', lang)} {page}/{total_pages})"
@@ -1576,14 +1577,14 @@ async def master_service_durations_menu(cb: CallbackQuery, state: FSMContext, lo
 		from aiogram.utils.keyboard import InlineKeyboardBuilder
 		kb = InlineKeyboardBuilder()
 		if not rows:
-			kb.button(text=t("master_no_services", lang) if t("master_no_services", lang) != "master_no_services" else "Нет услуг", callback_data="noop")
+			kb.button(text=t("no_services_for_master", lang), callback_data="noop")
 		else:
 			for sid, name, dur in rows:
 				label = f"{name} • {dur}m" if dur else name
 				kb.button(text=label, callback_data=pack_cb(MasterSetServiceDurationCB, service_id=sid, minutes=dur or 0))
 		kb.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
 		kb.adjust(*([1] * max(1,len(rows))),1)
-		header = t("master_service_durations_header", lang) if t("master_service_durations_header", lang) != "master_service_durations_header" else "Измените длительность услуг:" 
+		header = t("master_service_durations_header", lang)
 		await safe_edit(cb.message, text=header, reply_markup=kb.as_markup())
 		await cb.answer()
 	except Exception as e:
@@ -1627,10 +1628,10 @@ async def master_set_service_duration(cb: CallbackQuery, callback_data, state: F
 			kb.button(text=f"{prefix}{m}m", callback_data=pack_cb(MasterSetServiceDurationCB, service_id=str(service_id), minutes=m))
 		# Save button uses the currently selected minutes (if any)
 		if current and int(current) > 0:
-			kb.button(text=t("save", lang) if t("save", lang) != "save" else "Сохранить", callback_data=pack_cb(MasterMenuCB, act="save_service_duration", page=int(current) if isinstance(current,int) else None))
+			kb.button(text=t("save", lang), callback_data=pack_cb(MasterMenuCB, act="save_service_duration", page=int(current) if isinstance(current,int) else None))
 		kb.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="service_durations"))
 		kb.adjust(4,4,2)
-		header = t("master_pick_duration_header", lang) if t("master_pick_duration_header", lang) != "master_pick_duration_header" else "Выберите длительность:" 
+		header = t("master_pick_duration_header", lang)
 		await safe_edit(cb.message, text=header, reply_markup=kb.as_markup())
 		await cb.answer()
 	except Exception as e:
@@ -1657,7 +1658,7 @@ async def master_save_service_duration(cb: CallbackQuery, state: FSMContext, loc
 	master_id = cb.from_user.id
 	try:
 		ok = await master_services.MasterRepo.set_master_service_duration(int(master_id), str(service_id), int(minutes))
-		await cb.answer(t("master_service_duration_set_success", lang) if t("master_service_duration_set_success", lang) != "master_service_duration_set_success" else "Готово")
+		await cb.answer(t("master_service_duration_set_success", lang))
 		# Re-render list
 		rows = await master_services.MasterRepo.get_services_with_durations_for_master(int(master_id))
 		from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -1667,7 +1668,7 @@ async def master_save_service_duration(cb: CallbackQuery, state: FSMContext, loc
 			kb.button(text=label, callback_data=pack_cb(MasterSetServiceDurationCB, service_id=sid, minutes=dur or 0))
 		kb.button(text=t("back", lang), callback_data=pack_cb(MasterMenuCB, act="menu"))
 		kb.adjust(*([1] * max(1,len(rows))),1)
-		header = t("master_service_durations_header", lang) if t("master_service_durations_header", lang) != "master_service_durations_header" else "Измените длительность услуг:" 
+		header = t("master_service_durations_header", lang)
 		await safe_edit(cb.message, text=header, reply_markup=kb.as_markup())
 	except Exception as e:
 		logger.exception("master_save_service_duration failed: %s", e)
@@ -1822,8 +1823,8 @@ async def master_bookings_navigate(cb: CallbackQuery, callback_data: _HasModePag
 				mode_for_header = mode or 'upcoming'
 				mode_map = {
 					"upcoming": (t("upcoming", lang), int(meta.get('upcoming_count', 0) or 0)),
-					"done": (t("done_bookings", lang), int(meta.get('done_count', 0) or 0)),
-					"cancelled": (t("cancelled_bookings", lang), int(meta.get('cancelled_count', 0) or 0)),
+					"done": (t("status_done", lang), int(meta.get('done_count', 0) or 0)),
+					"cancelled": (t("status_cancelled", lang), int(meta.get('cancelled_count', 0) or 0)),
 					"no_show": (t("no_show_bookings", lang), int(meta.get('noshow_count', 0) or 0)),
 				}
 				tab_name, tab_count = mode_map.get(mode_for_header, mode_map["upcoming"])
@@ -2275,7 +2276,7 @@ async def booking_cancel_note(cb: CallbackQuery, callback_data, state: FSMContex
 				kb2.button(text=t("booking_client_history_button"), callback_data=pack_cb(BookingActionCB, act="client_history", booking_id=booking_id))
 				kb2.button(text=t("booking_add_note_button"), callback_data=pack_cb(BookingActionCB, act="add_note", booking_id=booking_id))
 				try:
-					kb2.button(text=t("to_list", locale) if t("to_list", locale) != "to_list" else t("menu", locale), callback_data=pack_cb(MasterMenuCB, act="my_clients"))
+					kb2.button(text=t("to_list", locale), callback_data=pack_cb(MasterMenuCB, act="my_clients"))
 				except Exception:
 					kb2.button(text=t("menu", locale), callback_data=pack_cb(MasterMenuCB, act="my_clients"))
 				kb2.adjust(2)
@@ -2312,7 +2313,7 @@ async def show_stats(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 		f"\n{t('stats_week', lang)}:\n"
 		f"{t('next_booking', lang)}: {stats_week.get('next_booking_time')}\n"
 		f"{t('total_bookings', lang)}: {stats_week.get('total_bookings')}\n"
-		f"{t('completed_bookings', lang)}: {stats_week.get('completed_bookings')}\n"
+		f"{t('status_done', lang)}: {stats_week.get('completed_bookings')}\n"
 		f"{t('no_shows', lang)}: {stats_week.get('no_shows')}"
 	)
 	# Month section
@@ -2320,7 +2321,7 @@ async def show_stats(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 		f"\n{t('stats_month', lang)}:\n"
 		f"{t('next_booking', lang)}: {stats_month.get('next_booking_time')}\n"
 		f"{t('total_bookings', lang)}: {stats_month.get('total_bookings')}\n"
-		f"{t('completed_bookings', lang)}: {stats_month.get('completed_bookings')}\n"
+		f"{t('status_done', lang)}: {stats_month.get('completed_bookings')}\n"
 		f"{t('no_shows', lang)}: {stats_month.get('no_shows')}"
 	)
 	text = "\n".join(text_parts)
@@ -2345,7 +2346,7 @@ async def stats_week(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
 		f"{t('stats_week', lang)}:\n"
 		f"{t('next_booking', lang)}: {stats.get('next_booking_time')}\n"
 		f"{t('total_bookings', lang)}: {stats.get('total_bookings')}\n"
-		f"{t('completed_bookings', lang)}: {stats.get('completed_bookings')}\n"
+		f"{t('status_done', lang)}: {stats.get('completed_bookings')}\n"
 		f"{t('pending_payment', lang)}: {stats.get('pending_payment')}\n"
 		f"{t('no_shows', lang)}: {stats.get('no_shows')}"
 	)
@@ -2366,7 +2367,7 @@ async def stats_month(cb: CallbackQuery, state: FSMContext, locale: str) -> None
 		f"{t('stats_month', lang)}:\n"
 		f"{t('next_booking', lang)}: {stats.get('next_booking_time')}\n"
 		f"{t('total_bookings', lang)}: {stats.get('total_bookings')}\n"
-		f"{t('completed_bookings', lang)}: {stats.get('completed_bookings')}\n"
+		f"{t('status_done', lang)}: {stats.get('completed_bookings')}\n"
 		f"{t('pending_payment', lang)}: {stats.get('pending_payment')}\n"
 		f"{t('no_shows', lang)}: {stats.get('no_shows')}"
 	)

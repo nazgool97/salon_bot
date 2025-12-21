@@ -107,27 +107,36 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                         master_name = await MasterRepo.get_master_name(int(getattr(booking, "master_id", 0) or 0))
                     except Exception:
                         master_name = t("master_label", lang)
+                    dt_local = None
+                    date_txt = "—"
                     try:
                         starts_at = booking.starts_at
                         dt_local = starts_at.astimezone(local_tz) if (starts_at is not None) else starts_at
                         time_txt = f"{dt_local:%H:%M}"
+                        date_txt = f"{dt_local:%d.%m}"
                     except Exception:
                         time_txt = "--:--"
 
                     try:
                         now_local = local_now()
                         starts_date = dt_local.date() if dt_local is not None else None
+                        now_date = now_local.date()
+                        days_diff = (starts_date - now_date).days if starts_date else None
                         tomorrow_date = (now_local + timedelta(days=1)).date()
                     except Exception:
                         starts_date = None
                         tomorrow_date = None
+                        days_diff = None
 
                     # Pick body/title depending on kind and lead
                     if kind == "same_day":
                         use_key = "reminder_same_day_body"
                         title_key = "reminder_same_day_title"
                     else:
-                        if starts_date is not None and starts_date == tomorrow_date:
+                        if days_diff is not None and days_diff >= 2:
+                            use_key = "reminder_future_body"
+                            title_key = "reminder_24h_title"
+                        elif starts_date is not None and starts_date == tomorrow_date:
                             use_key = "reminder_24h_body"
                             title_key = "reminder_24h_title"
                         elif abs(int(minutes) - 60) <= 5:
@@ -154,7 +163,7 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                         else:
                             body_template = t("reminder_same_day_body", lang)
 
-                    body = body_template.format(time=time_txt, service=service_name, master=master_name)
+                    body = body_template.format(time=time_txt, service=service_name, master=master_name, date=date_txt)
                     text = f"<b>{title}</b>\n\n{body}"
 
                     ok = await _safe_send(bot, chat_id, text)
