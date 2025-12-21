@@ -54,6 +54,7 @@ bot/app/logs/
 # Env files
 .env
 .env.*
+!.env.example
 
 # Pytest / mypy / ruff caches
 .pytest_cache/
