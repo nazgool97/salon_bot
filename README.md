@@ -1,151 +1,78 @@
 # Telegram Salon Booking Bot (Open Core)
 
-A self-hosted Telegram booking system for beauty salons and small service businesses.
+Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean Architecture. Clients self-book, masters manage schedules, owners get analytics — all inside Telegram. Open-core; commercial edition adds support and updates.
 
-Clients book appointments, masters manage schedules, and owners see analytics — all inside Telegram.
+👉 Commercial edition: https://ko-fi.com/s/937c0881d1
 
-This repository contains the open-core version of the project. The production-ready edition with support and updates is available separately.
+---
 
-👉 Get the full version: https://ko-fi.com/s/937c0881d1
+## Screenshots / GIFs
+- Client booking flow (inline calendar, time picker) — _add gif_
+- Admin fast-lookup and analytics — _add gif_
 
-## What is Open Core here?
+## Tech Stack
+- Python 3.11+
+- Aiogram 3.x (FSM, Routers)
+- SQLAlchemy + Alembic (asyncpg)
+- PostgreSQL with advisory locks
+- Docker & Docker Compose
+- Pydantic for config/validation
+- Structured logging
 
-This repository provides:
+## Key Features
+- Clean Architecture & DDD-inspired layers (handlers, services, domain, repos, workers).
+- Concurrency-safe bookings via `pg_advisory_xact_lock` (no double bookings).
+- Smart scheduling: gap search, composite services, per-master durations, UTC-first with local render.
+- Professional FSM + navigation stack: real Back behavior with preserved context.
+- Payments & policies: holds during pay, cancellation/reschedule windows, Telegram Payments.
+- Roles: Owner/Admin, Master, Client with clear permissions.
+- Analytics: LTV, retention, no-show rate, revenue (real vs expected), CSV export.
+- Background workers: reminders, hold cleanup, payment reconcile, notifications.
 
-- the core booking logic
-- Telegram bot architecture
-- database schema & migrations
-- Docker-based setup
-
-The commercial version includes:
-
-- guided setup
-- long-term support
-- stable updates
-- production usage license
-
-This approach keeps the project transparent while allowing sustainable development.
-
-## What problem does it solve?
-
-Many salons still manage bookings using:
-
-- Telegram chats
-- spreadsheets
-- manual confirmations
-
-This leads to:
-
-- missed messages
-- double bookings
-- extra admin work
-
-This bot automates the booking flow while staying simple and human-friendly.
-
-## Who is this for?
-
-Designed for:
-
-- Beauty salons
-- Barbershops
-- Solo masters
-- Small local service businesses
-
-A good fit if you:
-
-- already communicate with clients via Telegram
-- want to reduce manual work
-- prefer self-hosted tools
-- don’t want subscriptions or SaaS platforms
-
-## How it works
-
-**Clients**
-
-1) Choose service
-2) Choose master
-3) Pick date & time
-4) Confirm booking
-
-**Masters**
-
-- View personal schedule
-- See upcoming appointments
-- Manage availability
-
-**Owner / Admin**
-
-- Full booking overview
-- Manage services and masters
-- Basic analytics and stats
-
-Everything works directly inside Telegram.
-
-## Features
-
-- Telegram-native UX
-- Client self-booking
-- Multi-master support
-- Admin panel
-- Analytics overview
-- Docker-based deployment
-- PostgreSQL database
-- Self-hosted (you own your data)
-
-## Project structure
-
-```
-bot/
-├── app/
-│   ├── core        # DB, logging, notifications
-│   ├── domain      # Business models
-│   ├── services    # Booking logic
-│   ├── telegram    # Handlers & keyboards
-│   └── workers     # Reminders & background jobs
-├── migrations      # Alembic migrations
-docker-compose.yml
-Dockerfile
-```
-
-The codebase is structured for clarity and long-term maintenance.
-
-## Running locally (for evaluation)
+## Quick Start (2 minutes)
 
 ```bash
+# 1) Clone
+git clone https://github.com/your/repo.git
+cd repo
+
+# 2) Configure
 cp .env.example .env
-docker compose up -d
+
+# 3) Run
+docker-compose up -d
 ```
 
-This setup is intended for evaluation and development.
+Then talk to the bot with your token; edit `.env` for timezone, currency, policies, payment keys.
 
-For production use, please refer to the commercial edition.
+## Editions
 
-## License & usage
+| Capability | Community (Open Core) | Commercial |
+| --- | --- | --- |
+| Booking engine, FSM, navigation | ✅ | ✅ |
+| Admin/Master/Client roles | ✅ | ✅ |
+| Analytics (LTV, retention, no-show, revenue) | ✅ | ✅ |
+| Payments & holds | ✅ | ✅ |
+| Docker + Alembic + PostgreSQL | ✅ | ✅ |
+| Support & updates | — | ✅ |
+| Production license | — | ✅ |
 
-This repository is provided under an open-core model. You are free to:
+## Documentation
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Deployment: [docs/DEPLOY.md](docs/DEPLOY.md)
+- Developer Manual (deep dive): [docs/DEVELOPER_MANUAL.md](docs/DEVELOPER_MANUAL.md)
 
-- explore the code
-- run it locally
-- learn from the architecture
+## Roadmap (short)
+- More payment providers and split payments.
+- Multi-location policies.
+- Advanced cohort analytics and churn signals.
+- Inventory tracking for consumables.
 
-Commercial and production usage requires a paid license. Support, updates, and long-term maintenance are included in the paid version.
+## License & Support
+- Open-core: free to explore, run locally, and learn.
+- Commercial edition: production license, guided setup, updates, and support.
+- Contact via the commercial link above for upgrades.
 
-## Support
+---
 
-Friendly support is available with the commercial edition:
-
-- help with setup
-- usage questions
-- updates and fixes
-
-Custom development and feature requests are not included.
-
-## Philosophy
-
-I build tools for real businesses.
-
-- No overengineering.
-- No unnecessary complexity.
-- Just practical automation that saves time and reduces stress.
-
-If your business already lives in Telegram — this bot was built for you.
+Built to be readable, testable, and safe under load: Clean Architecture, advisory locks, UTC everywhere, Alembic migrations, workers, and structured logging out of the box.
