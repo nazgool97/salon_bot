@@ -47,6 +47,8 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 - Pydantic for config/validation
 - Structured logging
 
+---
+
 ## Project Structure
 <details>
 <summary>📂 Project Structure</summary>
@@ -62,6 +64,7 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 │   └── migrations     # Alembic versions
 ├── docker             # Docker configs
 └── docs               # Documentation
+</details>
 
 ---
 
