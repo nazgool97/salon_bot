@@ -64,9 +64,8 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 │   └── migrations     # Alembic versions
 ├── docker             # Docker configs
 └── docs               # Documentation
+```
 </details>
-
----
 
 ## Key Features
 - Clean Architecture & DDD-inspired layers (handlers, services, domain, repos, workers).
