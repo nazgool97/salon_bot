@@ -4,7 +4,7 @@
 
 ```bash
 # 1) Clone
-git clone https://github.com/your/repo.git
+git clone https://github.com/nazgool97/salon_bot.git
 cd repo
 
 # 2) Configure
@@ -19,13 +19,19 @@ docker-compose up -d
 - Adjust `.env` for timezone, currency, policies, payment keys.
 
 ## Environment Configuration
-- `BOT_TOKEN`: Telegram bot token.
-- `DATABASE_URL`: postgres connection string.
-- `BUSINESS_TZ`: canonical timezone (e.g., Europe/Berlin).
-- `DEFAULT_CURRENCY`: e.g., EUR.
-- `PAYMENT_PROVIDER_KEY`: Telegram Payments provider key.
-- `CANCELLATION_LOCK_HOURS`: integer hours.
-- `HOLD_TIMEOUT_MINUTES`: integer minutes.
+
+- `BOT_TOKEN`: Main Telegram bot token issued by BotFather. Required for the bot to start.
+- `DATABASE_URL=postgresql+asyncpg://app_user:change_me@db:5432/booking_app`: Connection string for the database (PostgreSQL + asyncpg).
+- `SAME_DAY_LEAD_MINUTES`: Minimum lead time (minutes) for same-day booking.
+- `TELEGRAM_PAYMENT_PROVIDER_TOKEN`: Telegram payment provider token (issued via BotFather).
+- `ADMIN_IDS`: List of Telegram IDs of admins who receive notifications.
+- `DEFAULT_LANGUAGE`: Default interface language (e.g., uk, en).
+- `DEFAULT_CURRENCY`: Default currency for prices and payments.
+- `LOCAL_TIMEZONE`: Server timezone.
+- `BUSINESS_TIMEZONE=Europe/Kyiv`: Business timezone (salon), used for client-facing times.
+- `SETTINGS_CACHE_TTL_SECONDS`: Settings cache time-to-live in seconds.
+- `PAGINATION_PAGE_SIZE`: Number of items per page for pagination.
+
 
 ## Migrations
 - Alembic manages schema.

@@ -890,6 +890,7 @@ class MasterRepo:
                         Booking,
                         User,
                         Master.name.label("master_name"),
+                        Master.telegram_id.label("master_telegram_id"),
                         MasterClientNote.note.label("client_note"),
                         service_expr,
                     )
@@ -905,7 +906,7 @@ class MasterRepo:
                     .outerjoin(BookingItem, BookingItem.booking_id == Booking.id)
                     .outerjoin(Svc, Svc.id == BookingItem.service_id)
                     .where(Booking.id == booking_id)
-                    .group_by(Booking.id, User.id, Master.name, MasterClientNote.note)
+                    .group_by(Booking.id, User.id, Master.name, Master.telegram_id, MasterClientNote.note)
                 )
 
                 res = await session.execute(stmt)
@@ -916,8 +917,9 @@ class MasterRepo:
                 booking_obj = row[0]
                 client = row[1]
                 master_name = row[2]
-                client_note = row[3]
-                service_name = row[4] or ""
+                master_tid = row[3]
+                client_note = row[4]
+                service_name = row[5] or ""
 
                 # currency_expr is selected as the next column after service_name
                 # Currency is read from global configuration (env), not from
@@ -936,6 +938,7 @@ class MasterRepo:
                     "booking_id": getattr(booking_obj, "id", booking_id),
                     "service_name": service_name,
                     "master_name": master_name,
+                    "master_telegram_id": master_tid,
                     "price_cents": price_cents,
                     "currency": currency,
                     "starts_at": getattr(booking_obj, "starts_at", None),

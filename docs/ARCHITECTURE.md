@@ -18,6 +18,26 @@
 - Finite-state machines per flow with explicit transitions and guards.
 - Navigation stack retains view history so Back returns to prior context (filters, pagination).
 
+## System Architecture
+
+```mermaid
+graph TD
+    User((User)) -->|Update| H[Handlers / FSM]
+    H -->|Call| S[Services]
+    S -->|Validate| D[Domain Models]
+    S -->|Persist| R[Repositories]
+    R -->|SQL| DB[(PostgreSQL)]
+    
+    subgraph "Infrastructure"
+        DB
+        Redis[Redis / Memory]
+    end
+    
+    subgraph "Core Logic"
+        S
+        D
+    end
+
 ## Booking Engine
 - Gap search across working hours, breaks, existing bookings to find valid starts.
 - Composite services aggregate durations and require masters with matching skills.
