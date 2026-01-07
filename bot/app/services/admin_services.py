@@ -72,6 +72,24 @@ def validate_contact_address(value: str) -> tuple[str | None, str | None]:
         return None, "invalid_address"
 
 
+def validate_webapp_title(value: str) -> tuple[str | None, str | None]:
+    """Validate a short free-form WebApp title provided by admin.
+
+    Trim whitespace and enforce a reasonable length limit to avoid storing
+    excessively long values. Returns (cleaned, None) on success or
+    (None, "invalid_data") on failure.
+    """
+    try:
+        v = (value or "").strip()
+        if not v:
+            return None, "invalid_data"
+        if len(v) > 128:
+            return None, "invalid_data"
+        return v, None
+    except Exception:
+        return None, "invalid_data"
+
+
 DEFAULT_DAILY_SLOTS = get_env_int("DEFAULT_DAILY_SLOTS", 8)
 DEFAULT_CALENDAR_MAX_DAYS_AHEAD = get_env_int("CALENDAR_MAX_DAYS_AHEAD", 365)
 

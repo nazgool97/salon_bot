@@ -321,6 +321,10 @@ async def get_contact_info() -> dict[str, str]:
             address = await SettingsRepo.get_setting("contact_address", None)
         except Exception:
             address = None
+        try:
+            webapp_title = await SettingsRepo.get_setting("webapp_title", None)
+        except Exception:
+            webapp_title = None
     except Exception:
         # SettingsRepo not available or import failed; fall back to env below
         phone = instagram = address = None
@@ -329,11 +333,14 @@ async def get_contact_info() -> dict[str, str]:
     phone_val = (str(phone).strip() if phone is not None and str(phone).strip() else None) or _env_with_fallback("CONTACT_PHONE", "BUSINESS_PHONE", "+380671234567")
     instagram_val = (str(instagram).strip() if instagram is not None and str(instagram).strip() else None) or _env_with_fallback("CONTACT_INSTAGRAM", "BUSINESS_INSTAGRAM", "https://instagram.com/salon_name")
     address_val = (str(address).strip() if address is not None and str(address).strip() else None) or _env_with_fallback("CONTACT_ADDRESS", "BUSINESS_ADDRESS", "м. Київ, вул. Хрещатик, 1")
+    # WebApp title: admin-configured salon title shown in contacts header
+    title_val = (str(webapp_title).strip() if ("webapp_title" in locals() and webapp_title is not None and str(webapp_title).strip()) else None) or _env_with_fallback("WEBAPP_TITLE", "BUSINESS_NAME", "Telegram Mini App • Beauty")
 
     return {
         "phone": phone_val,
         "instagram": instagram_val,
         "address": address_val,
+        "title": title_val,
     }
 
 
@@ -387,6 +394,8 @@ _PAYMENTS_ENABLED: bool | None = None
 _PROVIDER_TOKEN_CACHE: str | None = None
 _PAYMENTS_LAST_CHECKED: datetime | None = None
 _PROVIDER_LAST_CHECKED: datetime | None = None
+_MINIAPP_ENABLED: bool | None = None
+_MINIAPP_LAST_CHECKED: datetime | None = None
 
 
 
@@ -465,6 +474,58 @@ async def toggle_telegram_payments() -> bool:
         _PAYMENTS_LAST_CHECKED = utc_now()
         os.environ["TELEGRAM_PAYMENTS_ENABLED"] = "1" if new_val else "0"
         logger.info("Telegram Payments toggled (env fallback): %s", new_val)
+        return bool(new_val)
+
+
+async def is_telegram_miniapp_enabled() -> bool:
+    """Check whether Telegram MiniApp booking is enabled using a shared store.
+
+    Priority:
+      1) DB-backed runtime settings via SettingsRepo
+      2) Environment fallback (TELEGRAM_MINIAPP_ENABLED)
+    """
+    global _MINIAPP_ENABLED, _MINIAPP_LAST_CHECKED
+    try:
+        from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+        if _MINIAPP_ENABLED is None or _settings_cache_expired(_MINIAPP_LAST_CHECKED):
+            try:
+                await load_settings_from_db()
+            except Exception:
+                pass
+            val = await SettingsRepo.get_setting("telegram_miniapp_enabled", None)
+            if val is None:
+                val = _env_bool("TELEGRAM_MINIAPP_ENABLED", True)
+            _MINIAPP_ENABLED = bool(val)
+            _MINIAPP_LAST_CHECKED = utc_now()
+            logger.debug("Telegram MiniApp (shared) refresh: %s", _MINIAPP_ENABLED)
+        return bool(_MINIAPP_ENABLED)
+    except Exception:
+        if _MINIAPP_ENABLED is None or _settings_cache_expired(_MINIAPP_LAST_CHECKED):
+            _MINIAPP_ENABLED = _env_bool("TELEGRAM_MINIAPP_ENABLED", True)
+            _MINIAPP_LAST_CHECKED = utc_now()
+        return bool(_MINIAPP_ENABLED)
+
+
+async def toggle_telegram_miniapp() -> bool:
+    """Toggle Telegram MiniApp booking using shared store (DB settings), with env fallback."""
+    global _MINIAPP_ENABLED, _MINIAPP_LAST_CHECKED
+    try:
+        new_val = not await is_telegram_miniapp_enabled()
+        from bot.app.services.admin_services import SettingsRepo
+        ok = await SettingsRepo.update_setting("telegram_miniapp_enabled", bool(new_val))
+        if not ok:
+            logger.warning("toggle_telegram_miniapp: DB persist failed; falling back to env only")
+        _MINIAPP_ENABLED = bool(new_val)
+        _MINIAPP_LAST_CHECKED = utc_now()
+        os.environ["TELEGRAM_MINIAPP_ENABLED"] = "1" if new_val else "0"
+        logger.info("Telegram MiniApp toggled (shared): %s", new_val)
+        return bool(new_val)
+    except Exception:
+        new_val = not await is_telegram_miniapp_enabled()
+        _MINIAPP_ENABLED = bool(new_val)
+        _MINIAPP_LAST_CHECKED = utc_now()
+        os.environ["TELEGRAM_MINIAPP_ENABLED"] = "1" if new_val else "0"
+        logger.info("Telegram MiniApp toggled (env fallback): %s", new_val)
         return bool(new_val)
 
 
@@ -1196,6 +1257,8 @@ async def translate_for_user(user_id: int, key: str, **kwargs: Any) -> str:
 __all__ = [
     "is_telegram_payments_enabled",
     "toggle_telegram_payments",
+    "is_telegram_miniapp_enabled",
+    "toggle_telegram_miniapp",
     "get_telegram_provider_token",
     "is_online_payments_available",
     "format_money_cents",

@@ -2718,5 +2718,3 @@ def render_schedule_table(schedule: dict | None, lang: str | None = None) -> str
             lines.append(f"{name}: {closed_lbl}")
     return "\n".join(lines)
 
-
-# Public facades are implemented as thin delegators to `MasterRepo`.

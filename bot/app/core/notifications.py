@@ -235,7 +235,12 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                     reply_kb = None
 
             try:
-                await bot.send_message(chat_id=rid_int, text=f"{title}\n\n{body}".strip(), reply_markup=reply_kb)
+                await bot.send_message(
+                    chat_id=rid_int,
+                    text=f"{title}\n\n{body}".strip(),
+                    reply_markup=reply_kb,
+                    parse_mode="HTML",
+                )
                 logger.info("send_booking_notification: sent to %s", rid_int)
             except Exception as se:
                 logger.warning("Failed to send notification to %s: %s", rid_int, se)

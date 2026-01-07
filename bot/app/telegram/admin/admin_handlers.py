@@ -82,6 +82,7 @@ from bot.app.services.admin_services import (
 from bot.app.core.constants import DEFAULT_PAGE_SIZE
 from bot.app.services.shared_services import (
     toggle_telegram_payments,
+    toggle_telegram_miniapp,
     format_money_cents,
     format_minutes_short,
     get_telegram_provider_token,
@@ -89,6 +90,7 @@ from bot.app.services.shared_services import (
     safe_user_id,
     get_local_tz,
     is_telegram_payments_enabled,
+    is_telegram_miniapp_enabled,
     format_user_display_name,
     local_now,
     get_env_int,
@@ -1420,8 +1422,9 @@ async def admin_settings_contacts(callback: CallbackQuery, state: FSMContext, lo
         address = await SettingsRepo.get_setting("contact_address", None)
         instagram = await SettingsRepo.get_setting("contact_instagram", None)
         phone = await SettingsRepo.get_setting("contact_phone", None)
+        webapp_title = await SettingsRepo.get_setting("webapp_title", None)
         from bot.app.telegram.admin.admin_keyboards import contacts_settings_kb
-        kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram)
+        kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title)
         if m := _shared_msg(callback):
             title = t("settings_category_contacts", lang)
             if not title or title == "settings_category_contacts":
@@ -1462,6 +1465,12 @@ EDITABLE_CONTACT_SETTINGS: dict[str, EditableSettingMeta] = {
         validator=validate_instagram_handle,
         invalid_key="invalid_instagram",
     ),
+    "webapp_title": EditableSettingMeta(
+        prompt_key="enter_webapp_title",
+        success_key="webapp_title_updated",
+        validator=admin_services.validate_webapp_title,
+        invalid_key="invalid_data",
+    ),
 }
 
 
@@ -1484,7 +1493,8 @@ async def _refresh_contacts_menu(message: Message, lang: str) -> None:
     phone = await SettingsRepo.get_setting("contact_phone", None)
     address = await SettingsRepo.get_setting("contact_address", None)
     instagram = await SettingsRepo.get_setting("contact_instagram", None)
-    kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram)
+    webapp_title = await SettingsRepo.get_setting("webapp_title", None)
+    kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title)
     title = t("settings_category_contacts", lang)
     if not title or title == "settings_category_contacts":
         title = tr("settings_category_contacts", lang=default_language())
@@ -1555,9 +1565,18 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
     """Business submenu: payments state, hold/cancel menus."""
     lang = locale
     try:
-        from bot.app.services.admin_services import SettingsRepo
+        from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+        # Refresh runtime settings from DB to avoid stale in-process cache
+        try:
+            await load_settings_from_db()
+        except Exception:
+            pass
         telegram_provider_token = await get_telegram_provider_token() or ""
-        payments_enabled = await is_telegram_payments_enabled()
+        # Read persisted flags directly from SettingsRepo to ensure latest value
+        try:
+            payments_enabled = bool(await SettingsRepo.get_setting("telegram_payments_enabled", False))
+        except Exception:
+            payments_enabled = await is_telegram_payments_enabled()
         hold_min = await SettingsRepo.get_reservation_hold_minutes()
         cancel_min = await SettingsRepo.get_client_cancel_lock_minutes()
         reschedule_min = await SettingsRepo.get_client_reschedule_lock_minutes()
@@ -1568,10 +1587,16 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         # Timezone is fixed from environment to avoid runtime drift between admins
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+        try:
+            mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
+        except Exception:
+            mini_now = await is_telegram_miniapp_enabled()
+
         kb = business_settings_kb(
             lang,
             telegram_provider_token=telegram_provider_token,
             payments_enabled=payments_enabled,
+            miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,
             reschedule_min=reschedule_min,
@@ -2932,6 +2957,7 @@ async def admin_settings(callback: CallbackQuery, state: FSMContext, locale: str
     try:
         token = (await get_telegram_provider_token()) or ""
         enabled = await is_telegram_payments_enabled()
+        mini_enabled = await is_telegram_miniapp_enabled()
         try:
             hold_min = int(await SettingsRepo.get_setting("reservation_hold_minutes", 10) or 10)
         except Exception:
@@ -2970,6 +2996,7 @@ async def admin_settings(callback: CallbackQuery, state: FSMContext, locale: str
         lang,
         telegram_provider_token=token,
         payments_enabled=enabled,
+        miniapp_enabled=mini_enabled,
         hold_min=hold_min,
         cancel_min=cancel_min,
         reschedule_min=reschedule_min,
@@ -3154,6 +3181,9 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
         hold_min = None
         cancel_min = None
         reschedule_min = None
+        reminder_min = None
+        same_day_min = None
+        mini_now = False
         try:
             hold_min = await SettingsRepo.get_reservation_hold_minutes()
         except Exception as e:
@@ -3167,6 +3197,18 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
         except Exception as e:
             logger.exception("admin_toggle_payments (refresh): get_client_reschedule_lock_minutes failed: %s", e)
         try:
+            reminder_min = await SettingsRepo.get_reminder_lead_minutes()
+        except Exception:
+            reminder_min = None
+        try:
+            same_day_min = await SettingsRepo.get_same_day_lead_minutes()
+        except Exception:
+            same_day_min = None
+        try:
+            mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
+        except Exception:
+            mini_now = False
+        try:
             expire_sec = await SettingsRepo.get_expire_check_seconds()
         except Exception:
             expire_sec = None
@@ -3174,9 +3216,12 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
             lang,
             telegram_provider_token=token_now,
             payments_enabled=payments_now,
+            miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,
             reschedule_min=reschedule_min,
+            reminder_min=reminder_min,
+            reminder_same_min=same_day_min,
             expire_sec=expire_sec,
         )
         msg = _shared_msg(callback)
@@ -3194,6 +3239,103 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
         await callback.answer(t("telegram_error", lang))
     except Exception as e:
         logger.exception("Неожиданная ошибка в admin_toggle_telegram_payments_handler: %s", e)
+
+
+
+@admin_router.callback_query(AdminMenuCB.filter(F.act == "toggle_telegram_miniapp"))
+async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+    """Toggle Telegram MiniApp booking feature flag from admin UI."""
+    user_id = callback.from_user.id
+    logger.info("Переключение Telegram MiniApp для пользователя %s", user_id)
+    lang = locale
+    try:
+        new_val = await toggle_telegram_miniapp()
+        status = t("enabled", lang) if new_val else t("disabled", lang)
+        logger.info("Админ %s переключил Telegram MiniApp на %s", user_id, status)
+        await callback.answer(t("miniapp_toggled", lang).format(status=status))
+
+        # Rebuild admin settings view to reflect new state
+        try:
+            token = (await get_telegram_provider_token()) or ""
+        except Exception:
+            token = ""
+        try:
+            payments_now = await is_telegram_payments_enabled()
+        except Exception:
+            payments_now = False
+        # Try to reload runtime settings from DB to reduce stale-cache races
+        # in this process. Then read the persisted flag as the single source
+        # of truth for rendering the keyboard. Fall back to `new_val` if
+        # DB read fails.
+        try:
+            from bot.app.services.admin_services import load_settings_from_db, SettingsRepo
+            try:
+                await load_settings_from_db()
+            except Exception:
+                # best-effort reload; ignore failures
+                pass
+            try:
+                mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
+            except Exception:
+                mini_now = bool(new_val)
+        except Exception:
+            mini_now = bool(new_val)
+
+        try:
+            hold_min = int(await SettingsRepo.get_setting("reservation_hold_minutes", 10) or 10)
+        except Exception:
+            hold_min = 10
+        try:
+            cancel_min = await SettingsRepo.get_client_cancel_lock_minutes()
+        except Exception:
+            cancel_min = 180
+        try:
+            reschedule_min = await SettingsRepo.get_client_reschedule_lock_minutes()
+        except Exception:
+            reschedule_min = 180
+        try:
+            expire_sec = int(await SettingsRepo.get_setting("reservation_expire_check_seconds", 30) or 30)
+        except Exception:
+            expire_sec = 30
+
+        hours_summary = await SettingsRepo.get_setting("working_hours_summary", None)
+        try:
+            reminder_min = await SettingsRepo.get_reminder_lead_minutes()
+        except Exception:
+            reminder_min = None
+        try:
+            reminder_same_min = await SettingsRepo.get_same_day_lead_minutes()
+        except Exception:
+            reminder_same_min = None
+
+        # Rebuild the Business settings keyboard (keep same ordering as Payments toggle)
+        from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+        kb = business_settings_kb(
+            lang,
+            telegram_provider_token=token,
+            payments_enabled=payments_now,
+            miniapp_enabled=mini_now,
+            hold_min=hold_min,
+            cancel_min=cancel_min,
+            reschedule_min=reschedule_min,
+            reminder_min=reminder_min,
+            reminder_same_min=reminder_same_min,
+            expire_sec=expire_sec,
+        )
+        msg = _shared_msg(callback)
+        title = t("settings_category_business", lang) or t("admin_menu_settings", lang)
+        if msg:
+            # Replace current settings screen to avoid adding duplicate nav entries
+            await nav_replace(state, title, kb, lang=lang)
+            await safe_edit(msg, title, reply_markup=kb)
+        else:
+            if callback.message:
+                await callback.message.answer(title, reply_markup=kb)
+    except TelegramAPIError as e:
+        logger.error("Ошибка Telegram API в admin_toggle_telegram_miniapp_handler: %s", e)
+        await callback.answer(t("telegram_error", lang))
+    except Exception as e:
+        logger.exception("Неожиданная ошибка в admin_toggle_telegram_miniapp_handler: %s", e)
 
 
 

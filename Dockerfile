@@ -11,10 +11,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# КОПИРУЕМ ВСЁ приложение
+# Копируем всё приложение
 COPY . .
 
-# Чтобы bot НОРМАЛЬНО импортировался
+# ВАЖНО: копируем собранный фронт в образ
+COPY webapp/dist /app/web
+
 ENV PYTHONPATH=/app
 
 CMD ["python", "-m", "bot.app.run_bot"]

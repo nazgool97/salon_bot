@@ -13,6 +13,7 @@ from bot.app.core.constants import BOT_TOKEN, LOG_LEVEL_NAME, RUN_BOOTSTRAP_ENAB
 from bot.app.core.notifications import notify_admins_bot_started
 from bot.app.core.db import get_session
 from bot.app.telegram.main_router import build_main_router
+from bot.app.telegram.common import webapp_entry
 from bot.app.workers.expiration import start_expiration_worker, start_cleanup_worker
 from bot.app.workers.reminders import start_reminders_worker
 from bot.app.domain.models import Master
@@ -110,6 +111,13 @@ async def main() -> None:
         logger.info("Main router included")
     except Exception as e:
         logger.error("Failed to include main router: %s", e)
+
+    # WebApp entry (Mini App launcher)
+    try:
+        dp.include_router(webapp_entry.router)
+        logger.info("WebApp entry router included")
+    except Exception as e:
+        logger.error("Failed to include webapp entry router: %s", e)
 
     # Ensure polling mode
     try:

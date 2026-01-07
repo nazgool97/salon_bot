@@ -311,8 +311,15 @@ def settings_categories_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
 
 
-def contacts_settings_kb(lang: str = "uk", *, phone: str | None = None, address: str | None = None, instagram: str | None = None) -> InlineKeyboardMarkup:
-    """Contacts settings: phone, address, Instagram."""
+def contacts_settings_kb(
+    lang: str = "uk",
+    *,
+    phone: str | None = None,
+    address: str | None = None,
+    instagram: str | None = None,
+    webapp_title: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Contacts settings: phone, address, Instagram and WebApp title."""
     kb = InlineKeyboardBuilder()
     if phone:
         kb.button(text=f"{tr('phone_label', lang=lang)}: {phone}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
@@ -326,8 +333,13 @@ def contacts_settings_kb(lang: str = "uk", *, phone: str | None = None, address:
         kb.button(text=f"{tr('instagram_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
     else:
         kb.button(text=f"{tr('instagram_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
+    # WebApp title (display current value or add prompt)
+    if webapp_title:
+        kb.button(text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'}: {webapp_title}", callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"))
+    else:
+        kb.button(text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"))
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
-    kb.adjust(1, 1, 1, 1)
+    kb.adjust(1, 1, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -336,6 +348,7 @@ def business_settings_kb(
     *,
     telegram_provider_token: str | None = None,
     payments_enabled: bool | None = None,
+    miniapp_enabled: bool | None = None,
     hold_min: int | None = None,
     cancel_min: int | None = None,
     reschedule_min: int | None = None,
@@ -355,6 +368,14 @@ def business_settings_kb(
             tr("payments_enabled_state", lang=lang) if enabled else tr("payments_disabled_state", lang=lang)
         )
     kb.button(text=state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_payments"))
+
+    # MiniApp toggle on business panel for parity with settings
+    try:
+        mini_enabled = bool(miniapp_enabled)
+    except NameError:
+        mini_enabled = False
+    mini_state_txt = tr("miniapp_enabled_state", lang=lang) if mini_enabled else tr("miniapp_disabled_state", lang=lang)
+    kb.button(text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp"))
 
     _hold = _coerce_int(hold_min, 10)
     kb.button(text=tr("hold_label", lang=lang).format(minutes=_hold), callback_data=pack_cb(AdminMenuCB, act="hold_menu"))
@@ -458,6 +479,7 @@ def admin_settings_kb(
     *,
     telegram_provider_token: str | None = None,
     payments_enabled: bool | None = None,
+    miniapp_enabled: bool | None = None,
     hold_min: int | None = None,
     cancel_min: int | None = None,
     reschedule_min: int | None = None,
@@ -504,6 +526,10 @@ def admin_settings_kb(
 
     # Reminder preview: same as business menu
     _rem2 = _coerce_int(reminder_min, 60)
+    # Telegram MiniApp booking toggle (UI mirrors Telegram Payments toggle)
+    mini_enabled = bool(miniapp_enabled)
+    mini_state_txt = tr("miniapp_enabled_state", lang=lang) if mini_enabled else tr("miniapp_disabled_state", lang=lang)
+    kb.button(text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp"))
     _rem_same2 = _coerce_int(reminder_same_min, 60)
     lead_display2 = format_minutes_short(_rem2, lang)
     if _rem_same2 is not None:
@@ -530,8 +556,9 @@ def admin_settings_kb(
 
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
 
-    # раскладываем кнопки по 2 в ряд
-    kb.adjust(2, 2, 2, 2, 2, 2, 1)
+    # Keep all settings stacked in a single column to avoid wrapping
+    # when toggle labels change length (one button per row).
+    kb.adjust(1)
 
     logger.debug("Меню настроек админ-панели сгенерировано")
     return kb.as_markup()

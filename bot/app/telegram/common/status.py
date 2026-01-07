@@ -3,6 +3,7 @@ import logging
 from typing import Any, Optional
 
 from bot.app.domain.models import BookingStatus
+from bot.app.translations import tr
 from bot.app.services.master_services import ensure_booking_owner as _svc_ensure_booking_owner
 
 logger = logging.getLogger(__name__)
@@ -17,35 +18,32 @@ __all__ = [
 
 
 status_label_map: dict[Any, str] = {
-    getattr(BookingStatus, "PAID", object()): "Оплачено",
-    getattr(BookingStatus, "PENDING_PAYMENT", object()): "Очікує оплати",
-    getattr(BookingStatus, "RESERVED", object()): "Зарезервовано",
-    getattr(BookingStatus, "CONFIRMED", object()): "Підтверджено",
-    # legacy 'awaiting_cash' removed; use PENDING_PAYMENT instead
-    getattr(BookingStatus, "CANCELLED", object()): "Скасовано",
-    getattr(BookingStatus, "DONE", object()): "Завершено",
-    getattr(BookingStatus, "NO_SHOW", object()): "Не з'явився",
-    # 'active' removed from BookingStatus (normalized enum); use other labels
+    getattr(BookingStatus, "PAID", object()): "status_paid",
+    getattr(BookingStatus, "PENDING_PAYMENT", object()): "status_pending_payment",
+    getattr(BookingStatus, "RESERVED", object()): "status_reserved",
+    getattr(BookingStatus, "CONFIRMED", object()): "status_confirmed",
+    getattr(BookingStatus, "CANCELLED", object()): "status_cancelled",
+    getattr(BookingStatus, "DONE", object()): "status_done",
+    getattr(BookingStatus, "NO_SHOW", object()): "status_no_show",
 }
 
 
-async def get_status_label(status: Any) -> str:
+async def get_status_label(status: Any, lang: str | None = None) -> str:
     """Return a localized label for a booking status.
 
-    Simplified: status labels are constant and stored in-memory in
-    ``status_label_map``. Avoid network calls (Redis) for such cheap lookups.
+    Uses translation keys so bot/TMA stay in sync. Falls back to raw string.
     """
     try:
         # Direct mapping by status object
         if status in status_label_map:
-            return status_label_map[status]
+            return tr(status_label_map[status], lang=lang)
 
         # Try by underlying value (e.g., Enum.value)
         sval = getattr(status, "value", None)
         if sval is not None:
             for k, v in status_label_map.items():
                 if getattr(k, "value", None) == sval:
-                    return v
+                    return tr(v, lang=lang)
 
         # Fallback to string representation
         return str(status)
