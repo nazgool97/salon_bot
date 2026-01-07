@@ -47,18 +47,20 @@ export type AvailableDaysResponse = {
   timezone?: string | null;
 };
 
+export type PaymentMethod = "cash" | "online";
+
 export type BookingRequest = {
-  master_id?: number | null; // optional for "any master"
-  service_ids: string[]; // Python expects List[str]
-  slot: string;          // ISO Format: YYYY-MM-DDTHH:mm:ss
-  payment_method?: "cash" | "online";
+  service_ids: string[]; // Pydantic: list[str], min_length=1
+  slot: string; // ISO datetime, required
+  master_id?: number | null;
+  payment_method?: PaymentMethod | null;
 };
 
 export type BookingResponse = {
   ok: boolean;
-  booking_id?: number;
-  status?: string;
-  starts_at?: string;
+  booking_id?: number | null;
+  status?: string | null;
+  starts_at?: string | null;
   cash_hold_expires_at?: string | null;
   original_price_cents?: number | null;
   final_price_cents?: number | null;
@@ -66,10 +68,11 @@ export type BookingResponse = {
   currency?: string | null;
   master_id?: number | null;
   master_name?: string | null;
-  payment_method?: "cash" | "online";
-  invoice_url?: string;
-   duration_minutes?: number;
-  error?: string;
+  payment_method?: PaymentMethod | null;
+  invoice_url?: string | null;
+  duration_minutes?: number | null;
+  text?: string | null;
+  error?: string | null;
 };
 
 export type BookingItem = {
@@ -88,12 +91,21 @@ export type BookingItem = {
   price_cents?: number | null; // Keep this line for backward compatibility
   price_formatted?: string | null;
   currency?: string | null;
-  payment_method?: "cash" | "online" | null;
+  payment_method?: PaymentMethod | null;
+};
+
+// Backend-aligned booking terminal statuses — keep in sync with API enums
+export const TERMINAL_STATUSES = ["done", "cancelled", "no_show"] as const;
+export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
+export const isTerminalStatus = (status?: string | null): status is TerminalStatus => {
+  if (!status) return false;
+  const normalized = status.toLowerCase().replace(/-/g, "_").trim();
+  return (TERMINAL_STATUSES as readonly string[]).includes(normalized);
 };
 
 export type PriceQuoteRequest = {
   service_ids: string[];
-  payment_method?: "cash" | "online";
+  payment_method?: PaymentMethod;
   master_id?: number | null;
 };
 

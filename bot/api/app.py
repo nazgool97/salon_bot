@@ -13,6 +13,7 @@ import logging
 import os
 import urllib.parse
 from datetime import UTC, datetime, timedelta
+from functools import wraps
 from typing import Any, Dict, Optional
 from enum import Enum
 
@@ -45,14 +46,20 @@ from bot.app.services.admin_services import ServiceRepo
 from bot.app.services.client_services import UserRepo
 from bot.app.services.master_services import MasterRepo
 from bot.app.services.client_services import (
+    BookingResult,
     BookingRepo,
-    cancel_client_booking,
     can_client_reschedule,
-    record_booking_rating,
     get_available_days_for_month,
     format_booking_details_text,
     get_local_tz,
     get_services_duration_and_price,
+    process_booking_hold,
+    process_booking_rating,
+    process_booking_cancellation,
+    process_booking_reschedule,
+    process_booking_finalization,
+    process_invoice_link,
+    process_booking_details,
 )
 from bot.app.services.shared_services import get_service_duration
 from bot.app.core.notifications import send_booking_notification
@@ -125,6 +132,52 @@ class BookingResponse(BaseModel):
     duration_minutes: Optional[int] = None
     text: Optional[str] = None
     error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Error handling helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_error_code(val: str | Exception | None, default: str) -> str:
+    """Return a safe error code for frontend without leaking exception text."""
+    if val is None:
+        return default
+    try:
+        code = str(val).strip().lower()
+    except Exception:
+        return default
+    if not code:
+        return default
+    if not all(ch.isalnum() or ch in {"_", "-"} for ch in code):
+        return default
+    return code[:64]
+
+
+def booking_error_handler(default_error: str):
+    """Decorator to de-duplicate try/except in booking endpoints.
+
+    - Passes through FastAPI `HTTPException` untouched.
+    - Converts business `ValueError` to a BookingResponse with the message.
+    - Logs unexpected exceptions and returns a unified error code.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except HTTPException:
+                raise
+            except ValueError as exc:
+                code = _normalize_error_code(exc, default_error)
+                return BookingResponse(ok=False, error=code)
+            except Exception as exc:  # noqa: BLE001 – catch-all is intentional for API boundary
+                logger.exception("%s failed: %s", func.__name__, exc)
+                return BookingResponse(ok=False, error=default_error)
+
+        return wrapper
+
+    return decorator
 
 
 class BookingItemOut(BaseModel):
@@ -521,7 +574,7 @@ async def get_slots(
         )
     except Exception as e:
         logger.exception("Ошибка при получении слотов для WebApp: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="slots_failed")
 
 
 @app.get("/api/check_slot")
@@ -592,6 +645,7 @@ async def available_days(
 
 
 @app.post("/api/hold", response_model=BookingResponse)
+@booking_error_handler("booking_failed")
 async def create_hold(
     payload: BookingRequest,
     principal: Principal = Depends(get_current_principal),
@@ -603,114 +657,31 @@ async def create_hold(
     the bot behaviour and allows the TMA to hold a slot while the user
     completes payment details.
     """
-    try:
-        # Ensure user exists
-        user = await UserRepo.get_by_id(principal.user_id)
-        if not user:
-            user = await UserRepo.get_or_create(
-                telegram_id=principal.telegram_id,
-                name=principal.first_name or principal.username,
-                username=principal.username,
-            )
-
-        # Resolve hold duration
-        try:
-            hold_minutes = int(await SettingsRepo.get_reservation_hold_minutes())
-        except Exception as exc:
-            logger.exception("Failed to read reservation hold minutes: %s", exc)
-            hold_minutes = 5
-
-        slot = payload.slot
-        # If client sent a naive datetime, interpret it in salon timezone
-        if slot.tzinfo is None:
-            try:
-                local_tz = get_local_tz() or UTC
-            except Exception as exc:
-                logger.exception("Failed to determine local timezone while creating hold: %s", exc)
-                local_tz = UTC
-            slot = slot.replace(tzinfo=local_tz).astimezone(UTC)
-        else:
-            slot = slot.astimezone(UTC)
-
-        master_id = payload.master_id
-        try:
-            if master_id is not None:
-                master_id = int(master_id)
-                if master_id < 0:
-                    master_id = None
-        except Exception as exc:
-            logger.exception("Invalid master_id value %s: %s", master_id, exc)
-            master_id = None
-
-        # Compute price breakdown on server so TMA displays authoritative values.
-        # Discount should apply only for online payments. Respect optional payload.payment_method.
-        try:
-            base_totals = await get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=master_id)
-            base_price = int(base_totals.get("total_price_cents") or 0)
-            currency = str(base_totals.get("currency") or "UAH")
-            # If client requested online pricing (payment_method == 'online') compute online totals
-            final_price = base_price
-            discount_amount = 0
-            try:
-                pm = getattr(payload, "payment_method", None) or "cash"
-            except Exception as exc:
-                logger.exception("Failed to read payment_method from payload: %s", exc)
-                pm = "cash"
-            if str(pm) == "online":
-                online_totals = await get_services_duration_and_price(payload.service_ids, online_payment=True, master_id=master_id)
-                final_price = int(online_totals.get("total_price_cents") or base_price)
-                currency = str(online_totals.get("currency") or currency)
-                discount_amount = base_price - final_price if base_price > final_price else 0
-        except Exception as exc:
-            logger.exception("Failed to compute pricing for services %s: %s", payload.service_ids, exc)
-            base_price = 0
-            final_price = 0
-            discount_amount = 0
-            currency = "UAH"
-
-        # Ensure master_id is present (safe-guard for type-checker) then create hold booking
-        if master_id is None:
-            return BookingResponse(ok=False, error="no_master_available")
-        m_id = int(master_id)
-
-        if len(payload.service_ids) == 1:
-            booking = await client_services.create_booking(
-                client_id=int(user.id),
-                master_id=m_id,
-                service_id=payload.service_ids[0],
-                slot=slot,
-                hold_minutes=hold_minutes,
-            )
-        else:
-            booking = await client_services.create_composite_booking(
-                client_id=int(user.id),
-                master_id=m_id,
-                service_ids=payload.service_ids,
-                slot=slot,
-                hold_minutes=hold_minutes,
-            )
-
-        booking_id = int(getattr(booking, "id", 0) or 0)
-        starts_at_val = getattr(booking, "starts_at", None)
-        cash_hold_expires = getattr(booking, "cash_hold_expires_at", None)
-        return BookingResponse(
-            ok=True,
-            booking_id=booking_id,
-            status=str(getattr(booking, "status", "")),
-            starts_at=starts_at_val.isoformat() if starts_at_val else None,
-            cash_hold_expires_at=cash_hold_expires.isoformat() if cash_hold_expires else None,
-            original_price_cents=base_price,
-            final_price_cents=final_price,
-            discount_amount_cents=discount_amount,
-            currency=currency,
-            duration_minutes=getattr(booking, "duration_minutes", None),
-        )
-    except ValueError as ve:
-        code = str(ve) or "booking_failed"
-        return BookingResponse(ok=False, error=code)
-    except Exception as exc:
-        logger.exception("create_hold failed: %s", exc)
-        return BookingResponse(ok=False, error="booking_failed")
+    res: BookingResult = await process_booking_hold(
+        principal.user_id,
+        principal.telegram_id,
+        payload.service_ids,
+        payload.slot,
+        master_id=payload.master_id,
+        payment_method=payload.payment_method,
+        client_name=principal.first_name or principal.username,
+        client_username=principal.username,
+    )
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        status=res.get("status"),
+        starts_at=res.get("starts_at"),
+        cash_hold_expires_at=res.get("cash_hold_expires_at"),
+        original_price_cents=res.get("original_price_cents"),
+        final_price_cents=res.get("final_price_cents"),
+        discount_amount_cents=res.get("discount_amount_cents"),
+        currency=res.get("currency"),
+        duration_minutes=res.get("duration_minutes"),
+        master_id=res.get("master_id"),
+        payment_method=res.get("payment_method"),
+        error=res.get("error"),
+    )
 
 
 @app.get("/api/services", response_model=list[ServiceOut])
@@ -1155,106 +1126,37 @@ async def list_bookings(
 
 
 @app.post("/api/cancel", response_model=BookingResponse)
+@booking_error_handler("cancel_failed")
 async def cancel_booking(payload: CancelRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    booking = await BookingRepo.ensure_owner(principal.user_id, payload.booking_id)
-    if not booking:
-        return BookingResponse(ok=False, error="booking_not_found")
-
-    status = normalize_booking_status(getattr(booking, "status", None))
-    if status in {BookingStatus.RESERVED, BookingStatus.PENDING_PAYMENT}:
-        deleted = await BookingRepo.delete_booking(payload.booking_id)
-        if deleted:
-            return BookingResponse(ok=True, booking_id=payload.booking_id, status=str(BookingStatus.CANCELLED.value))
-        return BookingResponse(ok=False, error="cancel_failed")
-
-    ok, code, _params = await cancel_client_booking(payload.booking_id, principal.telegram_id)
-    return BookingResponse(ok=ok, booking_id=payload.booking_id if ok else None, error=None if ok else code)
+    res: BookingResult = await process_booking_cancellation(principal.user_id, principal.telegram_id, payload.booking_id)
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        status=res.get("status"),
+        error=res.get("error"),
+    )
 
 
 @app.post("/api/reschedule", response_model=BookingResponse)
+@booking_error_handler("reschedule_failed")
 async def reschedule_booking(payload: RescheduleRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    # Permission check
-    can_res, code = await can_client_reschedule(payload.booking_id, principal.telegram_id)
-    if not can_res:
-        return BookingResponse(ok=False, error=code or "reschedule_not_allowed")
-
-    # Ownership check
-    b = await BookingRepo.ensure_owner(principal.user_id, payload.booking_id)
-    if not b:
-        return BookingResponse(ok=False, error="booking_not_found")
-
-    slot = payload.new_slot
-    # Interpret incoming naive datetimes in salon local timezone, then convert to UTC
-    if slot.tzinfo is None:
-        try:
-            local_tz = get_local_tz() or UTC
-        except Exception as exc:
-            logger.exception("Failed to determine local timezone for reschedule: %s", exc)
-            local_tz = UTC
-        slot = slot.replace(tzinfo=local_tz).astimezone(UTC)
-    else:
-        slot = slot.astimezone(UTC)
-
-    ok = await BookingRepo.reschedule(payload.booking_id, slot)
-    # Send notifications on successful reschedule: inform master + admins,
-    # and also send a confirmation message to the client to preserve chat history.
-    if ok:
-        try:
-            recipients: list[int] = []
-            try:
-                master_rec = getattr(await BookingRepo.ensure_owner(principal.user_id, payload.booking_id), "master_id", None)
-            except Exception as exc:
-                logger.exception("Failed to resolve master for booking %s: %s", payload.booking_id, exc)
-                master_rec = None
-            if master_rec is not None:
-                try:
-                    recipients.append(int(master_rec))
-                except Exception as exc:
-                    logger.exception("Invalid master id %s in recipients for booking %s: %s", master_rec, payload.booking_id, exc)
-            try:
-                recipients.extend(get_admin_ids())
-            except Exception as exc:
-                logger.exception("Failed to fetch admin ids for notifications: %s", exc)
-
-            if recipients:
-                bot = Bot(BOT_TOKEN)
-                # Event type for client-initiated reschedule
-                try:
-                    await send_booking_notification(bot, payload.booking_id, "rescheduled_by_client", recipients)
-                except Exception:
-                    logger.exception("reschedule: send_booking_notification failed for %s", payload.booking_id)
-
-                # Best-effort: also send a confirmation message to the client to preserve chat history
-                try:
-                    from bot.app.services.client_services import build_booking_details
-                    from bot.app.services.shared_services import format_booking_details_text, safe_get_locale
-                except Exception as exc:
-                    logger.exception("Failed to import booking detail builders for notification: %s", exc)
-                    build_booking_details = None
-
-                if build_booking_details is not None:
-                    try:
-                        user = await UserRepo.get_by_id(principal.user_id)
-                        lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
-                        bd = await build_booking_details(await BookingRepo.ensure_owner(principal.user_id, payload.booking_id), user_id=principal.telegram_id, lang=lang)
-                        body = format_booking_details_text(bd, lang=lang)
-                        try:
-                            await bot.send_message(chat_id=principal.telegram_id, text=body, parse_mode="HTML")
-                        except Exception as exc:
-                            logger.exception("Failed to send confirmation message to client %s: %s", principal.telegram_id, exc)
-                    except Exception as exc:
-                        logger.exception("Failed to build or send booking details confirmation for booking %s: %s", payload.booking_id, exc)
-                try:
-                    await bot.session.close()
-                except Exception as exc:
-                    logger.exception("Failed to close bot session after reschedule notification: %s", exc)
-        except Exception:
-            logger.exception("reschedule: notification block failed for %s", payload.booking_id)
-
-    return BookingResponse(ok=ok, booking_id=payload.booking_id if ok else None, error=None if ok else "reschedule_failed")
+    res: BookingResult = await process_booking_reschedule(
+        principal.user_id,
+        principal.telegram_id,
+        payload.booking_id,
+        payload.new_slot,
+        language=principal.language,
+    )
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        status=res.get("status"),
+        error=res.get("error"),
+    )
 
 
 @app.post("/api/book", response_model=BookingResponse)
+@booking_error_handler("booking_failed")
 async def create_booking(
     payload: BookingRequest,
     principal: Principal = Depends(get_current_principal),
@@ -1295,130 +1197,124 @@ async def create_booking(
         logger.exception("Invalid master_id provided for booking: %s", exc)
         return BookingResponse(ok=False, error="master_required")
 
-    try:
-        totals = await client_services.get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=master_id)
-        total_duration_minutes = int(totals.get("total_minutes") or 0)
-        if total_duration_minutes <= 0:
-            total_duration_minutes = 60 * max(1, len(payload.service_ids))
+    totals = await client_services.get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=master_id)
+    total_duration_minutes = int(totals.get("total_minutes") or 0)
+    if total_duration_minutes <= 0:
+        total_duration_minutes = 60 * max(1, len(payload.service_ids))
 
-        if len(payload.service_ids) == 1:
-            booking = await client_services.create_booking(
-                client_id=int(user.id),
-                master_id=master_id,
-                service_id=payload.service_ids[0],
-                slot=slot,
-                hold_minutes=None,
-            )
-        else:
-            booking = await client_services.create_composite_booking(
-                client_id=int(user.id),
-                master_id=master_id,
-                service_ids=payload.service_ids,
-                slot=slot,
-                hold_minutes=None,
-            )
-        booking_id = int(getattr(booking, "id", 0) or 0)
-        starts_at_val = getattr(booking, "starts_at", None)
-        status_val = str(getattr(booking, "status", ""))
-
-        # Align web flow with bot inline flow:
-        # - online: move to pending_payment to block slot and await provider payment
-        # - cash: confirm immediately if slot still valid
-        invoice_url: str | None = None
-        if payment_method == "online":
-            # Требование: онлайн сразу в статус paid
-            ok_paid, reason = await BookingRepo.mark_paid(booking_id)
-            if ok_paid:
-                status_val = "paid"
-            else:
-                return BookingResponse(ok=False, error=reason or "booking_failed")
-        else:  # cash
-            ok_cash, reason = await BookingRepo.confirm_cash(booking_id)
-            if ok_cash:
-                status_val = "confirmed"
-            else:
-                return BookingResponse(ok=False, error=reason or "booking_failed")
-
-        # Notify admins + master (if present) about the new booking
-        try:
-            recipients: list[int] = []
-            master_rec = getattr(booking, "master_id", None)
-            if master_rec is not None:
-                try:
-                    recipients.append(int(master_rec))
-                except Exception as exc:
-                    logger.exception("Invalid master id %s in recipients for booking %s: %s", master_rec, booking_id, exc)
-            try:
-                recipients.extend(get_admin_ids())
-            except Exception as exc:
-                logger.exception("Failed to fetch admin ids for notifications: %s", exc)
-            if recipients:
-                bot = Bot(BOT_TOKEN)
-                event = "paid" if payment_method == "online" else "cash_confirmed"
-
-                # Send notifications to admins/masters (use centralized helper)
-                try:
-                    await send_booking_notification(bot, booking_id, event, recipients)
-                except Exception:
-                    logger.exception("booking notification failed for booking=%s", booking_id)
-
-                # Best-effort: also send a confirmation message to the client to preserve chat history
-                try:
-                    from bot.app.services.client_services import build_booking_details
-                    from bot.app.services.shared_services import format_booking_details_text, safe_get_locale
-                except Exception as exc:
-                    logger.exception("Failed to import booking detail builders for booking notification: %s", exc)
-                    build_booking_details = None
-
-                if build_booking_details is not None:
-                    try:
-                        lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
-                        bd = await build_booking_details(booking, user_id=principal.telegram_id, lang=lang)
-                        body = format_booking_details_text(bd, lang=lang)
-                        try:
-                            await bot.send_message(chat_id=principal.telegram_id, text=body, parse_mode="HTML")
-                        except Exception as exc:
-                            logger.exception("Failed to send booking confirmation to client %s: %s", principal.telegram_id, exc)
-                    except Exception:
-                        pass
-
-                try:
-                    await bot.session.close()
-                except Exception as exc:
-                    logger.exception("Failed to close bot session after booking notification: %s", exc)
-        except Exception:
-            logger.exception("booking notification block failed for booking=%s", booking_id)
-
-        try:
-            master_name_val = None
-            if master_id is not None:
-                master_name_val = await MasterRepo.get_master_name(master_id)
-            if not master_name_val:
-                master_obj = getattr(booking, "master", None)
-                master_name_val = getattr(master_obj, "name", None)
-        except Exception as exc:
-            logger.exception("Failed to resolve master name for booking %s: %s", booking_id, exc)
-            master_name_val = None
-
-        return BookingResponse(
-            ok=True,
-            booking_id=booking_id,
-            status=status_val,
-            starts_at=starts_at_val.isoformat() if starts_at_val else None,
+    if len(payload.service_ids) == 1:
+        booking = await client_services.create_booking(
+            client_id=int(user.id),
             master_id=master_id,
-            master_name=master_name_val,
-            payment_method=payment_method,
-            invoice_url=invoice_url,
-            duration_minutes=total_duration_minutes,
+            service_id=payload.service_ids[0],
+            slot=slot,
+            hold_minutes=None,
         )
-    except HTTPException:
-        raise
+    else:
+        booking = await client_services.create_composite_booking(
+            client_id=int(user.id),
+            master_id=master_id,
+            service_ids=payload.service_ids,
+            slot=slot,
+            hold_minutes=None,
+        )
+    booking_id = int(getattr(booking, "id", 0) or 0)
+    starts_at_val = getattr(booking, "starts_at", None)
+    status_val = str(getattr(booking, "status", ""))
+
+    # Align web flow with bot inline flow:
+    # - online: move to pending_payment to block slot and await provider payment
+    # - cash: confirm immediately if slot still valid
+    invoice_url: str | None = None
+    if payment_method == "online":
+        ok_paid, reason = await BookingRepo.mark_paid(booking_id)
+        if ok_paid:
+            status_val = "paid"
+        else:
+            return BookingResponse(ok=False, error=reason or "booking_failed")
+    else:  # cash
+        ok_cash, reason = await BookingRepo.confirm_cash(booking_id)
+        if ok_cash:
+            status_val = "confirmed"
+        else:
+            return BookingResponse(ok=False, error=reason or "booking_failed")
+
+    # Notify admins + master (if present) about the new booking
+    try:
+        recipients: list[int] = []
+        master_rec = getattr(booking, "master_id", None)
+        if master_rec is not None:
+            try:
+                recipients.append(int(master_rec))
+            except Exception as exc:
+                logger.exception("Invalid master id %s in recipients for booking %s: %s", master_rec, booking_id, exc)
+        try:
+            recipients.extend(get_admin_ids())
+        except Exception as exc:
+            logger.exception("Failed to fetch admin ids for notifications: %s", exc)
+        if recipients:
+            bot = Bot(BOT_TOKEN)
+            event = "paid" if payment_method == "online" else "cash_confirmed"
+
+            # Send notifications to admins/masters (use centralized helper)
+            try:
+                await send_booking_notification(bot, booking_id, event, recipients)
+            except Exception:
+                logger.exception("booking notification failed for booking=%s", booking_id)
+
+            # Best-effort: also send a confirmation message to the client to preserve chat history
+            try:
+                from bot.app.services.client_services import build_booking_details
+                from bot.app.services.shared_services import format_booking_details_text, safe_get_locale
+            except Exception as exc:
+                logger.exception("Failed to import booking detail builders for booking notification: %s", exc)
+                build_booking_details = None
+
+            if build_booking_details is not None:
+                try:
+                    lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
+                    bd = await build_booking_details(booking, user_id=principal.telegram_id, lang=lang)
+                    body = format_booking_details_text(bd, lang=lang)
+                    try:
+                        await bot.send_message(chat_id=principal.telegram_id, text=body, parse_mode="HTML")
+                    except Exception as exc:
+                        logger.exception("Failed to send booking confirmation to client %s: %s", principal.telegram_id, exc)
+                except Exception:
+                    pass
+
+            try:
+                await bot.session.close()
+            except Exception as exc:
+                logger.exception("Failed to close bot session after booking notification: %s", exc)
+    except Exception:
+        logger.exception("booking notification block failed for booking=%s", booking_id)
+
+    try:
+        master_name_val = None
+        if master_id is not None:
+            master_name_val = await MasterRepo.get_master_name(master_id)
+        if not master_name_val:
+            master_obj = getattr(booking, "master", None)
+            master_name_val = getattr(master_obj, "name", None)
     except Exception as exc:
-        logger.exception("booking failed: %s", exc)
-        return BookingResponse(ok=False, error="booking_failed")
+        logger.exception("Failed to resolve master name for booking %s: %s", booking_id, exc)
+        master_name_val = None
+
+    return BookingResponse(
+        ok=True,
+        booking_id=booking_id,
+        status=status_val,
+        starts_at=starts_at_val.isoformat() if starts_at_val else None,
+        master_id=master_id,
+        master_name=master_name_val,
+        payment_method=payment_method,
+        invoice_url=invoice_url,
+        duration_minutes=total_duration_minutes,
+    )
 
 
 @app.post("/api/finalize", response_model=BookingResponse)
+@booking_error_handler("finalize_failed")
 async def finalize_booking(payload: dict, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
     """Finalize an existing draft booking created with a hold.
 
@@ -1427,222 +1323,58 @@ async def finalize_booking(payload: dict, principal: Principal = Depends(get_cur
     try:
         booking_id = int(payload.get("booking_id") or 0)
         payment_method = str(payload.get("payment_method") or "cash")
-    except Exception:
-        return BookingResponse(ok=False, error="invalid_payload")
-
-    try:
-        # Ensure owner
-        b = await BookingRepo.ensure_owner(principal.user_id, booking_id)
-        if not b:
-            return BookingResponse(ok=False, error="booking_not_found")
-
-        # Finalize booking: for online payments, create an invoice link and move booking
-        # into a pending payment state; for cash, confirm immediately.
-        if payment_method == "online":
-            # Transition booking to pending payment and extend hold window
-            pending_ok = await BookingRepo.set_pending_payment(booking_id)
-            if not pending_ok:
-                return BookingResponse(ok=False, error="finalize_failed")
-
-            # Determine amount (prefer final_price_cents then original_price_cents)
-            amt = getattr(b, "final_price_cents", None) or getattr(b, "original_price_cents", None)
-            try:
-                amount_cents = int(amt) if amt is not None else 0
-            except Exception:
-                amount_cents = 0
-
-            if amount_cents <= 0:
-                return BookingResponse(ok=False, error="invalid_amount")
-
-            # Build labeled price for Telegram
-            prices: list = []
-            try:
-                from aiogram.types import LabeledPrice
-
-                prices = [LabeledPrice(label=f"Booking #{booking_id}", amount=int(amount_cents))]
-            except Exception:
-                prices = []
-
-            currency = getattr(b, "currency", None) or "USD"
-            bot = Bot(BOT_TOKEN)
-            try:
-                provider_token = TELEGRAM_PROVIDER_TOKEN or None
-                link = await bot.create_invoice_link(
-                    title=f"Booking #{booking_id}",
-                    description=f"Payment for booking {booking_id}",
-                    payload=f"booking_{booking_id}",
-                    provider_token=provider_token,
-                    currency=str(currency).upper(),
-                    prices=prices,
-                )
-                invoice_url = str(link) if link is not None else None
-            except Exception:
-                logger.exception("create_invoice_link failed for booking=%s", booking_id)
-                try:
-                    await bot.session.close()
-                except Exception:
-                    pass
-                return BookingResponse(ok=False, error="invoice_failed")
-
-            try:
-                await bot.session.close()
-            except Exception:
-                pass
-
-            return BookingResponse(ok=True, booking_id=booking_id, status="pending_payment", invoice_url=invoice_url)
-
-        # Cash path
-        ok, err = await BookingRepo.confirm_cash(booking_id)
-        event = "cash_confirmed"
-        if not ok:
-            return BookingResponse(ok=False, error=err or "finalize_failed")
-
-        # Notify recipients (master + admins)
-        try:
-            recipients = []
-            master_rec = getattr(b, "master_id", None)
-            if master_rec is not None:
-                try:
-                    recipients.append(int(master_rec))
-                except Exception:
-                    pass
-            recipients.extend(get_admin_ids())
-            if recipients:
-                bot = Bot(BOT_TOKEN)
-                try:
-                    await send_booking_notification(bot, booking_id, event, recipients)
-                except Exception:
-                    logger.exception("finalize: notification failed for booking=%s", booking_id)
-
-                # best-effort: also send a confirmation message to the client to preserve chat history
-                try:
-                    from bot.app.services.client_services import build_booking_details
-                    from bot.app.services.shared_services import format_booking_details_text, safe_get_locale
-                except Exception:
-                    build_booking_details = None
-
-                if build_booking_details is not None:
-                    try:
-                        lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
-                        bd = await build_booking_details(b, user_id=principal.telegram_id, lang=lang)
-                        body = format_booking_details_text(bd, lang=lang)
-                        try:
-                            await bot.send_message(chat_id=principal.telegram_id, text=body, parse_mode="HTML")
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-
-                try:
-                    await bot.session.close()
-                except Exception:
-                    pass
-        except Exception:
-            logger.exception("finalize: notification block failed for booking=%s", booking_id)
-
-        starts_at = getattr(b, "starts_at", None)
-        return BookingResponse(ok=True, booking_id=booking_id, status=str(getattr(b, "status", "")), starts_at=starts_at.isoformat() if starts_at else None)
     except Exception as exc:
-        logger.exception("finalize booking failed: %s", exc)
-        return BookingResponse(ok=False, error="finalize_failed")
+        raise ValueError("invalid_payload") from exc
+
+    res: BookingResult = await process_booking_finalization(principal.user_id, principal.telegram_id, booking_id, payment_method)
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        status=res.get("status"),
+        starts_at=res.get("starts_at"),
+        invoice_url=res.get("invoice_url"),
+        error=res.get("error"),
+    )
 
 
 @app.post("/api/create_invoice", response_model=BookingResponse)
+@booking_error_handler("invoice_failed")
 async def create_invoice(payload: InvoiceRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
     """Create a Telegram invoice link for an existing booking and return it to the WebApp.
 
     Frontend should call `webApp.openInvoice(invoice_url)` with the returned link.
     """
-    try:
-        booking_id = int(payload.booking_id or 0)
-        # Ensure ownership
-        b = await BookingRepo.ensure_owner(principal.user_id, booking_id)
-        if not b:
-            return BookingResponse(ok=False, error="booking_not_found")
-
-        # Determine amount (prefer final_price_cents then original_price_cents)
-        amt = getattr(b, "final_price_cents", None) or getattr(b, "original_price_cents", None)
-        try:
-            amount_cents = int(amt) if amt is not None else 0
-        except Exception:
-            amount_cents = 0
-        if amount_cents <= 0:
-            return BookingResponse(ok=False, error="invalid_amount")
-
-        # Build labeled price (Telegram expects amount in the smallest currency unit)
-        try:
-            from aiogram.types import LabeledPrice
-        except Exception:
-            LabeledPrice = None
-
-        prices = []
-        if LabeledPrice is not None:
-            try:
-                prices = [LabeledPrice(label=f"Booking #{booking_id}", amount=int(amount_cents))]
-            except Exception:
-                prices = []
-
-        # Currency: prefer booking.currency if present else default
-        currency = getattr(b, "currency", None) or "USD"
-
-        bot = Bot(BOT_TOKEN)
-        try:
-            # provider token must be configured via TELEGRAM_PROVIDER_TOKEN
-            provider_token = TELEGRAM_PROVIDER_TOKEN or None
-            # create invoice link via aiogram Bot helper
-            # Use payload that identifies booking origin so webhook handlers
-            # can correlate provider callbacks with internal bookings.
-            link = await bot.create_invoice_link(
-                title=f"Booking #{booking_id}",
-                description=f"Payment for booking {booking_id}",
-                payload=f"booking_{booking_id}",
-                provider_token=provider_token,
-                currency=str(currency).upper(),
-                prices=prices,
-            )
-            invoice_url = str(link) if link is not None else None
-        except Exception:
-            logger.exception("create_invoice_link failed for booking=%s", booking_id)
-            try:
-                await bot.session.close()
-            except Exception:
-                pass
-            return BookingResponse(ok=False, error="invoice_failed")
-
-        try:
-            await bot.session.close()
-        except Exception:
-            pass
-
-        return BookingResponse(ok=True, booking_id=booking_id, invoice_url=invoice_url)
-    except Exception as exc:
-        logger.exception("create_invoice failed: %s", exc)
-        return BookingResponse(ok=False, error="invoice_failed")
+    booking_id = int(payload.booking_id or 0)
+    res: BookingResult = await process_invoice_link(principal.user_id, booking_id)
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        invoice_url=res.get("invoice_url"),
+        error=res.get("error"),
+    )
 
 
 @app.get("/api/booking_details", response_model=BookingResponse)
+@booking_error_handler("details_failed")
 async def booking_details(booking_id: int, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    b = await BookingRepo.ensure_owner(principal.user_id, booking_id)
-    if not b:
-        return BookingResponse(ok=False, error="booking_not_found")
-    try:
-        text = format_booking_details_text(b, role="client")
-        return BookingResponse(ok=True, booking_id=booking_id, text=text)
-    except Exception as exc:
-        logger.exception("booking_details failed: %s", exc)
-        return BookingResponse(ok=False, error="details_failed")
+    res: BookingResult = await process_booking_details(principal.user_id, booking_id)
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        text=res.get("text"),
+        error=res.get("error"),
+    )
 
 
 @app.post("/api/rate", response_model=BookingResponse)
+@booking_error_handler("rating_failed")
 async def rate_booking(payload: RatingRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    b = await BookingRepo.ensure_owner(principal.user_id, payload.booking_id)
-    if not b:
-        return BookingResponse(ok=False, error="booking_not_found")
-    res = await record_booking_rating(payload.booking_id, payload.rating)
-    status = res.get("status") if isinstance(res, dict) else None
-    if status == "ok" or status is None:
-        return BookingResponse(ok=True, booking_id=payload.booking_id)
-    return BookingResponse(ok=False, booking_id=payload.booking_id, error=status or "rating_failed")
+    res: BookingResult = await process_booking_rating(principal.user_id, payload.booking_id, payload.rating)
+    return BookingResponse(
+        ok=bool(res.get("ok")),
+        booking_id=res.get("booking_id"),
+        error=res.get("error"),
+    )
 
 
 @app.get("/health")

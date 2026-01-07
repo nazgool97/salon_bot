@@ -1,22 +1,13 @@
 export const getDefaultLocalTimezone = (): string => {
-  try {
-    const win = window as any;
-    if (win && win.__SERVER_TZ) return String(win.__SERVER_TZ);
-    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (resolved) return resolved;
-  } catch (err) {
-    // ignore
-  }
-  return "UTC";
+  const win = window as any;
+  if (win && win.__SERVER_TZ) return String(win.__SERVER_TZ);
+  const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return resolved || "UTC";
 };
 
 export const getAppLocale = (): string => {
-  try {
-    const win = window as any;
-    if (win && win.__APP_LOCALE) return String(win.__APP_LOCALE);
-  } catch (err) {
-    // ignore
-  }
+  const win = window as any;
+  if (win && win.__APP_LOCALE) return String(win.__APP_LOCALE);
   return "ru-RU";
 };
 
@@ -24,18 +15,9 @@ export function formatInTimezone(iso: string | Date | number | null | undefined,
   if (!iso) return "";
   const tz = getDefaultLocalTimezone();
   const locale = getAppLocale();
-  let d: Date;
-  try {
-    d = typeof iso === "string" || typeof iso === "number" ? new Date(iso) : (iso as Date);
-  } catch (err) {
-    return String(iso);
-  }
+  const d = typeof iso === "string" || typeof iso === "number" ? new Date(iso) : (iso as Date);
   if (Number.isNaN(d.getTime())) return String(iso);
-  try {
-    return new Intl.DateTimeFormat(locale, { timeZone: tz, ...opts }).format(d);
-  } catch (err) {
-    return d.toLocaleString();
-  }
+  return new Intl.DateTimeFormat(locale, { timeZone: tz, ...opts }).format(d);
 }
 
 export const formatYMD = (year: number, month: number, day: number): string => `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -78,53 +60,33 @@ export const formatDateTimeLabel = (dateIso: string, timeStr: string): string =>
   if (!Number.isNaN(d.getTime())) {
     return formatInTimezone(d, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
   }
-  if (dateIso && timeStr) return `${dateIso} ${timeStr}`;
-  return dateIso || timeStr || "";
+  return dateIso && timeStr ? `${dateIso} ${timeStr}` : dateIso || timeStr || "";
 };
 
 export const friendlyDateTime = (iso?: string | null): string => {
   if (!iso) return "";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso as string;
+  if (Number.isNaN(d.getTime())) return String(iso);
   return formatInTimezone(d, { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 };
 
-// Money formatting helpers (use app locale & global currency when available)
-export const getAppCurrency = (): string => {
-  try {
-    const win = window as any;
-    if (win && win.__APP_CURRENCY) return String(win.__APP_CURRENCY);
-  } catch (err) {
-    // ignore
-  }
-  return "UAH";
+export const formatDateTimeShort = (iso?: string | null): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return formatInTimezone(d, {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 };
 
-export const createMoneyFormatter = (currency?: string | null, maximumFractionDigits?: number) => {
-  const curr = currency || getAppCurrency();
-  const locale = getAppLocale();
-  try {
-    return new Intl.NumberFormat(locale, { style: "currency", currency: curr, maximumFractionDigits: maximumFractionDigits ?? 2 });
-  } catch (err) {
-    return { format: (n: number) => String(n) } as Intl.NumberFormat;
-  }
+export const formatDurationMinutes = (minutes: number | null | undefined, unit: string = "min"): string => {
+  if (minutes == null) return "";
+  const m = Number(minutes);
+  if (!Number.isFinite(m)) return "";
+  return `${m} ${unit}`;
 };
 
-export const formatMoneyFromCents = (cents: number | null | undefined, currency?: string | null, maximumFractionDigits?: number): string => {
-  if (cents == null) return "";
-  const num = Number(cents) / 100;
-  try {
-    return createMoneyFormatter(currency, maximumFractionDigits).format(num as number);
-  } catch (err) {
-    return String(num);
-  }
-};
-
-export const formatMoney = (amount: number | null | undefined, currency?: string | null, maximumFractionDigits?: number): string => {
-  if (amount == null) return "";
-  try {
-    return createMoneyFormatter(currency, maximumFractionDigits).format(amount as number);
-  } catch (err) {
-    return String(amount);
-  }
-};
+// Currency helpers were moved to lib/money.ts to keep timezone.ts single-purpose.

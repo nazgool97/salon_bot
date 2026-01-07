@@ -23,7 +23,8 @@ import {
   fetchBookings,
 } from "../../api/booking";
 import { checkSlot } from "../../api/booking";
-import { formatDateTimeLabel, friendlyDate, friendlyTime, formatYMD, normalizeSlotString, formatMoneyFromCents } from "../../lib/timezone";
+import { formatDateTimeLabel, friendlyDate, friendlyTime, formatYMD, normalizeSlotString } from "../../lib/timezone";
+import { formatMoneyFromCents } from "../../lib/money";
 import { createHold, finalizeBooking, cancelBooking } from "../../api/booking";
 
 type Step = "SERVICE" | "MASTER" | "DATE" | "TIME" | "CONFIRM" | "SUCCESS";
@@ -35,6 +36,14 @@ type HoldDetails = {
   finalPriceCents: number | null;
   discountAmountCents: number | null;
   currency: string | null;
+};
+
+type BookingDraft = {
+  services: ServiceOut[];
+  master: MasterOut | null;
+  date: string;
+  time: string;
+  slot: string;
 };
 
 const steps: { id: Step; label: string; hint: string }[] = [
@@ -230,11 +239,9 @@ export default function BookingWizard() {
     } catch (err) {}
     prevStepRef.current = step;
   }, [step]);
-  const [selectedServices, setSelectedServices] = useState<ServiceOut[]>([]);
-  const [selectedMaster, setSelectedMaster] = useState<MasterOut | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string>(today);
-  const [selectedTime, setSelectedTime] = useState<string>(""); // display-friendly
-  const [selectedSlot, setSelectedSlot] = useState<string>(""); // raw ISO for API
+  const [bookingDraft, setBookingDraft] = useState<BookingDraft>({ services: [], master: null, date: today, time: "", slot: "" });
+  const updateDraft = useCallback((patch: Partial<BookingDraft>) => setBookingDraft((prev) => ({ ...prev, ...patch })), []);
+  const { services: selectedServices, master: selectedMaster, date: selectedDate, time: selectedTime, slot: selectedSlot } = bookingDraft;
   const [onlinePaymentsAvailable] = useState<boolean>(() => {
     try {
       const win: any = typeof window !== "undefined" ? window : {};
@@ -386,6 +393,7 @@ export default function BookingWizard() {
       const list = matched || [];
       return list;
     },
+    staleTime: 5 * 60 * 1000,
   });
 
   // Consume a one-time repeat-booking payload set by MyVisits when user clicks "Записаться снова".
@@ -413,13 +421,13 @@ export default function BookingWizard() {
 
       if (service_ids.length > 0) {
         const selected = services.filter((s) => service_ids.includes(s.id));
-        if (selected.length > 0) setSelectedServices(selected);
+        if (selected.length > 0) updateDraft({ services: selected });
       }
 
       if (typeof payload.master_id === "number") {
         const m = (masters || []).find((mm) => mm.id === payload.master_id) || null;
-        if (m) setSelectedMaster(m);
-        else setSelectedMaster({ id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut);
+        if (m) updateDraft({ master: m });
+        else updateDraft({ master: { id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut });
       }
 
       // Skip SERVICE/MASTER steps — jump to DATE so user picks date/time
@@ -432,7 +440,7 @@ export default function BookingWizard() {
     } catch (err) {
       // best-effort; ignore
     }
-  }, [services, masters]);
+  }, [services, masters, goToStep, updateDraft]);
 
   const applyReschedulePayload = useCallback((payload: any) => {
     if (!payload) return;
@@ -467,13 +475,13 @@ export default function BookingWizard() {
 
     if (service_ids.length > 0) {
       const selected = services.filter((s) => service_ids.includes(s.id));
-      if (selected.length > 0) setSelectedServices(selected);
+      if (selected.length > 0) updateDraft({ services: selected });
     }
 
     if (typeof payload.master_id === "number") {
       const m = (masters || []).find((mm) => mm.id === payload.master_id) || null;
-      if (m) setSelectedMaster(m);
-      else setSelectedMaster({ id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut);
+      if (m) updateDraft({ master: m });
+      else updateDraft({ master: { id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut });
     }
 
     if (payload.starts_at) {
@@ -481,14 +489,14 @@ export default function BookingWizard() {
         const d = new Date(payload.starts_at);
         if (!Number.isNaN(d.getTime())) {
           const iso = formatYMD(d.getFullYear(), d.getMonth() + 1, d.getDate());
-          setSelectedDate(iso);
+          setBookingDraft((prev) => ({ ...prev, date: iso, time: "", slot: "" }));
           setViewYearMonth({ year: d.getFullYear(), month: d.getMonth() + 1 });
         }
       } catch (err) {}
     }
 
     goToStep("DATE");
-  }, [services, masters, resetHold, goToStep]);
+  }, [services, masters, resetHold, goToStep, updateDraft]);
 
   // Consume a one-time reschedule payload (from MyVisits) to start reschedule flow
   useEffect(() => {
@@ -517,9 +525,9 @@ export default function BookingWizard() {
   useEffect(() => {
     if (!selectedMaster) return;
     if (masters && !masters.find((m) => m.id === selectedMaster.id)) {
-      setSelectedMaster(null);
+      updateDraft({ master: null });
     }
-  }, [masters, selectedMaster]);
+  }, [masters, selectedMaster, updateDraft]);
 
   // Prefer hold-provided pricing when present (authoritative server-side values)
   const displayCurrency = holdCurrency || priceQuote?.currency || DEFAULT_CURRENCY;
@@ -584,17 +592,17 @@ export default function BookingWizard() {
           setBookingId(data.booking_id);
         }
         if (data.master_id || data.master_name) {
-          setSelectedMaster((prev) => {
-            if (prev && data.master_id && prev.id === data.master_id) {
-              return { ...prev, name: data.master_name || prev.name } as MasterOut;
+          setBookingDraft((prev) => {
+            const current = prev.master;
+            let next = current;
+            if (current && data.master_id && current.id === data.master_id) {
+              next = { ...current, name: data.master_name || current.name } as MasterOut;
+            } else if (data.master_id) {
+              next = { id: data.master_id, name: data.master_name || current?.name || (t("master_default") as string) } as MasterOut;
+            } else if (data.master_name && current) {
+              next = { ...current, name: data.master_name } as MasterOut;
             }
-            if (data.master_id) {
-              return { id: data.master_id, name: data.master_name || prev?.name || (t("master_default") as string) } as MasterOut;
-            }
-            if (data.master_name && prev) {
-              return { ...prev, name: data.master_name } as MasterOut;
-            }
-            return prev;
+            return { ...prev, master: next };
           });
         }
         if (data.duration_minutes) {
@@ -604,9 +612,8 @@ export default function BookingWizard() {
           const d = new Date(data.starts_at);
           if (!Number.isNaN(d.getTime())) {
             const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            const timeLabel = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-            setSelectedDate(isoDate);
-            setSelectedTime(timeLabel);
+            const timeLabel = friendlyTime(data.starts_at, isoDate);
+            setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
           }
         }
           if (data.invoice_url) {
@@ -661,9 +668,8 @@ export default function BookingWizard() {
             const d = new Date(resp.starts_at);
             if (!Number.isNaN(d.getTime())) {
               const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-              const timeLabel = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-              setSelectedDate(isoDate);
-              setSelectedTime(timeLabel);
+              const timeLabel = friendlyTime(resp.starts_at, isoDate);
+              setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
             }
           } catch (err) {}
         }
@@ -732,17 +738,14 @@ export default function BookingWizard() {
 
   const handleContinueFromService = useCallback(() => {
     if (selectedServices.length === 0) return;
-    setSelectedMaster(null);
-    setSelectedDate(today);
-    setSelectedTime("");
-    setSelectedSlot("");
+    updateDraft({ master: null, date: today, time: "", slot: "" });
     setPaymentMethod("cash");
     setBookingId(null);
     setBookingDurationMinutes(null);
     goToStep("MASTER");
     // lightweight impact when user proceeds from service selection
     try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
-  }, [selectedServices, goToStep]);
+  }, [selectedServices, goToStep, updateDraft]);
 
   const goToTimeClearingHold = useCallback(async () => {
     if (holdBookingId) {
@@ -922,9 +925,8 @@ export default function BookingWizard() {
                           const d = new Date(resp.starts_at);
                           if (!Number.isNaN(d.getTime())) {
                             const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-                            const timeLabel = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-                            setSelectedDate(isoDate);
-                            setSelectedTime(timeLabel);
+                            const timeLabel = friendlyTime(resp.starts_at, isoDate);
+                            setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
                           }
                         }
                         resetHold();
@@ -1172,10 +1174,10 @@ export default function BookingWizard() {
   const closeProfile = () => setProfileMaster(null);
 
   const toggleService = useCallback((service: ServiceOut) => {
-    setSelectedServices((prev) => {
-      const exists = prev.find((p) => p.id === service.id);
-      if (exists) return prev.filter((p) => p.id !== service.id);
-      return [...prev, service];
+    setBookingDraft((prev) => {
+      const exists = prev.services.find((p) => p.id === service.id);
+      const services = exists ? prev.services.filter((p) => p.id !== service.id) : [...prev.services, service];
+      return { ...prev, services };
     });
     tg?.HapticFeedback?.impactOccurred?.("light");
   }, []);
@@ -1215,6 +1217,180 @@ export default function BookingWizard() {
     };
     if (step === "SUCCESS") ensurePaid();
   }, [step, bookingId, holdBookingId]);
+
+  const handleSlotCenterChange = useCallback((h: string, m: string) => {
+    updateDraft({ time: `${h}:${m}` });
+  }, [updateDraft]);
+
+  const handleSlotPick = useCallback(async (origSlot: string, display: string) => {
+    try {
+      if (!selectedMaster) {
+        setToast({ message: t("choose_master") as string, tone: "error" });
+        goToStep("MASTER");
+        return;
+      }
+
+      if (holdBookingId) {
+        try {
+          await cancelBooking(holdBookingId);
+        } catch (err) {}
+        resetHold();
+      }
+
+      const normalized = normalizeSlotString(origSlot, selectedDate);
+      const parsed = new Date(normalized);
+      const finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
+
+      if (isRescheduling && rescheduleBookingId) {
+        updateDraft({ slot: finalSlot, time: display });
+        goToStep("CONFIRM");
+        tg?.HapticFeedback?.impactOccurred?.("light");
+        return;
+      }
+
+      const payload = {
+        master_id: selectedMaster.id,
+        service_ids: selectedServiceIds,
+        slot: finalSlot,
+        payment_method: paymentMethod,
+      };
+      const resp = await createHold(payload as any);
+      if (resp && resp.ok && resp.booking_id) {
+        updateHold({
+          bookingId: resp.booking_id ?? null,
+          expiresAt: resp.cash_hold_expires_at ?? null,
+          originalPriceCents: resp.original_price_cents ?? null,
+          finalPriceCents: resp.final_price_cents ?? null,
+          discountAmountCents: resp.discount_amount_cents ?? null,
+          currency: resp.currency ?? null,
+        });
+          updateDraft({ slot: finalSlot, time: display });
+        goToStep("CONFIRM");
+        tg?.HapticFeedback?.impactOccurred?.("light");
+        setToast({ message: t("slot_reserved") as string, tone: "success" });
+      } else {
+        setToast({ message: resp?.error || (t("reserve_failed") as string), tone: "error" });
+        try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
+        refetchSlots();
+        goToTimeClearingHold();
+      }
+    } catch (err) {
+      console.warn("hold on pick failed", err);
+      setToast({ message: (t("reserve_failed") as string), tone: "error" });
+      refetchSlots();
+      goToTimeClearingHold();
+    }
+  }, [selectedMaster, holdBookingId, resetHold, selectedDate, isRescheduling, rescheduleBookingId, selectedServiceIds, paymentMethod, updateHold, goToStep, updateDraft, setToast, refetchSlots, goToTimeClearingHold]);
+
+  const handleMasterSelect = useCallback((m: MasterOut) => {
+    updateDraft({ master: m });
+    goToStep("DATE");
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  }, [goToStep, updateDraft]);
+
+  const handleProfileOpen = useCallback((m: MasterOut, anchorEl?: HTMLElement | null) => {
+    setProfileMaster({ master: m, anchorEl });
+  }, []);
+
+  const handleDateSelect = useCallback(async (iso: string) => {
+    updateDraft({ date: iso, time: "", slot: "" });
+    await goToTimeClearingHold();
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  }, [goToTimeClearingHold, updateDraft]);
+
+  const renderServiceSelection = () => (
+    <StepServiceSelect
+      services={services || []}
+      servicesLoading={servicesLoading}
+      serviceAvailability={serviceAvailability}
+      serviceRanges={serviceRanges}
+      selectedServices={selectedServices}
+      currencyCode={currencyCode}
+      onToggle={toggleService}
+    />
+  );
+
+  const renderMasterSelection = () => (
+    <StepMasterSelect
+      masters={masters || []}
+      mastersLoading={mastersLoading}
+      selectedMaster={selectedMaster}
+      onSelect={handleMasterSelect}
+      onOpenProfile={handleProfileOpen}
+    />
+  );
+
+  const renderTimeSelection = () => (
+    <StepTimeSelect
+      slotsLoading={slotsLoading}
+      slots={(slotsData as any)?.slots || []}
+      selectedSlot={selectedSlot}
+      selectedDate={selectedDate}
+      onCenterChange={handleSlotCenterChange}
+      onPick={handleSlotPick}
+    />
+  );
+
+  const stepContent = (() => {
+    switch (step) {
+      case "SERVICE":
+        return renderServiceSelection();
+      case "MASTER":
+        return renderMasterSelection();
+      case "DATE":
+        return (
+          <StepDateSelect
+            viewYearMonth={viewYearMonth}
+            availableDays={(availableDaysData as any)?.days || []}
+            selectedDate={selectedDate}
+            onPrev={() =>
+              setViewYearMonth((v) => {
+                const prev = new Date(v.year, v.month - 2, 1);
+                try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
+                return { year: prev.getFullYear(), month: prev.getMonth() + 1 };
+              })
+            }
+            onNext={() =>
+              setViewYearMonth((v) => {
+                const next = new Date(v.year, v.month, 1);
+                try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
+                return { year: next.getFullYear(), month: next.getMonth() + 1 };
+              })
+            }
+            onSelect={handleDateSelect}
+          />
+        );
+      case "TIME":
+        return renderTimeSelection();
+      case "CONFIRM":
+        return (
+          <StepConfirm
+            bookingId={bookingId}
+            holdBookingId={holdBookingId}
+            selectedServicesNames={selectedServicesNames}
+            selectedMaster={selectedMaster}
+            selectedDate={selectedDate}
+            selectedTime={selectedTime}
+            durationLabel={durationLabel}
+            isRescheduling={isRescheduling}
+            priceQuoteLoading={priceQuoteLoading}
+            finalPriceCents={finalPriceCents}
+            displayCurrency={displayCurrency}
+            discountAmountCents={discountAmountCents}
+            originalPriceCents={originalPriceCents}
+            holdExpiresAt={holdExpiresAt}
+            holdRemainingLabel={holdRemainingLabel}
+            onlinePaymentsAvailable={onlinePaymentsAvailable}
+            paymentMethod={paymentMethod}
+            setPaymentMethod={setPaymentMethod}
+            paymentStatus={paymentStatus}
+            paymentMessage={paymentMessage}
+          />
+        );
+      default:
+        return null;
+    }
+  })();
 
   if (step === "SUCCESS") {
     const successDate = formatDateTimeLabel(selectedDate, selectedTime);
@@ -1376,325 +1552,7 @@ export default function BookingWizard() {
                 transition={{ type: "spring", stiffness: 260, damping: 30, mass: 0.8 }}
                 className="tma-step-pane"
               >
-                {step === "SERVICE" && (
-                  <div className="tma-grid">
-                    {servicesLoading && <SkeletonGroup count={3} />}
-                    {(services || [])
-                      .filter((s) => serviceAvailability[s.id] !== false)
-                        .map((s) => {
-                        const r = serviceRanges[s.id];
-                        const minutesLabel = (t("minutes_short") as string) || "min";
-                        const durLabel = r
-                          ? r.min_duration && r.max_duration
-                            ? r.min_duration === r.max_duration
-                              ? `${r.min_duration} ${minutesLabel}`
-                              : `${r.min_duration}–${r.max_duration} ${minutesLabel}`
-                            : s.duration_minutes
-                            ? `${s.duration_minutes} ${minutesLabel}`
-                            : "—"
-                          : s.duration_minutes
-                          ? `${s.duration_minutes} ${minutesLabel}`
-                          : "—";
-
-                        const priceLabel = r && (r.min_price_cents != null || r.max_price_cents != null)
-                          ? (r.min_price_cents != null && r.max_price_cents != null
-                            ? (r.min_price_cents === r.max_price_cents
-                              ? formatMoneyFromCents(r.min_price_cents, currencyCode)
-                              : `${formatMoneyFromCents(r.min_price_cents, currencyCode)}–${formatMoneyFromCents(r.max_price_cents, currencyCode)}`)
-                            : (r.min_price_cents != null ? formatMoneyFromCents(r.min_price_cents, currencyCode) : "—"))
-                          : (s.price_cents != null ? formatMoneyFromCents(s.price_cents, currencyCode) : "—");
-
-                        return (
-                          <button
-                            key={s.id}
-                            className={`tma-tile ${selectedServices.some((sel) => sel.id === s.id) ? "active" : ""}`}
-                            onClick={() => toggleService(s)}
-                            type="button"
-                          >
-                            <div className="tma-tile-head">
-                              <input
-                                aria-label={`Выбрать услугу ${s.name}`}
-                                type="checkbox"
-                                className="tma-service-checkbox"
-                                checked={selectedServices.some((sel) => sel.id === s.id)}
-                                readOnly
-                                tabIndex={-1}
-                              />
-                            </div>
-                            <div className="tma-tile-body tma-tile-row">
-                              <div className="tma-tile-row-left">
-                                <h3>{s.name}</h3>
-                                {s.description && <p className="tma-subtle">{s.description}</p>}
-                              </div>
-                              <div className="tma-tile-row-right">
-                                <span className="tma-duration-inline">{durLabel}</span>
-                                <span className="tma-price-inline">{priceLabel}</span>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    {/* Floating continue bar removed: totals are shown in the MainButton */}
-                  </div>
-                )}
-
-                {step === "MASTER" && (
-                  <div className="tma-grid">
-                    {mastersLoading && <SkeletonGroup count={2} />}
-                    {masters?.length === 0 && !mastersLoading && <div className="tma-empty">{t("no_masters")}</div>}
-                    {masters?.map((m) => {
-                      return (
-                        <button
-                          key={m.id}
-                          className={`tma-tile tma-master-card ${selectedMaster?.id === m.id ? "active" : ""}`}
-                          onClick={() => {
-                            setSelectedMaster(m);
-                            goToStep("DATE");
-                            tg?.HapticFeedback?.impactOccurred?.("light");
-                          }}
-                          type="button"
-                        >
-                          <div className="tma-master-card__main">
-                            <div className="tma-avatar" aria-hidden="true" />
-                            <div className="tma-master-card__info">
-                              <div className="tma-master-name-badge" aria-hidden>{m.name}</div>
-                              <button
-                                type="button"
-                                className="tma-master-cta"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedMaster(m);
-                                  goToStep("DATE");
-                                  try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (err) {}
-                                }}
-                              >
-                                {t("book_with_master") || "Записатися"}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div
-                            className="tma-master-card__profile"
-                            role="button"
-                            tabIndex={0}
-                            aria-label={t("master_profile") || "Profile"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const el = e.currentTarget as HTMLElement;
-                              setProfileMaster({ master: m, anchorEl: el });
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                const el = e.currentTarget as HTMLElement;
-                                setProfileMaster({ master: m, anchorEl: el });
-                              }
-                            }}
-                          >
-                            <span className="tma-master-card__profile-label">{t("master_profile") || "Profile"}</span>
-                          </div>
-
-                          {/* selection indicator removed per design: no check / plus */}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {step === "DATE" && (
-                  <div className="tma-stack">
-                    <Calendar
-                      year={viewYearMonth.year}
-                      month={viewYearMonth.month}
-                      availableDays={(availableDaysData as any)?.days || []}
-                      selectedDate={selectedDate}
-                      onPrev={() =>
-                        setViewYearMonth((v) => {
-                          const prev = new Date(v.year, v.month - 2, 1);
-                          try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
-                          return { year: prev.getFullYear(), month: prev.getMonth() + 1 };
-                        })
-                      }
-                      onNext={() =>
-                        setViewYearMonth((v) => {
-                          const next = new Date(v.year, v.month, 1);
-                          try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
-                          return { year: next.getFullYear(), month: next.getMonth() + 1 };
-                        })
-                      }
-                      onSelect={async (iso) => {
-                        setSelectedDate(iso);
-                        setSelectedTime("");
-                        setSelectedSlot("");
-                        await goToTimeClearingHold();
-                        tg?.HapticFeedback?.impactOccurred?.("light");
-                      }}
-                    />
-                    <p className="tma-subtle">{t("unavailable_days_note") || "Unavailable days are disabled per bot data."}</p>
-                  </div>
-                )}
-
-                {step === "TIME" && (
-                  <div className="tma-stack">
-                    {slotsLoading && <SkeletonChips count={10} />}
-                    {!slotsLoading && ((slotsData as any)?.slots?.length || 0) === 0 && (
-                      <div className="tma-empty">{t("no_slots")}</div>
-                    )}
-                    {!slotsLoading && ((slotsData as any)?.slots?.length || 0) > 0 && (
-                      <TimeWheel
-                        slots={(slotsData as any)?.slots || []}
-                        selectedSlot={selectedSlot}
-                        selectedDate={selectedDate}
-                        onCenterChange={(h, m) => {
-                          setSelectedTime(`${h}:${m}`);
-                        }}
-                        onPick={async (origSlot, display) => {
-                          try {
-                            if (!selectedMaster) {
-                              setToast({ message: t("choose_master") as string, tone: "error" });
-                              goToStep("MASTER");
-                              return;
-                            }
-
-                            if (holdBookingId) {
-                              try {
-                                await cancelBooking(holdBookingId);
-                              } catch (err) {}
-                              resetHold();
-                            }
-
-                            const normalized = normalizeSlotString(origSlot, selectedDate);
-                            const parsed = new Date(normalized);
-                            const finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
-
-                            if (isRescheduling && rescheduleBookingId) {
-                              setSelectedSlot(finalSlot);
-                              setSelectedTime(display);
-                              goToStep("CONFIRM");
-                              tg?.HapticFeedback?.impactOccurred?.("light");
-                              return;
-                            }
-
-                            const payload = {
-                              master_id: selectedMaster.id,
-                              service_ids: selectedServiceIds,
-                              slot: finalSlot,
-                              payment_method: paymentMethod,
-                            };
-                            const resp = await createHold(payload as any);
-                            if (resp && resp.ok && resp.booking_id) {
-                              updateHold({
-                                bookingId: resp.booking_id ?? null,
-                                expiresAt: resp.cash_hold_expires_at ?? null,
-                                originalPriceCents: resp.original_price_cents ?? null,
-                                finalPriceCents: resp.final_price_cents ?? null,
-                                discountAmountCents: resp.discount_amount_cents ?? null,
-                                currency: resp.currency ?? null,
-                              });
-                              setSelectedSlot(finalSlot);
-                              setSelectedTime(display);
-                              goToStep("CONFIRM");
-                              tg?.HapticFeedback?.impactOccurred?.("light");
-                              setToast({ message: t("slot_reserved") as string, tone: "success" });
-                            } else {
-                              setToast({ message: resp?.error || (t("reserve_failed") as string), tone: "error" });
-                              try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
-                              refetchSlots();
-                              goToTimeClearingHold();
-                            }
-                          } catch (err) {
-                            console.warn("hold on pick failed", err);
-                            setToast({ message: (t("reserve_failed") as string), tone: "error" });
-                            refetchSlots();
-                            goToTimeClearingHold();
-                          }
-                        }}
-                      />
-                    )}
-                  </div>
-                )}
-
-                {step === "CONFIRM" && (
-                  <div className="tma-stack">
-                    <div className="tma-pay-card">
-                        <div className="tma-pay-row">
-                          <span>{t('tab_booking') as string}</span>
-                          <strong>{(bookingId ?? holdBookingId) ? `№${bookingId ?? holdBookingId}` : ""}</strong>
-                        </div>
-                      <div className="tma-pay-row"><span>{t("service_label")}</span> <strong>{selectedServicesNames || "—"}</strong></div>
-                      <div className="tma-pay-row"><span>{t("master_label")}</span> <strong>{selectedMaster?.name || "—"}</strong></div>
-                      <div className="tma-pay-row"><span>{t("date_label")}</span> <strong>{formatDateTimeLabel(selectedDate, selectedTime)}</strong></div>
-                      <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
-                      {isRescheduling ? (
-                        <div className="tma-pay-row">
-                          <span>{(t("reschedule_title") as string) || "Перенос записи"}</span>
-                          <strong>{(t("reschedule_free") as string) || "Оплата не требуется"}</strong>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="tma-pay-row">
-                            <span>{t("to_be_paid")}</span>
-                            <strong>{priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoneyFromCents(finalPriceCents, displayCurrency, 0) : "—"}</strong>
-                              {discountAmountCents != null && discountAmountCents > 0 && originalPriceCents != null && (
-                                <span className="tma-subtle tma-price-strike">
-                                  {formatMoneyFromCents(originalPriceCents, displayCurrency, 0)}
-                                </span>
-                              )}
-                          </div>
-                          {discountAmountCents != null && discountAmountCents > 0 && (
-                            <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(discountAmountCents, displayCurrency, 0)}</div>
-                          )}
-                          {holdExpiresAt && (
-                            <div className="tma-subtle tma-pay-countdown">{t("hold_countdown")} {holdRemainingLabel}</div>
-                          )}
-                        </>
-                      )}
-                    </div>
-
-                    {!isRescheduling && (
-                      <>
-                        <div className="tma-pay-method">
-                          <div className="tma-pay-label">{t("choose_payment_method") || "Choose a payment method"}</div>
-                          <div className="tma-pay-options">
-                            <button
-                              type="button"
-                              className={`tma-pay-option ${paymentMethod === "cash" ? "active" : ""}`}
-                              onClick={() => setPaymentMethod("cash")}
-                            >
-                              <span className="tma-pay-icon">💵</span>
-                              <div>
-                                <strong>{t("cash")}</strong>
-                                <div className="tma-subtle">{t("cash_sub")}</div>
-                              </div>
-                            </button>
-                            {onlinePaymentsAvailable && (
-                              <button
-                                type="button"
-                                className={`tma-pay-option ${paymentMethod === "online" ? "active" : ""}`}
-                                onClick={() => { setPaymentMethod("online"); try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {} }}
-                              >
-                                <span className="tma-pay-icon">💳</span>
-                                <div>
-                                  <strong>{t("online")}</strong>
-                                  <div className="tma-subtle">{t("online_sub")}</div>
-                                </div>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {paymentStatus !== "idle" && (
-                          <div className="tma-pay-status">
-                            <strong>{t("pay_label")}</strong>
-                            <p className="tma-subtle">{paymentMessage}</p>
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <p className="tma-subtle">{isRescheduling ? (t("reschedule_confirm_hint") as string) || (t("press_confirm") as string) : t("press_confirm")}</p>
-                  </div>
-                )}
+                {stepContent}
               </motion.div>
             </AnimatePresence>
           </div>
@@ -1707,7 +1565,7 @@ export default function BookingWizard() {
         profile={profileData || null}
         onClose={closeProfile}
         onBook={(m) => {
-          setSelectedMaster(m);
+          updateDraft({ master: m });
           goToStep("DATE");
           closeProfile();
           tg?.HapticFeedback?.impactOccurred?.("medium");
@@ -1715,15 +1573,6 @@ export default function BookingWizard() {
         anchorEl={profileMaster?.anchorEl}
       />
       <Toast message={toast?.message} tone={toast?.tone} onClose={() => setToast(null)} />
-    </div>
-  );
-}
-
-function SummaryRow({ label, value }: { label: string; value?: string }) {
-  return (
-    <div className="tma-summary-row">
-      <span className="tma-subtle">{label}</span>
-      <span>{value || "—"}</span>
     </div>
   );
 }
@@ -1828,6 +1677,316 @@ function Calendar({ year, month, availableDays, selectedDate, onPrev, onNext, on
 }
 
 
+type StepServiceSelectProps = {
+  services: ServiceOut[];
+  servicesLoading: boolean;
+  serviceAvailability: Record<string, boolean>;
+  serviceRanges: Record<string, { min_duration: number | null; max_duration: number | null; min_price_cents: number | null; max_price_cents: number | null }>;
+  selectedServices: ServiceOut[];
+  currencyCode: string;
+  onToggle: (s: ServiceOut) => void;
+};
+
+const StepServiceSelect = ({ services, servicesLoading, serviceAvailability, serviceRanges, selectedServices, currencyCode, onToggle }: StepServiceSelectProps) => {
+  return (
+    <div className="tma-grid">
+      {servicesLoading && <SkeletonGroup count={3} />}
+      {services
+        .filter((s) => serviceAvailability[s.id] !== false)
+        .map((s) => {
+          const r = serviceRanges[s.id];
+          const minutesLabel = (t("minutes_short") as string) || "min";
+          const durLabel = r
+            ? r.min_duration && r.max_duration
+              ? r.min_duration === r.max_duration
+                ? `${r.min_duration} ${minutesLabel}`
+                : `${r.min_duration}–${r.max_duration} ${minutesLabel}`
+              : s.duration_minutes
+              ? `${s.duration_minutes} ${minutesLabel}`
+              : "—"
+            : s.duration_minutes
+            ? `${s.duration_minutes} ${minutesLabel}`
+            : "—";
+
+          const priceLabel = r && (r.min_price_cents != null || r.max_price_cents != null)
+            ? (r.min_price_cents != null && r.max_price_cents != null
+              ? (r.min_price_cents === r.max_price_cents
+                ? formatMoneyFromCents(r.min_price_cents, currencyCode)
+                : `${formatMoneyFromCents(r.min_price_cents, currencyCode)}–${formatMoneyFromCents(r.max_price_cents, currencyCode)}`)
+              : (r.min_price_cents != null ? formatMoneyFromCents(r.min_price_cents, currencyCode) : "—"))
+            : (s.price_cents != null ? formatMoneyFromCents(s.price_cents, currencyCode) : "—");
+
+          const isSelected = selectedServices.some((sel) => sel.id === s.id);
+
+          return (
+            <button
+              key={s.id}
+              className={`tma-tile ${isSelected ? "active" : ""}`}
+              onClick={() => onToggle(s)}
+              type="button"
+            >
+              <div className="tma-tile-head">
+                <input
+                  aria-label={`Выбрать услугу ${s.name}`}
+                  type="checkbox"
+                  className="tma-service-checkbox"
+                  checked={isSelected}
+                  readOnly
+                  tabIndex={-1}
+                />
+              </div>
+              <div className="tma-tile-body tma-tile-row">
+                <div className="tma-tile-row-left">
+                  <h3>{s.name}</h3>
+                  {s.description && <p className="tma-subtle">{s.description}</p>}
+                </div>
+                <div className="tma-tile-row-right">
+                  <span className="tma-duration-inline">{durLabel}</span>
+                  <span className="tma-price-inline">{priceLabel}</span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+    </div>
+  );
+};
+
+type StepMasterSelectProps = {
+  masters: MasterOut[];
+  mastersLoading: boolean;
+  selectedMaster: MasterOut | null;
+  onSelect: (m: MasterOut) => void;
+  onOpenProfile: (m: MasterOut, anchorEl?: HTMLElement | null) => void;
+};
+
+const StepMasterSelect = ({ masters, mastersLoading, selectedMaster, onSelect, onOpenProfile }: StepMasterSelectProps) => (
+  <div className="tma-grid">
+    {mastersLoading && <SkeletonGroup count={2} />}
+    {masters.length === 0 && !mastersLoading && <div className="tma-empty">{t("no_masters")}</div>}
+    {masters.map((m) => (
+      <button
+        key={m.id}
+        className={`tma-tile tma-master-card ${selectedMaster?.id === m.id ? "active" : ""}`}
+        onClick={() => onSelect(m)}
+        type="button"
+      >
+        <div className="tma-master-card__main">
+          <div className="tma-avatar" aria-hidden="true" />
+          <div className="tma-master-card__info">
+            <div className="tma-master-name-badge" aria-hidden>{m.name}</div>
+            <button
+              type="button"
+              className="tma-master-cta"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(m);
+              }}
+            >
+              {t("book_with_master") || "Записатися"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          className="tma-master-card__profile"
+          role="button"
+          tabIndex={0}
+          aria-label={t("master_profile") || "Profile"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenProfile(m, e.currentTarget as HTMLElement);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpenProfile(m, e.currentTarget as HTMLElement);
+            }
+          }}
+        >
+          <span className="tma-master-card__profile-label">{t("master_profile") || "Profile"}</span>
+        </div>
+      </button>
+    ))}
+  </div>
+);
+
+type StepDateSelectProps = {
+  viewYearMonth: { year: number; month: number };
+  availableDays: number[];
+  selectedDate: string;
+  onPrev: () => void;
+  onNext: () => void;
+  onSelect: (iso: string) => void;
+};
+
+const StepDateSelect = ({ viewYearMonth, availableDays, selectedDate, onPrev, onNext, onSelect }: StepDateSelectProps) => (
+  <div className="tma-stack">
+    <Calendar
+      year={viewYearMonth.year}
+      month={viewYearMonth.month}
+      availableDays={availableDays}
+      selectedDate={selectedDate}
+      onPrev={onPrev}
+      onNext={onNext}
+      onSelect={onSelect}
+    />
+    <p className="tma-subtle">{t("unavailable_days_note") || "Unavailable days are disabled per bot data."}</p>
+  </div>
+);
+
+type StepTimeSelectProps = {
+  slotsLoading: boolean;
+  slots: string[];
+  selectedSlot: string;
+  selectedDate: string;
+  onCenterChange: (h: string, m: string) => void;
+  onPick: (origSlot: string, display: string) => void;
+};
+
+const StepTimeSelect = ({ slotsLoading, slots, selectedSlot, selectedDate, onCenterChange, onPick }: StepTimeSelectProps) => (
+  <div className="tma-stack">
+    {slotsLoading && <SkeletonChips count={10} />}
+    {!slotsLoading && (slots?.length || 0) === 0 && (
+      <div className="tma-empty">{t("no_slots")}</div>
+    )}
+    {!slotsLoading && (slots?.length || 0) > 0 && (
+      <TimeWheel
+        slots={slots || []}
+        selectedSlot={selectedSlot}
+        selectedDate={selectedDate}
+        onCenterChange={onCenterChange}
+        onPick={onPick}
+      />
+    )}
+  </div>
+);
+
+type StepConfirmProps = {
+  bookingId: number | null;
+  holdBookingId: number | null;
+  selectedServicesNames: string;
+  selectedMaster: MasterOut | null;
+  selectedDate: string;
+  selectedTime: string;
+  durationLabel: string;
+  isRescheduling: boolean;
+  priceQuoteLoading: boolean;
+  finalPriceCents: number | null;
+  displayCurrency: string;
+  discountAmountCents: number | null;
+  originalPriceCents: number | null;
+  holdExpiresAt: string | null;
+  holdRemainingLabel: string | null;
+  onlinePaymentsAvailable: boolean;
+  paymentMethod: "cash" | "online";
+  setPaymentMethod: (method: "cash" | "online") => void;
+  paymentStatus: "idle" | "opening" | "pending" | "paid" | "failed" | "cancelled";
+  paymentMessage: string;
+};
+
+const StepConfirm = ({
+  bookingId,
+  holdBookingId,
+  selectedServicesNames,
+  selectedMaster,
+  selectedDate,
+  selectedTime,
+  durationLabel,
+  isRescheduling,
+  priceQuoteLoading,
+  finalPriceCents,
+  displayCurrency,
+  discountAmountCents,
+  originalPriceCents,
+  holdExpiresAt,
+  holdRemainingLabel,
+  onlinePaymentsAvailable,
+  paymentMethod,
+  setPaymentMethod,
+  paymentStatus,
+  paymentMessage,
+}: StepConfirmProps) => (
+  <div className="tma-stack">
+    <div className="tma-pay-card">
+      <div className="tma-pay-row">
+        <span>{t('tab_booking') as string}</span>
+        <strong>{(bookingId ?? holdBookingId) ? `№${bookingId ?? holdBookingId}` : ""}</strong>
+      </div>
+      <div className="tma-pay-row"><span>{t("service_label")}</span> <strong>{selectedServicesNames || "—"}</strong></div>
+      <div className="tma-pay-row"><span>{t("master_label")}</span> <strong>{selectedMaster?.name || "—"}</strong></div>
+      <div className="tma-pay-row"><span>{t("date_label")}</span> <strong>{formatDateTimeLabel(selectedDate, selectedTime)}</strong></div>
+      <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
+      {isRescheduling ? (
+        <div className="tma-pay-row">
+          <span>{(t("reschedule_title") as string) || "Перенос записи"}</span>
+          <strong>{(t("reschedule_free") as string) || "Оплата не требуется"}</strong>
+        </div>
+      ) : (
+        <>
+          <div className="tma-pay-row">
+            <span>{t("to_be_paid")}</span>
+            <strong>{priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoneyFromCents(finalPriceCents, displayCurrency, 0) : "—"}</strong>
+            {discountAmountCents != null && discountAmountCents > 0 && originalPriceCents != null && (
+              <span className="tma-subtle tma-price-strike">
+                {formatMoneyFromCents(originalPriceCents, displayCurrency, 0)}
+              </span>
+            )}
+          </div>
+          {discountAmountCents != null && discountAmountCents > 0 && (
+            <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(discountAmountCents, displayCurrency, 0)}</div>
+          )}
+          {holdExpiresAt && (
+            <div className="tma-subtle tma-pay-countdown">{t("hold_countdown")} {holdRemainingLabel}</div>
+          )}
+        </>
+      )}
+    </div>
+
+    {!isRescheduling && (
+      <>
+        <div className="tma-pay-method">
+          <div className="tma-pay-label">{t("choose_payment_method") || "Choose a payment method"}</div>
+          <div className="tma-pay-options">
+            <button
+              type="button"
+              className={`tma-pay-option ${paymentMethod === "cash" ? "active" : ""}`}
+              onClick={() => setPaymentMethod("cash")}
+            >
+              <span className="tma-pay-icon">💵</span>
+              <div>
+                <strong>{t("cash")}</strong>
+                <div className="tma-subtle">{t("cash_sub")}</div>
+              </div>
+            </button>
+            {onlinePaymentsAvailable && (
+              <button
+                type="button"
+                className={`tma-pay-option ${paymentMethod === "online" ? "active" : ""}`}
+                onClick={() => { setPaymentMethod("online"); try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {} }}
+              >
+                <span className="tma-pay-icon">💳</span>
+                <div>
+                  <strong>{t("online")}</strong>
+                  <div className="tma-subtle">{t("online_sub")}</div>
+                </div>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {paymentStatus !== "idle" && (
+          <div className="tma-pay-status">
+            <strong>{t("pay_label")}</strong>
+            <p className="tma-subtle">{paymentMessage}</p>
+          </div>
+        )}
+      </>
+    )}
+    <p className="tma-subtle">{isRescheduling ? (t("reschedule_confirm_hint") as string) || (t("press_confirm") as string) : t("press_confirm")}</p>
+  </div>
+);
 
 
 type MasterProfileSheetProps = {
@@ -1840,7 +1999,6 @@ type MasterProfileSheetProps = {
   anchorEl?: HTMLElement | null;
 };
 
-// В BookingWizard.tsx замени функцию MasterProfileSheet на эту:
 
 function MasterProfileSheet({
   open,

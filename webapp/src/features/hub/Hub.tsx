@@ -1,27 +1,15 @@
-import React, { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchBookings, BookingItem } from "../../api/booking";
 import { t } from "../../i18n";
-import { friendlyDateTime, formatMoneyFromCents } from "../../lib/timezone";
-import { setMainButton } from "../../lib/twa";
+import { friendlyDateTime } from "../../lib/timezone";
+import { BookingDetailsModal } from "../booking/MyVisits";
 
 export default function Hub({ onNavigate }: { onNavigate: (to: "booking" | "visits") => void }) {
-  const { data, isLoading } = useQuery<BookingItem[]>({ queryKey: ["hub:nearest"], queryFn: () => fetchBookings("upcoming") });
+  const { data, isLoading } = useQuery<BookingItem[]>({ queryKey: ["bookings", "upcoming"], queryFn: () => fetchBookings("upcoming") });
 
   const nearest = Array.isArray(data) && data.length > 0 ? data[0] : null;
   const [modalBooking, setModalBooking] = useState<BookingItem | null>(null);
-
-  useEffect(() => {
-    // Reserve bottom area for native MainButton and configure it to start booking
-    try {
-      // don't show Telegram MainButton on the hub; keep it hidden
-      setMainButton("", () => {}, false);
-    } catch (err) {}
-    return () => {
-      try { setMainButton("", () => {}, false); } catch (err) {}
-    };
-  }, [onNavigate]);
 
   return (
     <div className="tma-shell">
@@ -71,55 +59,10 @@ export default function Hub({ onNavigate }: { onNavigate: (to: "booking" | "visi
                 <div className="tma-field-label">{friendlyDateTime(nearest.starts_at)}</div>
               </div>
 
-              {modalBooking && createPortal(
-                <div className="tma-modal-backdrop" onClick={() => setModalBooking(null)}>
-                  <div className="tma-centered-modal" onClick={(e) => e.stopPropagation()}>
-                    <div className="tma-modal-header-fixed">
-                      <h3 className="u-mb-0">{`${t("booking_label") || "Запись"} №${modalBooking.id}`}</h3>
-                      <button className="tma-close-btn" onClick={() => setModalBooking(null)}>✕</button>
-                    </div>
-
-                    <div className="tma-modal-scroll-content">
-                      <div className="tma-card tma-card--compact tma-card--spaced">
-                        <div className="tma-field-label">{t("service_label")}</div>
-                        <div className="tma-field-value">{modalBooking.service_names}</div>
-
-                        <div className="tma-field-label">{t("master_label")}</div>
-                        <div className="tma-field-value">{modalBooking.master_name || "—"}</div>
-
-                        <div className="tma-field-label">{t("date_label")}</div>
-                        <div className="tma-field-value">{friendlyDateTime(modalBooking.starts_at)}</div>
-
-                        <div className="tma-field-label">{t("duration_label")}</div>
-                        <div className="tma-field-value">{(() => {
-                          const dm = (modalBooking as any).duration_minutes;
-                          const unit = t("minutes_short") as string || "min";
-                          if (dm != null) return `${dm} ${unit}`;
-                          if (modalBooking.starts_at && (modalBooking as any).ends_at) {
-                            try {
-                              const s = new Date(modalBooking.starts_at);
-                              const e = new Date((modalBooking as any).ends_at);
-                              if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
-                                const mins = Math.round((e.getTime() - s.getTime()) / 60000);
-                                return `${mins} ${unit}`;
-                              }
-                            } catch (err) {}
-                          }
-                          return "—";
-                        })()}</div>
-
-                        <div className="tma-field-label">{modalBooking.payment_method === "online" ? (t("paid_label") || "Paid") : (t("to_be_paid") || "To be paid:")}</div>
-                        <div className="tma-field-value">{(() => {
-                          return modalBooking.price_cents != null ? formatMoneyFromCents(modalBooking.price_cents, modalBooking.currency || undefined) : "—";
-                        })()}</div>
-                      </div>
-                    </div>
-
-                    {/* no action buttons in hub modal */}
-                  </div>
-                </div>,
-                document.body
-              )}
+              <BookingDetailsModal
+                booking={modalBooking}
+                onClose={() => setModalBooking(null)}
+              />
             </>
           ) : null}
         </section>

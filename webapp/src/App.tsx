@@ -23,6 +23,18 @@ export default function App() {
     initWebApp();
   }, []);
 
+  useEffect(() => {
+    // Centralized MainButton control: hide outside booking wizard
+    try {
+      if (tab !== "booking") {
+        tg?.MainButton?.hide();
+      }
+      // booking tab is managed by BookingWizard
+    } catch (err) {
+      if (isDev) console.debug("main button toggle", err);
+    }
+  }, [tab, isDev]);
+
   const sessionMutation = useMutation({
     mutationFn: (initData: string) => createSession({ initData }),
     onSuccess: async (data) => {
@@ -150,11 +162,6 @@ export default function App() {
                 aria-label={t("tab_visits")}
                 onClick={() => {
                   setTab("visits");
-                  try {
-                    tg?.MainButton?.hide();
-                  } catch (err) {
-                    if (isDev) console.debug("main btn hide", err);
-                  }
                 }}
               >
                 <span style={{ fontSize: 18 }}>📅</span>

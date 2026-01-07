@@ -11,18 +11,113 @@ import {
   rateBooking,
   BookingItem,
   fetchMasters,
+  TERMINAL_STATUSES,
+  isTerminalStatus,
 } from "../../api/booking";
 import { t } from "../../i18n";
 import type { MasterOut } from "../../api/booking";
 import { tg } from "../../lib/twa";
-import { friendlyDateTime, formatMoneyFromCents } from "../../lib/timezone";
+import { friendlyDateTime, formatDateTimeShort, formatDurationMinutes } from "../../lib/timezone";
+import { formatMoneyFromCents } from "../../lib/money";
+
+const [STATUS_DONE, STATUS_CANCELLED, STATUS_NO_SHOW] = TERMINAL_STATUSES;
 
 function chipClass(status?: string | null) {
-  const s = status?.toLowerCase();
-  if (s === "done") return "tma-chip";
-  if (s === "cancelled") return "tma-chip tma-chip-ghost";
-  if (s === "no_show") return "tma-chip tma-chip-ghost";
+  const s = status?.toLowerCase().replace(/-/g, "_").trim();
+  if (isTerminalStatus(s)) {
+    if (s === STATUS_DONE) return "tma-chip";
+    if (s === STATUS_CANCELLED || s === STATUS_NO_SHOW) return "tma-chip tma-chip-ghost";
+  }
   return "tma-chip tma-chip-soft";
+}
+
+export function BookingDetailsModal({
+  booking,
+  masterMap,
+  onClose,
+  allowReschedule,
+  allowCancel,
+  onReschedule,
+  onCancel,
+}: {
+  booking: BookingItem | null;
+  masterMap?: Record<number, string>;
+  onClose: () => void;
+  allowReschedule?: boolean;
+  allowCancel?: boolean;
+  onReschedule?: () => void;
+  onCancel?: () => void;
+}) {
+  if (!booking) return null;
+
+  const durationLabel = (() => {
+    const unit = (t("minutes_short") as string) || "min";
+    const dm = (booking as any).duration_minutes;
+    if (dm != null) return formatDurationMinutes(dm, unit) || "—";
+    if (booking.starts_at && (booking as any).ends_at) {
+      try {
+        const s = new Date(booking.starts_at);
+        const e = new Date((booking as any).ends_at);
+        if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
+          const mins = Math.round((e.getTime() - s.getTime()) / 60000);
+          return formatDurationMinutes(mins, unit) || "—";
+        }
+      } catch (err) {}
+    }
+    return "—";
+  })();
+
+  const masterLabel = masterMap?.[booking.master_id || 0] || booking.master_name || (t("master_default") as string);
+
+  const priceLabel = booking.price_cents != null
+    ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined)
+    : "—";
+
+  return createPortal(
+    <div className="tma-modal-backdrop" onClick={onClose}>
+      <div className="tma-centered-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tma-modal-header-fixed">
+          <h3 className="u-mb-0">{`${t("booking_label") || "Booking"} №${booking.id}`}</h3>
+          <button className="tma-close-btn" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="tma-modal-scroll-content">
+          <div className="tma-card tma-card--compact tma-card--spaced">
+            <div className="tma-field-label">{t("service_label")}</div>
+            <div className="tma-field-value">{booking.service_names}</div>
+
+            <div className="tma-field-label">{t("master_label")}</div>
+            <div className="tma-field-value">{masterLabel}</div>
+
+            <div className="tma-field-label">{t("date_label")}</div>
+            <div className="tma-field-value">{friendlyDateTime(booking.starts_at)}</div>
+
+            <div className="tma-field-label">{t("duration_label")}</div>
+            <div className="tma-field-value">{durationLabel}</div>
+
+            <div className="tma-field-label">{booking.payment_method === "online" ? t("paid_label") : t("to_be_paid")}</div>
+            <div className="tma-field-value">{priceLabel}</div>
+          </div>
+        </div>
+
+        {(allowReschedule || allowCancel) ? (
+          <div className="tma-modal-actions">
+            {allowReschedule ? (
+              <button className="tma-primary u-w-100" type="button" onClick={onReschedule}>
+                {t("reschedule_label") || "Перенести"}
+              </button>
+            ) : null}
+            {allowCancel ? (
+              <button className="tma-danger tma-danger-ghost" type="button" onClick={onCancel}>
+                {t("cancel_btn")}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>,
+    document.body
+  );
 }
 
 export default function MyVisits() {
@@ -121,93 +216,27 @@ export default function MyVisits() {
   const allowReschedule = tab === "upcoming" && !!rescheduleTarget?.can_reschedule;
   const allowCancel = tab === "upcoming" && !!rescheduleTarget?.can_cancel;
 
-  const rescheduleModal = createPortal(
-    rescheduleTarget ? (
-      <div className="tma-modal-backdrop" onClick={closeModal}>
-        <div className="tma-centered-modal" onClick={(e) => e.stopPropagation()}>
-          <div className="tma-modal-header-fixed">
-            <h3 className="u-mb-0">{`${t("booking_label") || "Booking"} №${rescheduleTarget.id}`}</h3>
-            <button className="tma-close-btn" onClick={closeModal}>
-              ✕
-            </button>
-          </div>
-
-          <div className="tma-modal-scroll-content">
-              <div className="tma-card tma-card--compact tma-card--spaced">
-                <div className="tma-field-label">{t("service_label")}</div>
-                <div className="tma-field-value">{rescheduleTarget.service_names}</div>
-
-                <div className="tma-field-label">{t("master_label")}</div>
-                <div className="tma-field-value">{masterMap[rescheduleTarget.master_id || 0] || rescheduleTarget.master_name || (t("master_default") as string)}</div>
-
-                <div className="tma-field-label">{t("date_label")}</div>
-                <div className="tma-field-value">{friendlyDateTime(rescheduleTarget.starts_at)}</div>
-
-                <div className="tma-field-label">{t("duration_label")}</div>
-                <div className="tma-field-value">{(() => {
-                  const dm = (rescheduleTarget as any).duration_minutes;
-                  if (dm != null) return `${dm} ${t("minutes_short")}`;
-                  if (rescheduleTarget.starts_at && (rescheduleTarget as any).ends_at) {
-                    try {
-                      const s = new Date(rescheduleTarget.starts_at);
-                      const e = new Date((rescheduleTarget as any).ends_at);
-                      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
-                        const mins = Math.round((e.getTime() - s.getTime()) / 60000);
-                        return `${mins} ${t("minutes_short")}`;
-                      }
-                    } catch (err) {}
-                  }
-                  return "—";
-                })()}</div>
-
-                <div className="tma-field-label">{rescheduleTarget.payment_method === "online" ? t("paid_label") : t("to_be_paid")}</div>
-                <div className="tma-field-value">{(() => {
-                  return rescheduleTarget.price_cents != null ? formatMoneyFromCents(rescheduleTarget.price_cents, rescheduleTarget.currency || undefined) : "—";
-                })()}</div>
-              </div>
-          </div>
-
-          <div className="tma-modal-actions">
-            {tab === "upcoming" && (allowReschedule || allowCancel) ? (
-              <>
-                {allowReschedule ? (
-                  <button
-                    className="tma-primary u-w-100"
-                    type="button"
-                    onClick={() => {
-                      try {
-                        const detail = { booking_id: rescheduleTarget.id, master_id: rescheduleTarget.master_id, service_names: rescheduleTarget.service_names, starts_at: rescheduleTarget.starts_at };
-                        try { (window as any).__RESCHEDULE_BOOKING = detail; } catch (e) {}
-                        // Dispatch reschedule-start for analytics/handlers and also trigger booking tab
-                        window.dispatchEvent(new CustomEvent("tma:reschedule-start", { detail }));
-                        try { window.dispatchEvent(new CustomEvent("tma:repeat-booking")); } catch (e) {}
-                      } catch (err) {
-                        console.warn("reschedule start event failed", err);
-                      }
-                      closeModal();
-                    }}
-                  >
-                    {t("reschedule_label") || "Перенести"}
-                  </button>
-                ) : null}
-
-                {allowCancel ? (
-                  <button
-                    className="tma-danger tma-danger-ghost"
-                    type="button"
-                    disabled={cancelMut.isPending}
-                    onClick={() => cancelMut.mutate(rescheduleTarget.id)}
-                  >
-                    {t("cancel_btn")}
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        </div>
-      </div>
-    ) : null,
-    document.body
+  const rescheduleModal = (
+    <BookingDetailsModal
+      booking={rescheduleTarget}
+      masterMap={masterMap}
+      onClose={closeModal}
+      allowReschedule={tab === "upcoming" && allowReschedule}
+      allowCancel={tab === "upcoming" && allowCancel}
+      onReschedule={rescheduleTarget ? () => {
+        try {
+          const detail = { booking_id: rescheduleTarget.id, master_id: rescheduleTarget.master_id, service_names: rescheduleTarget.service_names, starts_at: rescheduleTarget.starts_at };
+          try { (window as any).__RESCHEDULE_BOOKING = detail; } catch (e) {}
+          // Dispatch reschedule-start for analytics/handlers and also trigger booking tab
+          window.dispatchEvent(new CustomEvent("tma:reschedule-start", { detail }));
+          try { window.dispatchEvent(new CustomEvent("tma:repeat-booking")); } catch (e) {}
+        } catch (err) {
+          console.warn("reschedule start event failed", err);
+        }
+        closeModal();
+      } : undefined}
+      onCancel={rescheduleTarget ? () => cancelMut.mutate(rescheduleTarget.id) : undefined}
+    />
   );
 
   return (
@@ -295,21 +324,7 @@ function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRa
       : /done|completed|finished/.test(status)
         ? "✅"
         : "" );
-  function compactOneLine() {
-    const svc = booking.service_names || (t("service_default") as string);
-    const d = booking.starts_at ? new Date(booking.starts_at) : null;
-    const datePart = d ? `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}` : "";
-    const timePart = d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
-    const masterPart = masterName || (booking.master_id != null ? `Мастер #${booking.master_id}` : "");
-    const pricePart = booking.price_cents != null ? ` • ${formatMoneyFromCents(booking.price_cents, booking.currency || undefined)}` : "";
-    // Format: dd.mm HH:MM • Master • Service $x.yy
-    const parts = [] as string[];
-    if (datePart && timePart) parts.push(`${datePart} ${timePart}`);
-    if (masterPart) parts.push(masterPart);
-    if (svc) parts.push(svc);
-    const main = parts.join(" • ");
-    return `${main}${pricePart}`.trim();
-  }
+  const compactDateTime = formatDateTimeShort(booking.starts_at) || "";
 
   return (
     <div className="tma-mini-card tma-booking-card" onClick={() => onOpen && onOpen()} role="button" tabIndex={0}>
@@ -324,23 +339,21 @@ function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRa
           </div>
           <div className="tma-flex-1">
             {(() => {
-              const s = (booking.status || "").toLowerCase();
+              const s = (booking.status || "").toLowerCase().replace(/-/g, "_").trim();
               const statusLabelText = booking.status_label || booking.status || "";
               const statusClass = chipClass(booking.status);
 
               // Two-line preview: top -> date • time • master, bottom -> service • price
               const svc = booking.service_names || (t("service_default") as string);
               const servicesArr = (booking.service_names || "").split(",").map(s=>s.trim()).filter(Boolean);
-              const d = booking.starts_at ? new Date(booking.starts_at) : null;
-              const datePart = d ? `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}` : "";
-              const timePart = d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
+              const dateTimeLabel = compactDateTime;
               const masterPart = masterName || (booking.master_id != null ? `Мастер #${booking.master_id}` : "");
               const pricePart = booking.price_formatted || (() => {
                 return booking.price_cents != null ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined) : "";
               })();
 
               const topParts: string[] = [];
-              if (datePart && timePart) topParts.push(`${datePart} • ${timePart}`);
+              if (dateTimeLabel) topParts.push(dateTimeLabel);
               if (masterPart) topParts.push(masterPart);
               const topLine = topParts.join(" • ");
 
@@ -349,7 +362,9 @@ function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRa
               const bottomLine = bottomParts.join(" • ");
 
               // Show status emoji for entries in history (disabledActions === true)
-              const statusEmoji = disabledActions ? (s === "cancelled" ? "❌" : s === "no_show" ? "🚫" : s === "done" ? "✅" : "") : "";
+              const statusEmoji = disabledActions && isTerminalStatus(s)
+                ? (s === STATUS_CANCELLED ? "❌" : s === STATUS_NO_SHOW ? "🚫" : s === STATUS_DONE ? "✅" : "")
+                : "";
 
               return (
                 <div className="u-flex u-items-center u-gap-8 u-justify-between">
