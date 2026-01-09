@@ -58,3 +58,25 @@ docker-compose up -d
 - Duplicate reminders: verify idempotency keys and worker logs.
 - Wrong time: verify `BUSINESS_TZ` and rendering layer.
 - Admin access issues: check role assignment in services.
+
+## Telegram Mini App Setup (Client UI)
+
+The project includes a built-in Telegram Mini App for client bookings.
+
+### Required Environment Variable
+
+
+TWA_WEBAPP_URL=https://your-domain.com
+
+
+This URL must be publicly accessible and served over HTTPS.
+
+### How It Works
+- The bot provides a button that opens the Mini App.
+- The Mini App communicates with the backend API.
+- Clients can book and manage visits without chat commands.
+
+### Production Notes
+- Use a domain (e.g. salon.example.com)
+- Configure HTTPS (nginx + certbot recommended)
+- Make sure ports for frontend and API are exposed

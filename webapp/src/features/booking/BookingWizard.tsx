@@ -413,6 +413,35 @@ export default function BookingWizard() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Prefetch lightweight master profiles so we can show rating/orders in the list
+  const { data: masterProfilesMap } = useQuery({
+    queryKey: ["master-profiles", masters?.map((m) => m.id)],
+    enabled: Boolean(masters && masters.length > 0),
+    queryFn: async () => {
+      const arr = await Promise.all(
+        (masters || []).map(async (m) => {
+          try {
+            const p = await fetchMasterProfile(m.id);
+            return [m.id, p] as const;
+          } catch (err) {
+            return [m.id, null] as const;
+          }
+        })
+      );
+      return Object.fromEntries(arr);
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const mastersWithMeta = useMemo(() => {
+    if (!masters) return [] as (MasterOut & Partial<Pick<MasterProfile, "rating" | "completed_orders">>)[];
+    return masters.map((m) => ({
+      ...m,
+      rating: (masterProfilesMap && masterProfilesMap[m.id]) ? masterProfilesMap[m.id].rating : undefined,
+      completed_orders: (masterProfilesMap && masterProfilesMap[m.id]) ? masterProfilesMap[m.id].completed_orders : undefined,
+    }));
+  }, [masters, masterProfilesMap]);
+
   const applyReschedulePayload = useCallback((payload: any) => {
     if (!payload) return;
     if (!services || services.length === 0) return;
@@ -1311,7 +1340,7 @@ export default function BookingWizard() {
 
   const renderMasterSelection = () => (
     <StepMasterSelect
-      masters={masters || []}
+      masters={mastersWithMeta || []}
       mastersLoading={mastersLoading}
       selectedMaster={selectedMaster}
       onSelect={handleMasterSelect}
@@ -1774,6 +1803,7 @@ const StepMasterSelect = ({ masters, mastersLoading, selectedMaster, onSelect, o
           <div className="tma-avatar" aria-hidden="true" />
           <div className="tma-master-card__info">
             <div className="tma-master-name-badge" aria-hidden>{m.name}</div>
+
             <button
               type="button"
               className="tma-master-cta"
@@ -1784,6 +1814,16 @@ const StepMasterSelect = ({ masters, mastersLoading, selectedMaster, onSelect, o
             >
               {t("book_with_master") || "Записатися"}
             </button>
+          </div>
+
+          <div className="tma-meta-column">
+            {typeof (m as any).rating === "number" && (
+              <div className="tma-meta-chip tma-chip--rating">⭐ {String((m as any).rating.toFixed ? (m as any).rating.toFixed(1) : (m as any).rating)}</div>
+            )}
+
+            {typeof (m as any).completed_orders === "number" && (
+              <div className="tma-meta-chip tma-chip--orders">{String((m as any).completed_orders)} {String(t("master_orders_short") || "orders")}</div>
+            )}
           </div>
         </div>
 

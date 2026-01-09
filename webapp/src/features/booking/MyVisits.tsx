@@ -15,7 +15,7 @@ import {
 import { t } from "../../i18n";
 import type { MasterOut } from "../../api/booking";
 import { tg, haptic } from "../../lib/twa";
-import { formatDurationMinutes, formatDateTimePreferServer } from "../../lib/timezone";
+import { formatDurationMinutes, formatDateTime } from "../../lib/timezone";
 import { formatMoneyFromCents, formatMoneyPreferServer } from "../../lib/money";
 
 // Status chip styles are now derived from server `status` directly via
@@ -76,7 +76,9 @@ export function BookingDetailsModal({
             <div className="tma-field-value">{masterLabel}</div>
 
             <div className="tma-field-label">{t("date_label")}</div>
-            <div className="tma-field-value">{formatDateTimePreferServer(booking.starts_at_formatted || booking.formatted_date, booking.starts_at)}</div>
+            <div className="tma-field-value">
+              {formatDateTime(booking.starts_at, { granularity: "long" })}
+            </div>
 
             <div className="tma-field-label">{t("duration_label")}</div>
             <div className="tma-field-value">{durationLabel}</div>

@@ -99,6 +99,7 @@ const bundles: Record<string, Record<string, string | string[]>> = {
       reminder_message: "We'll remind you %s before the visit.",
       nearest_visit_label: "Your nearest visit",
       master_orders_label: "Orders",
+      master_orders_short: "orders",
       services_label: "Services",
       schedule_label: "Schedule",
   },
@@ -201,7 +202,8 @@ const bundles: Record<string, Record<string, string | string[]>> = {
       success_address_hint: "Мы ждём вас по этому адресу: %s",
       reminder_message: "Мы напомним вам за %s до визита.",
       nearest_visit_label: "Ваш ближайший визит",
-      master_orders_label: "Заказов:",
+        master_orders_label: "Заказов:",
+        master_orders_short: "Заказ.",
       services_label: "Услуги",
       schedule_label: "График",
   }
@@ -306,6 +308,7 @@ const bundles: Record<string, Record<string, string | string[]>> = {
       reminder_message: "Ми нагадаємо вам за %s до візиту.",
       nearest_visit_label: "Ваш найближчий візит",
       master_orders_label: "Замовлень:",
+      master_orders_short: "Замовл.",
       services_label: "Послуги",
       schedule_label: "Графік",
   }

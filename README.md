@@ -27,6 +27,21 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 </details>
 
 <details>
+  <summary><b><u>Telegram Mini App (Client)</u></b></summary>
+
+  ![Mini App Home](screenshots/webapp_home.jpg)
+  ![Mini App My upcoming isits](screenshots/webapp_upcoming_visits.jpg)
+  ![Mini App My history isits](screenshots/webapp_history_visits.jpg)
+  ![Mini App Choose a master](screenshots/webapp_choose_a_master.jpg)
+  ![Mini App Choose a day](screenshots/webapp_choose_a_day.jpg)
+  ![Mini App Choose a time](screenshots/webapp_choose_a_time.jpg)
+  ![Mini App Check details](screenshots/webapp_check_details.jpg)
+  ![Mini App Booked](screenshots/webapp_booked.jpg)
+  ![Mini App Book cart](screenshots/webapp_book_cart.jpg)
+</details>
+
+
+<details>
   <summary>Master & Admin</summary>
 
   ![Master schedule](screenshots/master_schedule.jpg)  
@@ -46,6 +61,10 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 - Docker & Docker Compose
 - Pydantic for config/validation
 - Structured logging
+- Telegram Mini App (WebApp API)
+- React + TypeScript (Client UI)
+- FastAPI facade for WebApp
+
 
 ---
 
@@ -77,6 +96,14 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 - Analytics: LTV, retention, no-show rate, revenue (real vs expected), CSV export.
 - Background workers: reminders, hold cleanup, payment reconcile, notifications.
 
+---
+
+### Client Web App (Telegram Mini App)
+A modern Telegram Mini App for clients:
+- Fast booking with a clean UI
+- View upcoming & past bookings
+- Cancel & reschedule without chat commands
+- Works instantly inside Telegram (no installation)
 
 ---
 
@@ -90,6 +117,17 @@ Role-Based Access: Separate interfaces for Clients (booking), Masters (schedule 
 Analytics Dashboard: Tracks LTV, Retention Rate, and No-Show statistics in real-time.
 
 FSM & Navigation: Robust state machine with a navigation stack (Back button actually works correctly).
+
+---
+
+## Client Experience
+
+Clients can book and manage visits via a built-in Telegram Mini App:
+- No commands, no learning curve
+- Beautiful UI inside Telegram
+- Booking in under 30 seconds
+
+This drastically increases conversion and reduces admin workload.
 
 ---
 

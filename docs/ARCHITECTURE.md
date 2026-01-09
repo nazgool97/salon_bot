@@ -75,3 +75,15 @@ graph TD
 - Advisory locks + constraints + status guards to keep bookings consistent.
 
 For operational details see [DEPLOY](DEPLOY.md). For workflow and extension guidance see [DEVELOPER_MANUAL](DEVELOPER_MANUAL.md).
+
+### Client WebApp Layer
+
+Telegram Mini App acts as an alternative presentation layer:
+- Uses REST API (FastAPI facade)
+- Shares domain & services with the bot
+- Provides modern UI for client operations
+
+This allows the same business logic to serve:
+- Telegram chat interface
+- WebApp UI
+
