@@ -23,6 +23,18 @@
   --t-shadow-strong: 0 16px 48px rgba(0, 0, 0, 0.36);
   --t-z-modal: 1200;
   --t-z-backdrop: 1100;
+  /* New consolidated tokens for glass + shadows and z-index management */
+  --t-bg-glass: var(--t-modal-surface);
+  --t-shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.22);
+  /* keep legacy aliases for backward compatibility */
+
+  /* z-index tokens (used to avoid layering conflicts like Toast vs Modal) */
+  --t-z-top: 1300;
+  --t-z-toast: 20;
+  --t-z-sheet: 14;
+  --t-z-pop: 12;
+  --t-z-picker: 10;
+  --t-z-tabbar: 9;
 }
 
 * { box-sizing: border-box; }
@@ -134,7 +146,6 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* Compact variant keeps spacing but inherits glass style */
-.tma-card--compact { padding: 12px; margin-top: 8px; }
 .tma-card:active { transform: scale(0.98); }
 
 /* Soft interactive transitions for tappable elements */
@@ -224,7 +235,7 @@ a { color: inherit; text-decoration: none; }
 .tma-global-header {
   position: sticky;
   top: 0;
-  z-index: 1300;
+  z-index: var(--t-z-top);
   backdrop-filter: blur(6px);
   background: linear-gradient(180deg, rgba(11,18,32,0.45), rgba(11,18,32,0.15));
 }
@@ -330,12 +341,11 @@ a { color: inherit; text-decoration: none; }
 .tma-master-card__profile-label { font-weight: 700; font-size: 13px; color: var(--t-subtle); }
 
 /* Force avatar hidden (we removed its letter/bg) and make info take full width */
-.tma-avatar { display: none !important; }
+/* Avatar: decorative only — single consolidated definition */
 .tma-master-card__main { display: flex; align-items: center; gap: 12px; }
 .tma-master-card__info { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; width: 100%; }
 .tma-master-cta { align-self: flex-start; }
 
-/* Avatar: decorative only, no colored bg or shadow */
 .tma-avatar {
   width: 44px;
   height: 44px;
@@ -464,7 +474,7 @@ a { color: inherit; text-decoration: none; }
   text-align: center;
 }
 
-/* .tma-floating-bar removed — main bottom button shows totals now */
+/* main bottom button shows totals now (floating bar removed) */
 
 .tma-skeleton-group { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .tma-skeleton-group.compact { grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); }
@@ -573,7 +583,7 @@ a { color: inherit; text-decoration: none; }
   left: 0;
   right: 0;
   pointer-events: none;
-  z-index: 14;
+  z-index: var(--t-z-sheet);
 }
 .ios-picker-container::before {
   top: 0;
@@ -597,7 +607,7 @@ a { color: inherit; text-decoration: none; }
   border-top: 1px solid rgba(0,0,0,0.06);
   border-bottom: 1px solid rgba(0,0,0,0.06);
   pointer-events: none;
-  z-index: 10;
+  z-index: var(--t-z-picker);
 }
 
 .ios-picker-highlight::before {
@@ -639,27 +649,14 @@ a { color: inherit; text-decoration: none; }
   transform: scale(1.08);
   color: var(--t-accent);
   position: relative;
-  z-index: 12;
+  z-index: var(--t-z-pop);
   text-shadow: 0 8px 20px rgba(27,198,197,0.08);
   box-shadow: 0 10px 30px rgba(27,198,197,0.12), 0 2px 12px rgba(27,198,197,0.06);
 }
 
 .tma-app-frame { min-height: 100vh; position: relative; padding-bottom: 78px; }
 
-.tma-tabbar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  padding: 10px 14px 16px;
-  background: color-mix(in srgb, var(--t-bg) 92%, #0b1220);
-  border-top: 1px solid var(--t-border);
-  backdrop-filter: blur(10px);
-  z-index: 9;
-}
+.tma-avatar { cursor: default; }
 
 /* Inline tabs used inside cards (e.g. My visits) */
 .tma-tabs {
@@ -814,7 +811,7 @@ a { color: inherit; text-decoration: none; }
   color: var(--t-text);
   border: 1px solid var(--t-border);
   box-shadow: 0 12px 30px rgba(12, 27, 44, 0.16);
-  z-index: 20;
+  z-index: var(--t-z-toast);
   cursor: pointer;
 }
 .tma-toast.error { border-color: color-mix(in srgb, #ef4444 60%, transparent); color: #fecaca; }

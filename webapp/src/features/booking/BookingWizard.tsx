@@ -1,10 +1,10 @@
 // src/features/booking/BookingWizard.tsx
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useReducer } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { tg, setMainButton, notifySuccess } from "../../lib/twa";
+import { tg, setMainButton, notifySuccess, haptic } from "../../lib/twa";
 import { t, detectLang } from "../../i18n";
 import {
   fetchServices,
@@ -13,19 +13,22 @@ import {
   fetchSlots,
   fetchAvailableDays,
   fetchMasterProfile,
-  createBooking,
-  rescheduleBooking,
-  ServiceOut,
-  MasterOut,
-  MasterProfile,
   fetchServiceRanges,
   fetchPriceQuote,
   fetchBookings,
+  rescheduleBooking,
+  checkSlot,
+  BookingRequest,
+  BookingResponse,
+  createHold,
+  finalizeBooking,
+  cancelBooking,
+  ServiceOut,
+  MasterOut,
+  MasterProfile,
 } from "../../api/booking";
-import { checkSlot } from "../../api/booking";
-import { formatDateTimeLabel, friendlyDate, friendlyTime, formatYMD, normalizeSlotString } from "../../lib/timezone";
+import { formatDateTimeLabel, formatDate, formatTime, formatYMD, normalizeSlotString } from "../../lib/timezone";
 import { formatMoneyFromCents } from "../../lib/money";
-import { createHold, finalizeBooking, cancelBooking } from "../../api/booking";
 
 type Step = "SERVICE" | "MASTER" | "DATE" | "TIME" | "CONFIRM" | "SUCCESS";
 
@@ -44,6 +47,11 @@ type BookingDraft = {
   date: string;
   time: string;
   slot: string;
+  customerInfo?: {
+    name?: string;
+    phone?: string;
+    email?: string;
+  } | null;
 };
 
 const steps: { id: Step; label: string; hint: string }[] = [
@@ -61,10 +69,11 @@ const today = (() => {
   return formatYMD(d.getFullYear(), d.getMonth() + 1, d.getDate());
 })();
 
+const SLIDE_PX = 50; // reduced slide distance for cheaper painting on mobile
 const slideVariants = {
-  enter: (direction: number) => ({ x: direction > 0 ? 320 : -320, opacity: 0 }),
+  enter: (direction: number) => ({ x: direction > 0 ? SLIDE_PX : -SLIDE_PX, opacity: 0 }),
   center: { x: 0, opacity: 1 },
-  exit: (direction: number) => ({ x: direction > 0 ? -320 : 320, opacity: 0 }),
+  exit: (direction: number) => ({ x: direction > 0 ? -SLIDE_PX : SLIDE_PX, opacity: 0 }),
 };
 
 function useBookingFlow(initialStep: Step = "SERVICE") {
@@ -72,7 +81,6 @@ function useBookingFlow(initialStep: Step = "SERVICE") {
   const [direction, setDirection] = useState(0);
 
   const goToStep = useCallback((next: Step) => {
-    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (e) {}
     setStep((prev) => {
       const prevIdx = STEP_ORDER.indexOf(prev);
       const nextIdx = STEP_ORDER.indexOf(next);
@@ -82,7 +90,6 @@ function useBookingFlow(initialStep: Step = "SERVICE") {
   }, []);
 
   const goBack = useCallback(() => {
-    try { tg?.HapticFeedback?.selectionChanged?.(); } catch (e) {}
     setStep((prev) => {
       const prevIdx = STEP_ORDER.indexOf(prev);
       const targetIdx = Math.max(0, prevIdx - 1);
@@ -128,7 +135,7 @@ function TimeWheel({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const ITEM_HEIGHT = 50;
 
-  // Only show slots aligned to 15-minute steps in the wheel.
+  // Show slots exactly as provided by the backend.
   // Keep original `orig` string so onPick can send server-provided value.
   const entries = useMemo(() => {
     const out: { orig: string; norm: string; display: string }[] = [];
@@ -137,16 +144,15 @@ function TimeWheel({
         const norm = normalizeSlotString(s, selectedDate);
         const d = new Date(norm);
         if (Number.isNaN(d.getTime())) continue;
-        const minute = d.getMinutes();
-        if (minute % 15 !== 0) continue; // enforce 15-minute grid
-        out.push({ orig: s, norm, display: friendlyTime(s, selectedDate) });
+        // do not filter by minute grid here — show backend-provided slots verbatim
+        out.push({ orig: s, norm, display: formatTime(s, selectedDate) });
       } catch (e) {
         // ignore
       }
     }
     // If no 15-min aligned slots found, fallback to all slots preserving original strings
     if (out.length === 0) {
-      return slots.map((s) => ({ orig: s, norm: normalizeSlotString(s, selectedDate), display: friendlyTime(s, selectedDate) }));
+      return slots.map((s) => ({ orig: s, norm: normalizeSlotString(s, selectedDate), display: formatTime(s, selectedDate) }));
     }
     return out;
   }, [slots, selectedDate]);
@@ -183,9 +189,7 @@ function TimeWheel({
       const m = parts[1] || "00";
       try {
         onCenterChange(h, m);
-        if ((window as any).Telegram?.WebApp?.HapticFeedback) {
-          try { (window as any).Telegram.WebApp.HapticFeedback.selectionChanged(); } catch (e) {}
-        }
+        haptic.impact("selection");
       } catch (e) {}
     }
   };
@@ -204,7 +208,7 @@ function TimeWheel({
           let isSelected = false;
           try {
             const a = entry.norm || normalizeSlotString(slotOrig, selectedDate);
-            isSelected = a === selectedSlot || slotOrig === selectedSlot || display === (selectedSlot ? friendlyTime(selectedSlot, selectedDate) : "");
+            isSelected = a === selectedSlot || slotOrig === selectedSlot || display === (selectedSlot ? formatTime(selectedSlot, selectedDate) : "");
           } catch (e) {
             isSelected = slotOrig === selectedSlot;
           }
@@ -239,8 +243,20 @@ export default function BookingWizard() {
     } catch (err) {}
     prevStepRef.current = step;
   }, [step]);
-  const [bookingDraft, setBookingDraft] = useState<BookingDraft>({ services: [], master: null, date: today, time: "", slot: "" });
-  const updateDraft = useCallback((patch: Partial<BookingDraft>) => setBookingDraft((prev) => ({ ...prev, ...patch })), []);
+  const initialDraft: BookingDraft = { services: [], master: null, date: today, time: "", slot: "", customerInfo: null };
+  const draftReducer = (state: BookingDraft, action: { type: "patch"; patch?: Partial<BookingDraft> } | { type: "reset" } | { type: "toggleService"; service: ServiceOut }) => {
+    if (action.type === "patch") return { ...state, ...(action.patch || {}) };
+    if (action.type === "toggleService") {
+      const s = action.service;
+      const exists = state.services.find((p) => p.id === s.id);
+      const services = exists ? state.services.filter((p) => p.id !== s.id) : [...state.services, s];
+      return { ...state, services };
+    }
+    return initialDraft;
+  };
+
+  const [bookingDraft, dispatchBookingDraft] = useReducer(draftReducer, initialDraft);
+  const updateDraft = useCallback((patch: Partial<BookingDraft>) => dispatchBookingDraft({ type: "patch", patch }), []);
   const { services: selectedServices, master: selectedMaster, date: selectedDate, time: selectedTime, slot: selectedSlot } = bookingDraft;
   const [onlinePaymentsAvailable] = useState<boolean>(() => {
     try {
@@ -251,7 +267,7 @@ export default function BookingWizard() {
     return true;
   });
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "online">("cash");
-  const [paymentStatus, setPaymentStatus] = useState<"idle" | "opening" | "pending" | "paid" | "failed" | "cancelled">("idle");
+  const [paymentStatus, setPaymentStatus] = useState<"idle" | "opening" | "pending" | "polling" | "paid" | "failed" | "cancelled">("idle");
   const [bookingId, setBookingId] = useState<number | null>(null);
   const [rescheduleBookingId, setRescheduleBookingId] = useState<number | null>(null);
   const [holdDetails, setHoldDetails] = useState<HoldDetails>({ bookingId: null, expiresAt: null, originalPriceCents: null, finalPriceCents: null, discountAmountCents: null, currency: null });
@@ -278,11 +294,11 @@ export default function BookingWizard() {
     staleTime: 5 * 60 * 1000,
   });
   const activeIndex = useMemo(() => {
-    const idx = steps.findIndex((s) => s.id === step);
+    const idx = steps.findIndex((s: { id: Step }) => s.id === step);
     return idx >= 0 ? idx : 0;
   }, [step]);
   const selectedService = useMemo(() => selectedServices[0] || null, [selectedServices]);
-  const selectedServiceIds = useMemo(() => selectedServices.map((s) => s.id), [selectedServices]);
+  const selectedServiceIds = useMemo(() => selectedServices.map((s: ServiceOut) => s.id), [selectedServices]);
   const { data: priceQuote, isFetching: priceQuoteLoading } = useQuery({
     queryKey: ["price-quote", selectedServiceIds, paymentMethod, selectedMaster?.id],
     enabled: selectedServiceIds.length > 0,
@@ -297,7 +313,7 @@ export default function BookingWizard() {
 
   useEffect(() => {
     if (prevStepRef.current && prevStepRef.current !== step) {
-      try { tg?.HapticFeedback?.selectionChanged?.(); } catch (err) {}
+      haptic.impact("selection");
     }
     prevStepRef.current = step;
   }, [step]);
@@ -312,7 +328,7 @@ export default function BookingWizard() {
   const [serviceAvailability, setServiceAvailability] = useState<Record<string, boolean>>({});
   // `prevStepRef` is declared above to track previous step for haptics/holds
   const mainButtonHandlerRef = useRef<(() => void) | null>(null);
-  const selectedServicesNames = useMemo(() => selectedServices.map((s) => s.name).join(", "), [selectedServices]);
+  const selectedServicesNames = useMemo(() => selectedServices.map((s: ServiceOut) => s.name).join(", "), [selectedServices]);
   // Do NOT compute prices on the client. Price must come from server `priceQuote`.
   // Duration must be provided by the server via `priceQuote.duration_minutes` or
   // from the created booking (`bookingDurationMinutes`). Do not sum service durations
@@ -329,6 +345,7 @@ export default function BookingWizard() {
   const [tick, setTick] = useState<number>(0);
   const paymentMessage = useMemo(() => {
     if (paymentStatus === "opening") return t("awaiting_payment") || "Opening payment window…";
+    if (paymentStatus === "polling") return t("awaiting_payment") || "Awaiting payment confirmation…";
     if (paymentStatus === "pending") return t("awaiting_payment") || "Awaiting payment confirmation…";
     if (paymentStatus === "paid") return t("payment_success") || "Payment succeeded.";
     if (paymentStatus === "failed") return t("payment_failed") || "Payment failed. Please try again.";
@@ -396,52 +413,6 @@ export default function BookingWizard() {
     staleTime: 5 * 60 * 1000,
   });
 
-  // Consume a one-time repeat-booking payload set by MyVisits when user clicks "Записаться снова".
-  useEffect(() => {
-    try {
-      const win = window as any;
-      const payload = win.__REPEAT_BOOKING;
-      if (!payload) return;
-      // Wait until services list is loaded to resolve service ids by name
-      if (!services || services.length === 0) return;
-
-      const service_ids: string[] = [];
-      if (Array.isArray(payload.service_ids) && payload.service_ids.length > 0) {
-        // payload may include service_ids
-        for (const sid of payload.service_ids) {
-          const svc = services.find((s) => s.id === String(sid));
-          if (svc) service_ids.push(svc.id);
-        }
-      } else if (Array.isArray(payload.service_names) && payload.service_names.length > 0) {
-        const wanted = payload.service_names.map((n: string) => String(n).trim().toLowerCase());
-        for (const s of services) {
-          if (wanted.includes((s.name || "").toLowerCase())) service_ids.push(s.id);
-        }
-      }
-
-      if (service_ids.length > 0) {
-        const selected = services.filter((s) => service_ids.includes(s.id));
-        if (selected.length > 0) updateDraft({ services: selected });
-      }
-
-      if (typeof payload.master_id === "number") {
-        const m = (masters || []).find((mm) => mm.id === payload.master_id) || null;
-        if (m) updateDraft({ master: m });
-        else updateDraft({ master: { id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut });
-      }
-
-      // Skip SERVICE/MASTER steps — jump to DATE so user picks date/time
-      goToStep("DATE");
-
-      // Clear payload so it won't be reused accidentally
-      try {
-        delete win.__REPEAT_BOOKING;
-      } catch (e) {}
-    } catch (err) {
-      // best-effort; ignore
-    }
-  }, [services, masters, goToStep, updateDraft]);
-
   const applyReschedulePayload = useCallback((payload: any) => {
     if (!payload) return;
     if (!services || services.length === 0) return;
@@ -489,7 +460,7 @@ export default function BookingWizard() {
         const d = new Date(payload.starts_at);
         if (!Number.isNaN(d.getTime())) {
           const iso = formatYMD(d.getFullYear(), d.getMonth() + 1, d.getDate());
-          setBookingDraft((prev) => ({ ...prev, date: iso, time: "", slot: "" }));
+          updateDraft({ date: iso, time: "", slot: "" });
           setViewYearMonth({ year: d.getFullYear(), month: d.getMonth() + 1 });
         }
       } catch (err) {}
@@ -498,21 +469,67 @@ export default function BookingWizard() {
     goToStep("DATE");
   }, [services, masters, resetHold, goToStep, updateDraft]);
 
-  // Consume a one-time reschedule payload (from MyVisits) to start reschedule flow
+  // Consolidated initialization effect: handle __REPEAT_BOOKING, __RESCHEDULE_BOOKING
+  // and `tma:reschedule-start` events in a single place to avoid race
+  // conditions and repeated state-resetting across multiple effects.
   useEffect(() => {
-    try {
-      const win = window as any;
-      const payload = win.__RESCHEDULE_BOOKING;
-      if (!payload) return;
-      applyReschedulePayload(payload);
-      try { delete win.__RESCHEDULE_BOOKING; } catch (e) {}
-    } catch (err) {
-      // best-effort
-    }
-  }, [applyReschedulePayload]);
+    const win = window as any;
 
-  // Listen for explicit reschedule-start events to react immediately
-  useEffect(() => {
+    const consumeRepeat = () => {
+      try {
+        const payload = win.__REPEAT_BOOKING;
+        if (!payload) return false;
+        if (!services || services.length === 0) return false;
+
+        const service_ids: string[] = [];
+        if (Array.isArray(payload.service_ids) && payload.service_ids.length > 0) {
+          for (const sid of payload.service_ids) {
+            const svc = services.find((s) => s.id === String(sid));
+            if (svc) service_ids.push(svc.id);
+          }
+        } else if (Array.isArray(payload.service_names) && payload.service_names.length > 0) {
+          const wanted = payload.service_names.map((n: string) => String(n).trim().toLowerCase());
+          for (const s of services) {
+            if (wanted.includes((s.name || "").toLowerCase())) service_ids.push(s.id);
+          }
+        }
+
+        if (service_ids.length > 0) {
+          const selected = services.filter((s) => service_ids.includes(s.id));
+          if (selected.length > 0) updateDraft({ services: selected });
+        }
+
+        if (typeof payload.master_id === "number") {
+          const m = (masters || []).find((mm) => mm.id === payload.master_id) || null;
+          if (m) updateDraft({ master: m });
+          else updateDraft({ master: { id: payload.master_id, name: payload.master_name || (t("master_default") as string) } as MasterOut });
+        }
+
+        goToStep("DATE");
+        try { delete win.__REPEAT_BOOKING; } catch (e) {}
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const consumeReschedule = () => {
+      try {
+        const payload = win.__RESCHEDULE_BOOKING;
+        if (!payload) return false;
+        applyReschedulePayload(payload);
+        try { delete win.__RESCHEDULE_BOOKING; } catch (e) {}
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+
+    // Attempt to consume both repeat and reschedule payloads once on mount.
+    consumeRepeat();
+    consumeReschedule();
+
+    // Event listener for explicit reschedule-start events
     const handler = (evt: Event) => {
       const payload = (evt as CustomEvent)?.detail || (window as any).__RESCHEDULE_BOOKING;
       try { (window as any).__RESCHEDULE_BOOKING = payload; } catch (e) {}
@@ -520,7 +537,7 @@ export default function BookingWizard() {
     };
     window.addEventListener("tma:reschedule-start", handler as EventListener);
     return () => window.removeEventListener("tma:reschedule-start", handler as EventListener);
-  }, [applyReschedulePayload]);
+  }, [services, masters, applyReschedulePayload, goToStep, updateDraft]);
 
   useEffect(() => {
     if (!selectedMaster) return;
@@ -584,37 +601,35 @@ export default function BookingWizard() {
     }
   }, [slotsData?.timezone, availableDaysData?.timezone]);
 
-  const bookingMutation = useMutation({
-    mutationFn: createBooking,
+  const bookingMutation = useMutation<BookingResponse, unknown, BookingRequest>({
+    mutationFn: createHold,
     onSuccess: (data) => {
       if (data.ok) {
         if (data.booking_id) {
           setBookingId(data.booking_id);
         }
         if (data.master_id || data.master_name) {
-          setBookingDraft((prev) => {
-            const current = prev.master;
-            let next = current;
-            if (current && data.master_id && current.id === data.master_id) {
-              next = { ...current, name: data.master_name || current.name } as MasterOut;
-            } else if (data.master_id) {
-              next = { id: data.master_id, name: data.master_name || current?.name || (t("master_default") as string) } as MasterOut;
-            } else if (data.master_name && current) {
-              next = { ...current, name: data.master_name } as MasterOut;
-            }
-            return { ...prev, master: next };
-          });
+          const current = bookingDraft.master;
+          let next = current;
+          if (current && data.master_id && current.id === data.master_id) {
+            next = { ...current, name: data.master_name || current.name } as MasterOut;
+          } else if (data.master_id) {
+            next = { id: data.master_id, name: data.master_name || current?.name || (t("master_default") as string) } as MasterOut;
+          } else if (data.master_name && current) {
+            next = { ...current, name: data.master_name } as MasterOut;
+          }
+          updateDraft({ master: next });
         }
         if (data.duration_minutes) {
           setBookingDurationMinutes(data.duration_minutes);
         }
         if (data.starts_at) {
           const d = new Date(data.starts_at);
-          if (!Number.isNaN(d.getTime())) {
-            const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-            const timeLabel = friendlyTime(data.starts_at, isoDate);
-            setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
-          }
+            if (!Number.isNaN(d.getTime())) {
+              const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+              const timeLabel = formatTime(data.starts_at, isoDate);
+              updateDraft({ date: isoDate, time: timeLabel });
+            }
         }
           if (data.invoice_url) {
             handlePayment(data.invoice_url);
@@ -635,7 +650,7 @@ export default function BookingWizard() {
           setToast({ message: t("slot_taken") as string, tone: "error" });
           goToStep("DATE");
           refetchSlots();
-          try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
+          haptic.notify("error");
         } else {
           setToast({ message: data.error || (t("booking_failed") as string), tone: "error" });
           refetchSlots();
@@ -666,26 +681,22 @@ export default function BookingWizard() {
         if (resp.starts_at) {
           try {
             const d = new Date(resp.starts_at);
-            if (!Number.isNaN(d.getTime())) {
+              if (!Number.isNaN(d.getTime())) {
               const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-              const timeLabel = friendlyTime(resp.starts_at, isoDate);
-              setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
+              const timeLabel = formatTime(resp.starts_at, isoDate);
+              updateDraft({ date: isoDate, time: timeLabel });
             }
           } catch (err) {}
         }
 
-        try { queryClient.removeQueries(["bookings"] as any); } catch (e) {}
-        setTimeout(() => {
-          try { queryClient.refetchQueries({ queryKey: ["bookings","upcoming"], exact: true }); } catch (e) {}
-          try { window.dispatchEvent(new CustomEvent("tma:bookings-updated")); } catch (e) {}
-        }, 300);
+        try { queryClient.invalidateQueries({ queryKey: ["bookings"] }); } catch (e) {}
         goToStep("SUCCESS");
       } else {
         setToast({ message: resp.error || (t("reschedule_failed") as string), tone: "error" });
         refetchSlots();
         if (resp.error === "slot_unavailable") {
           goToStep("DATE");
-          try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
+          haptic.notify("error");
         }
       }
     },
@@ -710,11 +721,7 @@ export default function BookingWizard() {
         if (s === "paid") {
           setPaymentStatus("paid");
           notifySuccess();
-          try { queryClient.removeQueries(["bookings"] as any); } catch (e) {}
-          setTimeout(() => {
-            try { queryClient.refetchQueries({ queryKey: ["bookings","upcoming"], exact: true }); } catch (e) {}
-            try { window.dispatchEvent(new CustomEvent("tma:bookings-updated")); } catch (e) {}
-          }, 300);
+          try { queryClient.invalidateQueries({ queryKey: ["bookings"] }); } catch (e) {}
           if (opts?.resetHoldAfter) {
             try { resetHold(); } catch (e) {}
           }
@@ -744,7 +751,7 @@ export default function BookingWizard() {
     setBookingDurationMinutes(null);
     goToStep("MASTER");
     // lightweight impact when user proceeds from service selection
-    try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
+    haptic.impact("light");
   }, [selectedServices, goToStep, updateDraft]);
 
   const goToTimeClearingHold = useCallback(async () => {
@@ -925,16 +932,12 @@ export default function BookingWizard() {
                           const d = new Date(resp.starts_at);
                           if (!Number.isNaN(d.getTime())) {
                             const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-                            const timeLabel = friendlyTime(resp.starts_at, isoDate);
-                            setBookingDraft((prev) => ({ ...prev, date: isoDate, time: timeLabel }));
+                            const timeLabel = formatTime(resp.starts_at, isoDate);
+                            updateDraft({ date: isoDate, time: timeLabel });
                           }
                         }
                         resetHold();
-                        try { queryClient.removeQueries(["bookings"] as any); } catch (e) {}
-                        setTimeout(() => {
-                          try { queryClient.refetchQueries({ queryKey: ["bookings","upcoming"], exact: true }); } catch (e) {}
-                          try { window.dispatchEvent(new CustomEvent("tma:bookings-updated")); } catch (e) {}
-                        }, 300);
+                        try { queryClient.invalidateQueries({ queryKey: ["bookings"] }); } catch (e) {}
                         notifySuccess();
                         goToStep("SUCCESS");
                       } else {
@@ -942,7 +945,7 @@ export default function BookingWizard() {
                           setToast({ message: t("slot_taken") as string, tone: "error" });
                           resetHold();
                           refetchSlots();
-                          try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
+                          haptic.notify("error");
                           goToStep("DATE");
                         } else {
                           setToast({ message: resp.error || (t("booking_failed") as string), tone: "error" });
@@ -1149,7 +1152,7 @@ export default function BookingWizard() {
     if (step === "SERVICE") return t("heading_service") as string;
     if (step === "MASTER") return t("heading_master") as string;
     if (step === "DATE") return t("heading_date") as string;
-    if (step === "TIME") return `${t("heading_time_prefix")} ${friendlyDate(selectedDate)}`;
+    if (step === "TIME") return `${t("heading_time_prefix")} ${formatDate(selectedDate)}`;
     if (step === "CONFIRM") return t("heading_confirm") as string;
     return t("heading_done") as string;
   })();
@@ -1174,13 +1177,9 @@ export default function BookingWizard() {
   const closeProfile = () => setProfileMaster(null);
 
   const toggleService = useCallback((service: ServiceOut) => {
-    setBookingDraft((prev) => {
-      const exists = prev.services.find((p) => p.id === service.id);
-      const services = exists ? prev.services.filter((p) => p.id !== service.id) : [...prev.services, service];
-      return { ...prev, services };
-    });
-    tg?.HapticFeedback?.impactOccurred?.("light");
-  }, []);
+    dispatchBookingDraft({ type: "toggleService", service });
+    haptic.impact("light");
+  }, [dispatchBookingDraft]);
 
   useEffect(() => {
     // Reset payment status when leaving confirmation, but preserve it
@@ -1193,7 +1192,7 @@ export default function BookingWizard() {
   // Haptic: success notification when entering SUCCESS screen
   useEffect(() => {
     if (step === "SUCCESS") {
-      try { tg?.HapticFeedback?.notificationOccurred?.("success"); } catch (e) {}
+      haptic.notify("success");
     }
   }, [step]);
 
@@ -1244,7 +1243,7 @@ export default function BookingWizard() {
       if (isRescheduling && rescheduleBookingId) {
         updateDraft({ slot: finalSlot, time: display });
         goToStep("CONFIRM");
-        tg?.HapticFeedback?.impactOccurred?.("light");
+        haptic.impact("light");
         return;
       }
 
@@ -1266,11 +1265,11 @@ export default function BookingWizard() {
         });
           updateDraft({ slot: finalSlot, time: display });
         goToStep("CONFIRM");
-        tg?.HapticFeedback?.impactOccurred?.("light");
+        haptic.impact("light");
         setToast({ message: t("slot_reserved") as string, tone: "success" });
       } else {
         setToast({ message: resp?.error || (t("reserve_failed") as string), tone: "error" });
-        try { tg?.HapticFeedback?.notificationOccurred?.("error"); } catch (e) {}
+        haptic.notify("error");
         refetchSlots();
         goToTimeClearingHold();
       }
@@ -1285,7 +1284,7 @@ export default function BookingWizard() {
   const handleMasterSelect = useCallback((m: MasterOut) => {
     updateDraft({ master: m });
     goToStep("DATE");
-    tg?.HapticFeedback?.impactOccurred?.("light");
+    haptic.impact("light");
   }, [goToStep, updateDraft]);
 
   const handleProfileOpen = useCallback((m: MasterOut, anchorEl?: HTMLElement | null) => {
@@ -1295,7 +1294,7 @@ export default function BookingWizard() {
   const handleDateSelect = useCallback(async (iso: string) => {
     updateDraft({ date: iso, time: "", slot: "" });
     await goToTimeClearingHold();
-    tg?.HapticFeedback?.impactOccurred?.("light");
+    haptic.impact("light");
   }, [goToTimeClearingHold, updateDraft]);
 
   const renderServiceSelection = () => (
@@ -1344,16 +1343,16 @@ export default function BookingWizard() {
             availableDays={(availableDaysData as any)?.days || []}
             selectedDate={selectedDate}
             onPrev={() =>
-              setViewYearMonth((v) => {
+                setViewYearMonth((v) => {
                 const prev = new Date(v.year, v.month - 2, 1);
-                try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
+                haptic.impact("light");
                 return { year: prev.getFullYear(), month: prev.getMonth() + 1 };
               })
             }
             onNext={() =>
               setViewYearMonth((v) => {
                 const next = new Date(v.year, v.month, 1);
-                try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {}
+                haptic.impact("light");
                 return { year: next.getFullYear(), month: next.getMonth() + 1 };
               })
             }
@@ -1549,7 +1548,7 @@ export default function BookingWizard() {
                 initial="enter"
                 animate="center"
                 exit="exit"
-                transition={{ type: "spring", stiffness: 260, damping: 30, mass: 0.8 }}
+                transition={{ type: "tween", ease: "circOut", duration: 0.28 }}
                 className="tma-step-pane"
               >
                 {stepContent}
@@ -1564,11 +1563,11 @@ export default function BookingWizard() {
         master={profileMaster?.master ?? null}
         profile={profileData || null}
         onClose={closeProfile}
-        onBook={(m) => {
+          onBook={(m) => {
           updateDraft({ master: m });
           goToStep("DATE");
           closeProfile();
-          tg?.HapticFeedback?.impactOccurred?.("medium");
+          haptic.impact("medium");
         }}
         anchorEl={profileMaster?.anchorEl}
       />
@@ -1882,7 +1881,7 @@ type StepConfirmProps = {
   onlinePaymentsAvailable: boolean;
   paymentMethod: "cash" | "online";
   setPaymentMethod: (method: "cash" | "online") => void;
-  paymentStatus: "idle" | "opening" | "pending" | "paid" | "failed" | "cancelled";
+  paymentStatus: "idle" | "opening" | "pending" | "polling" | "paid" | "failed" | "cancelled";
   paymentMessage: string;
 };
 
@@ -1961,10 +1960,10 @@ const StepConfirm = ({
               </div>
             </button>
             {onlinePaymentsAvailable && (
-              <button
+                <button
                 type="button"
                 className={`tma-pay-option ${paymentMethod === "online" ? "active" : ""}`}
-                onClick={() => { setPaymentMethod("online"); try { tg?.HapticFeedback?.impactOccurred?.("light"); } catch (e) {} }}
+                onClick={() => { setPaymentMethod("online"); haptic.impact("light"); }}
               >
                 <span className="tma-pay-icon">💳</span>
                 <div>

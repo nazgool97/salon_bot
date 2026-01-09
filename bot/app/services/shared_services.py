@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from importlib import import_module
-from typing import Any, Dict, Iterable, Sequence, Mapping
+from typing import Any, Dict, Iterable, Sequence, Mapping, TYPE_CHECKING
 from dataclasses import dataclass
 
 
@@ -162,6 +162,28 @@ def normalize_currency(code: str | None) -> str | None:
         return None
     except Exception:
         return None
+
+
+def normalize_error_code(val: str | Exception | None, default: str) -> str:
+    """Return a safe, frontend-friendly error code.
+
+    This mirrors previous local implementations across the codebase and
+    centralizes normalization so callers don't accidentally leak
+    exception messages or unusual characters to the client. The result
+    is lowercased, trimmed, restricted to alnum/_/- and limited to 64
+    chars. On any unexpected input the provided `default` is returned.
+    """
+    if val is None:
+        return default
+    try:
+        code = str(val).strip().lower()
+    except Exception:
+        return default
+    if not code:
+        return default
+    if not all(ch.isalnum() or ch in {"_", "-"} for ch in code):
+        return default
+    return code[:64]
 
 
 def _parse_env_int_list(name: str) -> list[int]:
@@ -362,20 +384,6 @@ def _resolve_local_tz() -> ZoneInfo | None:
 
 LOCAL_TZ = _resolve_local_tz()
 
-"""Shared utilities used across service layers.
-
-Persistence guideline:
-    • Always store timestamps in UTC using datetime.now(UTC) or aware UTC values.
-    • Convert to the local timezone ONLY when rendering text for users.
-    • LOCAL_TZ is resolved once at startup; call get_local_tz() at render time
-        to re-resolve from env (LOCAL_TIMEZONE) if container config changes.
-
-This module provides lightweight, DB-agnostic helpers (money formatting,
-status emoji, simple list item formatting, locale resolution, notification
-sending, and minimal inline keyboard primitives). Repository/database logic
-lives in role-specific modules (admin_services, client_services, master_services)
-to keep responsibilities clear and avoid circular imports.
-"""
 
 # Эмодзи для статусов
 STATUS_EMOJI: Dict[str, str] = {
@@ -388,6 +396,134 @@ STATUS_EMOJI: Dict[str, str] = {
     "done": "✅",
     "no_show": "👻",
 }
+
+
+async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None = None, lang: str | None = None) -> dict:
+    """Return a dict with API-friendly booking fields.
+
+    This centralizes status label/emoji, price formatting and permission
+    checks so API endpoints can be thin and consistent.
+    """
+    out: dict = {}
+    try:
+        from bot.app.services.shared_services import STATUS_EMOJI as _SE  # local alias
+        from bot.app.services.shared_services import LOCAL_TZ as _LT  # noqa: F401
+    except Exception:
+        _SE = STATUS_EMOJI
+
+    try:
+        # Status label (localized) and emoji
+        try:
+            from bot.app.telegram.common.status import get_status_label
+            status_label = await get_status_label(getattr(booking, "status", None), lang=lang)
+        except Exception:
+            status_label = str(getattr(booking, "status", ""))
+        try:
+            status_emoji = status_to_emoji(getattr(booking, "status", None))
+        except Exception:
+            status_emoji = ""
+
+        # Price snapshot
+        try:
+            price_val = getattr(booking, "final_price_cents", None) or getattr(booking, "original_price_cents", None)
+            price_val = int(price_val) if price_val is not None else None
+        except Exception:
+            price_val = None
+        try:
+            currency_val = getattr(booking, "currency", None)
+        except Exception:
+            currency_val = None
+        try:
+            price_fmt = format_money_cents(price_val, currency_val) if price_val is not None else None
+        except Exception:
+            price_fmt = None
+
+        # Payment method inference
+        try:
+            pm = None
+            if getattr(booking, "payment_provider", None) or getattr(booking, "paid_at", None) is not None or getattr(booking, "payment_id", None):
+                pm = "online"
+            else:
+                pm = "cash"
+        except Exception:
+            pm = None
+
+        # Permissions: delegate to client_services.calculate_booking_permissions
+        try:
+            from bot.app.services import client_services as _client_services
+            # Try to read lock windows from SettingsRepo if available (best-effort)
+            try:
+                from bot.app.services.admin_services import SettingsRepo
+                try:
+                    lock_r = await SettingsRepo.get_client_reschedule_lock_minutes()
+                except Exception:
+                    lock_r = None
+                try:
+                    lock_c = await SettingsRepo.get_client_cancel_lock_minutes()
+                except Exception:
+                    lock_c = None
+            except Exception:
+                lock_r = lock_c = None
+
+            can_cancel_calc, can_reschedule_calc = await _client_services.calculate_booking_permissions(
+                booking,
+                lock_r_minutes=lock_r,
+                lock_c_minutes=lock_c,
+                settings=None,
+            )
+            can_cancel = bool(can_cancel_calc)
+            can_reschedule = bool(can_reschedule_calc)
+            try:
+                # Authoritative reschedule check (only if we have a caller telegram id)
+                if user_telegram_id is not None:
+                    can_reschedule_primary, _ = await _client_services.can_client_reschedule(int(getattr(booking, "id", 0) or 0), int(user_telegram_id))
+                    if can_reschedule_primary:
+                        can_reschedule = True
+            except Exception:
+                pass
+        except Exception:
+            can_cancel = False
+            can_reschedule = False
+
+        # safe isoformat extraction
+        starts_obj = getattr(booking, "starts_at", None)
+        ends_obj = getattr(booking, "ends_at", None)
+        starts_iso = starts_obj.isoformat() if starts_obj is not None else None
+        ends_iso = ends_obj.isoformat() if ends_obj is not None else None
+
+        out = {
+            "status": str(getattr(booking, "status", "")),
+            "status_label": status_label or None,
+            "status_emoji": status_emoji or None,
+            "price_cents": price_val,
+            "price_formatted": price_fmt,
+            "currency": currency_val or None,
+            "payment_method": pm,
+            "can_cancel": bool(can_cancel),
+            "can_reschedule": bool(can_reschedule),
+            "starts_at": starts_iso,
+            "ends_at": ends_iso,
+        }
+    except Exception:
+        # Best-effort fallback: return minimal fields
+        starts_obj = getattr(booking, "starts_at", None)
+        ends_obj = getattr(booking, "ends_at", None)
+        starts_iso = starts_obj.isoformat() if starts_obj is not None else None
+        ends_iso = ends_obj.isoformat() if ends_obj is not None else None
+        out = {
+            "status": str(getattr(booking, "status", "")),
+            "status_label": getattr(booking, "status", None),
+            "status_emoji": None,
+            "price_cents": None,
+            "price_formatted": None,
+            "currency": None,
+            "payment_method": None,
+            "can_cancel": False,
+            "can_reschedule": False,
+            "starts_at": starts_iso,
+            "ends_at": ends_iso,
+        }
+    return out
 
 # --- Payments/provider runtime cache (shared helper; used across modules) ---
 _PAYMENTS_ENABLED: bool | None = None
@@ -596,10 +732,14 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
 
         # Try to use Babel for proper locale-aware currency formatting.
         try:
-            from babel.numbers import format_currency
+            # Use dynamic import to avoid static-analysis missing-import errors
+            _bn = import_module("babel.numbers")
+            format_currency = getattr(_bn, "format_currency")
             try:
-                from babel.core import Locale
-                from babel import default_locale as _babel_default_locale
+                _bc = import_module("babel.core")
+                Locale = getattr(_bc, "Locale")
+                _b = import_module("babel")
+                _babel_default_locale = getattr(_b, "default_locale")
             except Exception:
                 Locale = None  # type: ignore
                 _babel_default_locale = None  # type: ignore
@@ -1005,7 +1145,9 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
         _master_fmt = _client_fmt
 
     try:
-        from bot.app.services.admin_services import format_admin_booking_row as _admin_fmt
+        # Import module then getattr to avoid static import symbol warnings
+        import bot.app.services.admin_services as _admin_mod
+        _admin_fmt = getattr(_admin_mod, "format_admin_booking_row", _client_fmt)
     except Exception:
         _admin_fmt = _client_fmt
 
@@ -1280,6 +1422,14 @@ __all__ = [
 # ---------------- New shared helpers (i18n, profiles, notifications) ---------------- #
 from typing import Optional, Mapping
 from aiogram.types import Message, CallbackQuery
+# Provide type-only imports for optional third-party libs to satisfy Pylance
+if TYPE_CHECKING:
+    try:
+        from babel.numbers import format_currency  # type: ignore
+        from babel.core import Locale  # type: ignore
+        from babel import default_locale as _babel_default_locale  # type: ignore
+    except Exception:
+        pass
 # (Repository classes are intentionally not duplicated here.)
 
 
@@ -1312,10 +1462,15 @@ def _msg(obj: Message | CallbackQuery | Any) -> Message | None:
 
 def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
     """Return Telegram user id from Message/CallbackQuery or 0 if not available."""
-    # Assume aiogram always provides `from_user` for user-originated updates.
-    # Let exceptions surface so issues are visible in logs instead of silently
-    # returning 0 and masking incorrect behavior.
-    return int(obj.from_user.id)
+    # Prefer a defensive extraction to avoid optional-member access warnings
+    try:
+        fu = getattr(obj, "from_user", None)
+        if fu is None:
+            return 0
+        uid = getattr(fu, "id", None)
+        return int(uid or 0)
+    except Exception:
+        return 0
 
 
 

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchBookings, BookingItem } from "../../api/booking";
 import { t } from "../../i18n";
-import { friendlyDateTime } from "../../lib/timezone";
+import { formatDateTime } from "../../lib/timezone";
 import { BookingDetailsModal } from "../booking/MyVisits";
 
 export default function Hub({ onNavigate }: { onNavigate: (to: "booking" | "visits") => void }) {
@@ -56,7 +56,7 @@ export default function Hub({ onNavigate }: { onNavigate: (to: "booking" | "visi
               >
                 <div className="tma-field-label">{t("nearest_visit_label")}</div>
                 <div className="tma-field-value">{nearest.service_names || "—"}</div>
-                <div className="tma-field-label">{friendlyDateTime(nearest.starts_at)}</div>
+                <div className="tma-field-label">{formatDateTime(nearest.starts_at)}</div>
               </div>
 
               <BookingDetailsModal

@@ -45,6 +45,7 @@ from bot.app.services.shared_services import (
     get_service_duration,
     ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT,
     get_admin_ids,
+    normalize_error_code,
 )
 from bot.app.core.notifications import send_booking_notification
 from bot.app.services.admin_services import SettingsRepo
@@ -350,19 +351,6 @@ async def get_filtered_services() -> list[ServiceDTO]:
 # --- Booking presentation and list helpers moved from shared_services ---
 
 
-def _normalize_error_code(val: str | Exception | None, default: str) -> str:
-    """Return a safe error code for WebApp responses."""
-    if val is None:
-        return default
-    try:
-        code = str(val).strip().lower()
-    except Exception:
-        return default
-    if not code:
-        return default
-    if not all(ch.isalnum() or ch in {"_", "-"} for ch in code):
-        return default
-    return code[:64]
 
 
 @dataclass(slots=True)
@@ -846,6 +834,37 @@ class BookingRepo:
                 return list(res.scalars().all())
         except Exception as e:
             logger.exception("BookingRepo.list_active_by_user failed for %s: %s", user_id, e)
+            return []
+
+    @staticmethod
+    async def list_history_by_user(user_id: int, limit: int = 50) -> list[Booking]:
+        """Return past or terminal bookings for a user (newest first).
+
+        History = starts_at < now OR status is terminal (cancelled/done/no_show/etc.).
+        """
+        try:
+            async with get_session() as session:
+                from sqlalchemy import select, or_
+                from bot.app.domain.models import Booking
+
+                now = utc_now()
+                from bot.app.domain.models import BookingStatus
+
+                # Only include explicit history statuses: cancelled, done, no_show
+                history_statuses = (BookingStatus.CANCELLED, BookingStatus.DONE, BookingStatus.NO_SHOW)
+                stmt = (
+                    select(Booking)
+                    .where(
+                        Booking.user_id == int(user_id),
+                        Booking.status.in_(history_statuses),
+                    )
+                    .order_by(Booking.starts_at.desc())
+                    .limit(int(limit))
+                )
+                res = await session.execute(stmt)
+                return list(res.scalars().all())
+        except Exception as e:
+            logger.exception("BookingRepo.list_history_by_user failed for %s: %s", user_id, e)
             return []
 
     @staticmethod
@@ -1684,12 +1703,10 @@ async def get_available_time_slots_for_services(
                 slot_step_min = 0
 
             if not slot_step_min or slot_step_min <= 0:
-                # default to a fine-grained 5-minute grid (user-friendly)
-                # regardless of service duration. This ensures clients see
-                # familiar minute choices (00,05,10...) even for long
-                # services. Administrators can override via
-                # `slot_tick_minutes` setting.
-                slot_step_min = 5
+                # default to a 15-minute grid to match the main bot UX
+                # and avoid client-side adjustments. Administrators can
+                # still override via `slot_tick_minutes` setting.
+                slot_step_min = 15
 
             current = gap_start
             # walk the gap in steps and add each candidate that fits total_duration
@@ -2655,7 +2672,7 @@ async def process_booking_hold(
                 hold_minutes=hold_minutes,
             )
     except ValueError as exc:
-        return {"ok": False, "error": _normalize_error_code(exc, "booking_failed"), "booking_id": None}
+        return {"ok": False, "error": normalize_error_code(exc, "booking_failed"), "booking_id": None}
     except Exception as exc:
         logger.exception("process_booking_hold: booking creation failed: %s", exc)
         return {"ok": False, "error": "booking_failed", "booking_id": None}

@@ -13,6 +13,7 @@ import logging
 import os
 import urllib.parse
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 from functools import wraps
 from typing import Any, Dict, Optional
 from enum import Enum
@@ -23,6 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Centralized business logic helpers (booking, pricing, etc.)
 from bot.app.services import client_services
@@ -40,6 +42,8 @@ from bot.app.services.shared_services import (
     format_money_cents,
     get_contact_info,
 )
+from bot.app.services.shared_services import format_booking_list_item, default_language, format_slot_label, format_date
+from bot.app.services.shared_services import normalize_error_code
 from bot.app.telegram.common.status import get_status_label
 from bot.app.core.db import get_session
 from bot.app.services.admin_services import ServiceRepo
@@ -102,6 +106,10 @@ class SessionResponse(BaseModel):
     locale: Optional[str] = None
     webapp_title: Optional[str] = None
     online_payments_available: Optional[bool] = None
+    # Backwards/frontend-friendly flag name
+    online_payment_enabled: Optional[bool] = None
+    # Preferred date format for client-side inputs (e.g. "YYYY-MM-DD")
+    date_format: Optional[str] = None
     reminder_lead_minutes: Optional[int] = None
     # optional contact/address provided by admin
     address: Optional[str] = None
@@ -138,19 +146,6 @@ class BookingResponse(BaseModel):
 # Error handling helpers
 # ---------------------------------------------------------------------------
 
-def _normalize_error_code(val: str | Exception | None, default: str) -> str:
-    """Return a safe error code for frontend without leaking exception text."""
-    if val is None:
-        return default
-    try:
-        code = str(val).strip().lower()
-    except Exception:
-        return default
-    if not code:
-        return default
-    if not all(ch.isalnum() or ch in {"_", "-"} for ch in code):
-        return default
-    return code[:64]
 
 
 def booking_error_handler(default_error: str):
@@ -169,7 +164,7 @@ def booking_error_handler(default_error: str):
             except HTTPException:
                 raise
             except ValueError as exc:
-                code = _normalize_error_code(exc, default_error)
+                code = normalize_error_code(exc, default_error)
                 return BookingResponse(ok=False, error=code)
             except Exception as exc:  # noqa: BLE001 – catch-all is intentional for API boundary
                 logger.exception("%s failed: %s", func.__name__, exc)
@@ -185,6 +180,9 @@ class BookingItemOut(BaseModel):
     status: str
     status_label: Optional[str] = None
     status_emoji: Optional[str] = None
+    display_text: Optional[str] = None
+    formatted_time_range: Optional[str] = None
+    formatted_date: Optional[str] = None
     price_cents: Optional[int] = None
     price_formatted: Optional[str] = None
     currency: Optional[str] = None
@@ -473,6 +471,14 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         logger.exception("Failed to determine online payment availability: %s", exc)
         online_payments_available = None
 
+    # Provide a frontend-friendly alias and a date format setting (best-effort).
+    try:
+        date_format = await SettingsRepo.get_setting("date_format", "YYYY-MM-DD")
+        if not isinstance(date_format, str):
+            date_format = str(date_format) if date_format is not None else "YYYY-MM-DD"
+    except Exception:
+        date_format = "YYYY-MM-DD"
+
     try:
         title = await SettingsRepo.get_setting("webapp_title", "Telegram Mini App • Beauty")
         # If stored as JSON/string, coerce
@@ -505,6 +511,8 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         locale=locale,
         webapp_title=webapp_title,
         online_payments_available=online_payments_available,
+        online_payment_enabled=bool(online_payments_available) if online_payments_available is not None else None,
+        date_format=date_format,
         reminder_lead_minutes=reminder_lead,
         address=address_val,
         webapp_address=webapp_address_val,
@@ -578,6 +586,7 @@ async def get_slots(
 
 
 @app.get("/api/check_slot")
+@booking_error_handler("slots_failed")
 async def check_slot(
     master_id: int | None = Query(None),
     slot: datetime = Query(...),
@@ -586,42 +595,61 @@ async def check_slot(
 ) -> dict:
     """Return whether the given slot is currently available for booking.
 
-    Uses existing BookingRepo logic so checks mirror bot behavior.
+    Uses the canonical `get_available_time_slots_for_services` implementation
+    so the WebApp and Bot share the exact same availability logic.
     """
-    try:
-        # compute total duration for requested services
-        agg = await ServiceRepo.aggregate_services(service_ids)
-        total_minutes = int(agg.get("total_minutes") or 60)
-    except Exception as exc:
-        logger.exception("Failed to aggregate services %s: %s", service_ids, exc)
-        total_minutes = 60
+    # Compute total duration for requested services (let errors bubble to decorator)
+    agg = await ServiceRepo.aggregate_services(service_ids)
+    total_minutes = int(agg.get("total_minutes") or 60)
 
     # Interpret incoming `slot` using salon local timezone when naive.
     if slot.tzinfo is None:
-        try:
-            local_tz = get_local_tz() or UTC
-        except Exception as exc:
-            logger.exception("Failed to determine local timezone: %s", exc)
-            local_tz = UTC
-        # Treat naive datetime as salon-local, then convert to UTC for repo checks
-        slot = slot.replace(tzinfo=local_tz).astimezone(UTC)
+        local_tz = get_local_tz() or UTC
+        # Treat naive datetime as salon-local
+        slot_local = slot.replace(tzinfo=local_tz)
     else:
-        slot = slot.astimezone(UTC)
+        slot_local = slot.astimezone(get_local_tz() or UTC)
 
-    new_start = slot
-    new_end = new_start + timedelta(minutes=total_minutes)
+    # Require explicit master selection and cast to int so the canonical
+    # slot calculator receives the expected `int` type (fixes Pylance
+    # reportArgumentType on `master_id`). The endpoint is decorated so
+    # raising a ValueError will produce a standardized BookingResponse.
+    if master_id is None:
+        raise ValueError("master_required")
+    try:
+        resolved_master_id = int(master_id)
+    except Exception:
+        raise ValueError("master_required")
 
-    async with get_session() as session:
-        conflict = await BookingRepo.find_conflicting_booking(
-            session,
-            None,
-            master_id,
-            new_start,
-            new_end,
-            service_ids=service_ids,
-        )
+    # Call canonical slot calculator for the requested local day and master
+    from bot.app.services.client_services import get_available_time_slots_for_services
 
-    return {"available": conflict is None, "conflict": conflict}
+    available_slots = await get_available_time_slots_for_services(
+        date=slot_local,
+        master_id=resolved_master_id,
+        service_durations=[int(total_minutes)],
+    )
+
+    # Compare by hour/minute in local timezone (slots are returned as time objects)
+    sl_time = slot_local.time()
+    is_available = any((s.hour == sl_time.hour and s.minute == sl_time.minute) for s in available_slots)
+
+    # When unavailable, include a conflict code computed by the canonical repo
+    conflict = None
+    if not is_available:
+        new_start = slot_local.astimezone(UTC)
+        new_end = new_start + timedelta(minutes=total_minutes)
+        async with get_session() as session:
+            conflict = await BookingRepo.find_conflicting_booking(
+                session,
+                None,
+                master_id,
+                new_start,
+                new_end,
+                service_ids=service_ids,
+            )
+
+    return {"available": bool(is_available), "conflict": conflict}
 
 
 @app.get("/api/available_days", response_model=AvailableDaysResponse)
@@ -950,168 +978,118 @@ async def list_bookings(
     if mode == "upcoming":
         bookings = await BookingRepo.list_active_by_user(int(principal.user_id))
     else:
-        bookings = await BookingRepo.recent_by_user(principal.user_id, limit=50)
+        bookings = await BookingRepo.list_history_by_user(int(principal.user_id), limit=100)
 
     # History should include only final states: cancelled, done/completed, and no-shows
     history_statuses = {"cancelled", "canceled", "done", "completed", "no_show"}
-    upcoming_allowed_statuses = {"confirmed", "paid"}
     now_utc = datetime.now(UTC)
     result: list[BookingItemOut] = []
 
-    from bot.app.domain.models import normalize_booking_status
-
     for b in bookings:
-        # Normalize enum/string status to canonical lowercase value (e.g. 'paid', 'confirmed')
-        raw_status_obj = getattr(b, "status", None)
+        # Delegate rendering/formatting/permissions to shared helper
         try:
-            norm_status = normalize_booking_status(raw_status_obj)
-            status_raw = norm_status.value if norm_status is not None else (str(raw_status_obj).lower() if raw_status_obj is not None else "")
-        except Exception:
-            status_raw = str(raw_status_obj).lower() if raw_status_obj is not None else ""
-        try:
-            status_label_raw = await get_status_label(raw_status_obj, lang=principal.language)
-        except Exception:
-            status_label_raw = status_raw
-        try:
-            status_emoji = status_to_emoji(raw_status_obj)
-        except Exception:
-            status_emoji = ""
-        starts_at = getattr(b, "starts_at", None)
+            from bot.app.services.shared_services import render_booking_item_for_api
+            rendered = await render_booking_item_for_api(b, user_telegram_id=principal.telegram_id, lang=principal.language)
+        except Exception as exc:
+            logger.exception("render_booking_item_for_api failed for booking %s: %s", getattr(b, 'id', None), exc)
+            rendered = {}
 
+        # Filtering for history/upcoming: keep behavior unchanged
+        starts_at = getattr(b, "starts_at", None)
         if starts_at and starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=UTC)
+        if mode == "history":
+            try:
+                status_raw = (str(getattr(b, "status", "")) or "").lower()
+                if starts_at and starts_at > now_utc and status_raw not in history_statuses:
+                    continue
+            except Exception:
+                pass
 
-        # Filtering: when using the repository helper for `upcoming` we
-        # rely on the DB-level filter; only keep legacy history logic here.
-        if mode != "upcoming":  # history
-            if starts_at and starts_at > now_utc and status_raw not in history_statuses:
-                continue
-
-        # ===== СЕРВИСЫ / ИМЕНА =====
+        # Resolve service names directly from BookingItem -> Service (preferred)
+        service_names = None
         try:
-            from bot.app.services.shared_services import booking_info_from_mapping
-            info = booking_info_from_mapping({
-                "booking_id": getattr(b, "id", None),
-                "service_name": getattr(getattr(b, "service", None), "name", None),
-                "master_name": getattr(getattr(b, "master", None), "name", None),
-                "status": getattr(b, "status", None),
-                "starts_at": getattr(b, "starts_at", None),
-                "ends_at": getattr(b, "ends_at", None),
-                "final_price_cents": getattr(b, "final_price_cents", None),
-                "original_price_cents": getattr(b, "original_price_cents", None),
-            })
-            service_names = info.service_name if info and info.service_name else None
-            # If service_name is missing (composite bookings), fetch composed service names from booking_items
-            if not service_names:
-                try:
-                    async with get_session() as session:
-                        from sqlalchemy import select
-                        from bot.app.domain.models import BookingItem, Service
+            async with get_session() as session:
+                from sqlalchemy import select
+                from bot.app.domain.models import BookingItem, Service
 
-                        rows = await session.execute(
-                            select(Service.name).join(BookingItem, BookingItem.service_id == Service.id).where(BookingItem.booking_id == int(getattr(b, "id", 0))).order_by(BookingItem.position)
-                        )
-                        names = [r[0] for r in rows.all() if r and r[0]]
-                        if names:
-                            service_names = ", ".join([str(n) for n in names])
-                except Exception as exc:
-                    logger.exception("Failed to load composite service names for booking %s: %s", getattr(b, 'id', None), exc)
-        except Exception as exc:
-            logger.exception("Failed to derive service names for booking %s: %s", getattr(b, 'id', None), exc)
+                rows = await session.execute(
+                    select(Service.name).join(BookingItem, BookingItem.service_id == Service.id).where(BookingItem.booking_id == int(getattr(b, "id", 0))).order_by(BookingItem.position)
+                )
+                names = [r[0] for r in rows.all() if r and r[0]]
+                if names:
+                    service_names = ", ".join([str(n) for n in names])
+        except Exception:
             service_names = None
 
-        # ===== ПРАВА =====
-        # Calculate reschedule and cancel independently so a tight reschedule lock
-        # (e.g. 24h) does not hide a looser cancel window (e.g. 30m).
-        can_cancel = False
-        can_reschedule = False
-        lock_r = await _safe_service_repo_call("get_client_reschedule_lock_minutes") or None
-        lock_c = await _safe_service_repo_call("get_client_cancel_lock_minutes") or None
-
-        # Authoritative reschedule check (ownership + status + lock).
-        try:
-            can_res, _reason = await can_client_reschedule(int(getattr(b, "id", 0) or 0), principal.telegram_id)
-            can_reschedule = bool(can_res)
-        except Exception:
-            can_reschedule = False
-
-        # Independent cancel/reschedule calc using lock windows; keeps cancel available
-        # even when reschedule is forbidden but cancel window is still open.
-        try:
-            can_cancel_calc, can_reschedule_calc = await client_services.calculate_booking_permissions(
-                b,
-                lock_r_minutes=lock_r,
-                lock_c_minutes=lock_c,
-                settings=None,
-            )
-            can_cancel = bool(can_cancel_calc)
-            if not can_reschedule:
-                can_reschedule = bool(can_reschedule_calc)
-        except Exception as exc:
-            logger.exception("Permission calculation failed for booking %s: %s", getattr(b, 'id', None), exc)
-            can_cancel = can_reschedule = False
-
-        ends_at = getattr(b, "ends_at", None)
+        # Master name resolution
         master_id = getattr(b, "master_id", None)
-        # master name (prefer joined relation if available)
+        master_name_val = None
         try:
             master_name_val = getattr(getattr(b, "master", None), "name", None)
             if not master_name_val and master_id is not None:
                 try:
                     master_name_val = await MasterRepo.get_master_name(master_id)
-                except Exception as exc:
-                    logger.exception("Failed to fetch master name for master_id %s: %s", master_id, exc)
+                except Exception:
                     master_name_val = None
-        except Exception as exc:
-            logger.exception("Failed to resolve master name for booking %s: %s", getattr(b, 'id', None), exc)
+        except Exception:
             master_name_val = None
 
-        # price snapshot: prefer final_price_cents then original_price_cents
+        # Compute formatted date/time for frontend convenience
         try:
-            price_val = getattr(b, "final_price_cents", None) or getattr(b, "original_price_cents", None)
-            price_val = int(price_val) if price_val is not None else None
-        except Exception as exc:
-            logger.exception("Failed to parse price for booking %s: %s", getattr(b, 'id', None), exc)
-            price_val = None
-        try:
-            currency_val = getattr(b, "currency", None)
-        except Exception as exc:
-            logger.exception("Failed to read currency for booking %s: %s", getattr(b, 'id', None), exc)
-            currency_val = None
-        try:
-            price_fmt = format_money_cents(price_val, currency_val) if price_val is not None else None
-        except Exception as exc:
-            logger.exception("Failed to format price for booking %s: %s", getattr(b, 'id', None), exc)
-            price_fmt = None
-
-        # payment method inference: prefer explicit payment_provider/paid_at -> online, else cash
-        try:
-            pm = None
-            if getattr(b, "payment_provider", None) or getattr(b, "paid_at", None) is not None or getattr(b, "payment_id", None):
-                pm = "online"
+            try:
+                lt = get_local_tz()
+            except Exception:
+                lt = None
+            # Ensure lt is a ZoneInfo instance or fallback to UTC ZoneInfo
+            if lt is None or not isinstance(lt, ZoneInfo):
+                try:
+                    lt = ZoneInfo("UTC")
+                except Exception:
+                    lt = "UTC"
+            starts_obj = starts_at
+            ends_obj = getattr(b, "ends_at", None)
+            if starts_obj is not None and getattr(starts_obj, "tzinfo", None) is None:
+                starts_obj = starts_obj.replace(tzinfo=UTC)
+            if ends_obj is not None and getattr(ends_obj, "tzinfo", None) is None:
+                ends_obj = ends_obj.replace(tzinfo=UTC)
+            time_from = format_slot_label(starts_obj, fmt="%H:%M", tz=lt) if starts_obj is not None else None
+            time_to = format_slot_label(ends_obj, fmt="%H:%M", tz=lt) if ends_obj is not None else None
+            if time_from and time_to:
+                formatted_time_range = f"{time_from} – {time_to}"
             else:
-                pm = "cash"
-        except Exception as exc:
-            logger.exception("Failed to infer payment method for booking %s: %s", getattr(b, 'id', None), exc)
-            pm = None
+                formatted_time_range = time_from or None
+            formatted_date = format_date(starts_obj, "%d %b, %a", tz=lt) if starts_obj is not None else None
+        except Exception:
+            formatted_time_range = None
+            formatted_date = None
+
+        # Build a simple human-readable display_text from status label
+        try:
+            display_text = await get_status_label(rendered.get("status") or getattr(b, "status", ""), principal.language)
+        except Exception:
+            display_text = str(rendered.get("status") or getattr(b, "status", ""))
 
         result.append(
             BookingItemOut(
                 id=int(getattr(b, "id", 0) or 0),
-                status=str(getattr(b, "status", "")),
-                status_label=(status_label_raw or "") or None,
-                status_emoji=status_emoji or None,
-                price_cents=price_val,
-                price_formatted=price_fmt,
-                currency=currency_val or None,
-                starts_at=starts_at.isoformat() if starts_at else None,
-                ends_at=ends_at.isoformat() if ends_at else None,
+                status=str(rendered.get("status") or getattr(b, "status", "")),
+                status_label=rendered.get("status_label") or None,
+                status_emoji=rendered.get("status_emoji") or None,
+                display_text=display_text,
+                formatted_time_range=formatted_time_range,
+                formatted_date=formatted_date,
+                price_cents=rendered.get("price_cents"),
+                price_formatted=rendered.get("price_formatted"),
+                currency=rendered.get("currency") or None,
+                starts_at=rendered.get("starts_at") or (starts_at.isoformat() if starts_at else None),
+                ends_at=rendered.get("ends_at") or None,
                 master_id=int(master_id) if master_id is not None else None,
                 master_name=master_name_val,
                 service_names=service_names,
-                payment_method=pm,
-                can_cancel=bool(can_cancel),
-                can_reschedule=bool(can_reschedule),
+                payment_method=rendered.get("payment_method"),
+                can_cancel=bool(rendered.get("can_cancel")),
+                can_reschedule=bool(rendered.get("can_reschedule")),
             )
         )
 
@@ -1389,10 +1367,17 @@ def get_app() -> FastAPI:
 # ---------------------------------------------------------------------------
 # Serve WebApp (production build)
 # ---------------------------------------------------------------------------
-
+# Путь, куда Docker скопировал файлы (см. Dockerfile)
 WEB_DIR = os.getenv("TWA_WEB_DIR", "/app/web")
 
 if os.path.isdir(WEB_DIR):
-    app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
-else:
-    logger.warning("Web directory not found: %s", WEB_DIR)
+    # 1. Раздаем статику (CSS, JS, картинки) по пути /assets
+    app.mount("/assets", StaticFiles(directory=f"{WEB_DIR}/assets"), name="assets")
+    
+    # 2. Любой другой запрос, который не попал в /api, возвращает index.html
+    # Это нужно для SPA (Single Page Application) роутинга
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Если запрашивают файл, которого нет - отдаем index.html
+        # (React сам разберется, какую страницу показать)
+        return FileResponse(f"{WEB_DIR}/index.html")

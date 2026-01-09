@@ -75,3 +75,26 @@ export function notifySuccess(): void {
     // ignore
   }
 }
+
+// Lightweight haptic abstraction to avoid repeating try/catch everywhere.
+export const haptic = {
+  impact(type: string) {
+    try {
+      // selectionChanged uses a different method name on the web API
+      if (type === "selection" || type === "selectionChanged") {
+        tg?.HapticFeedback?.selectionChanged?.();
+        return;
+      }
+      tg?.HapticFeedback?.impactOccurred?.(type as any);
+    } catch (err) {
+      // ignore
+    }
+  },
+  notify(type: string) {
+    try {
+      tg?.HapticFeedback?.notificationOccurred?.(type as any);
+    } catch (err) {
+      // ignore
+    }
+  },
+};

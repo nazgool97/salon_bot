@@ -51,7 +51,8 @@ export type PaymentMethod = "cash" | "online";
 
 export type BookingRequest = {
   service_ids: string[]; // Pydantic: list[str], min_length=1
-  slot: string; // ISO datetime, required
+  // ISO datetime string accepted by the backend (FastAPI parses into datetime)
+  slot: string;
   master_id?: number | null;
   payment_method?: PaymentMethod | null;
 };
@@ -80,6 +81,12 @@ export type BookingItem = {
   status: string;
   status_label?: string | null;
   status_emoji?: string | null;
+  // Server-provided combined status text (may include emoji) and formatted date/time
+  display_text?: string | null;
+  formatted_date?: string | null;
+  formatted_time_range?: string | null;
+  // Optional server-provided human-friendly datetime (e.g. "14:00, 7 Jan")
+  starts_at_formatted?: string | null;
   starts_at?: string | null;
   ends_at?: string | null;
   master_id?: number | null;
@@ -95,13 +102,10 @@ export type BookingItem = {
 };
 
 // Backend-aligned booking terminal statuses — keep in sync with API enums
-export const TERMINAL_STATUSES = ["done", "cancelled", "no_show"] as const;
-export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];
-export const isTerminalStatus = (status?: string | null): status is TerminalStatus => {
-  if (!status) return false;
-  const normalized = status.toLowerCase().replace(/-/g, "_").trim();
-  return (TERMINAL_STATUSES as readonly string[]).includes(normalized);
-};
+// NOTE: status labels, emojis and permissions (`can_cancel`/`can_reschedule`)
+// are provided by the backend in `/api/bookings`. Avoid duplicating
+// status enums here — use server-provided `status_label` / `status_emoji`
+// and `can_cancel`/`can_reschedule` as the source of truth.
 
 export type PriceQuoteRequest = {
   service_ids: string[];
@@ -197,10 +201,24 @@ export async function fetchAvailableDays(params: {
   return data;
 }
 
-export async function createBooking(payload: BookingRequest): Promise<BookingResponse> {
-  const { data } = await api.post<BookingResponse>("/api/book", payload);
-  return data;
-}
+// -------------------------
+// Booking status constants
+// -------------------------
+// Booking status enum mirrors backend values. Do NOT make client-side
+// decisions about terminal vs active statuses here; rely on backend
+// `can_cancel` and `can_reschedule` flags instead.
+export const BookingStatus = {
+  RESERVED: "reserved",
+  PENDING_PAYMENT: "pending_payment",
+  CONFIRMED: "confirmed",
+  PAID: "paid",
+  CANCELLED: "cancelled",
+  DONE: "done",
+  NO_SHOW: "no_show",
+  EXPIRED: "expired",
+} as const;
+
+export type BookingStatusValue = typeof BookingStatus[keyof typeof BookingStatus];
 
 export async function checkSlot(params: { master_id?: number | null; slot: string; service_ids: string[] }): Promise<{ available: boolean; conflict?: string | null }> {
   const { data } = await api.get<{ available: boolean; conflict?: string | null }>("/api/check_slot", {

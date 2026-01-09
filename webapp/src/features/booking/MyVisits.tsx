@@ -11,25 +11,15 @@ import {
   rateBooking,
   BookingItem,
   fetchMasters,
-  TERMINAL_STATUSES,
-  isTerminalStatus,
 } from "../../api/booking";
 import { t } from "../../i18n";
 import type { MasterOut } from "../../api/booking";
-import { tg } from "../../lib/twa";
-import { friendlyDateTime, formatDateTimeShort, formatDurationMinutes } from "../../lib/timezone";
-import { formatMoneyFromCents } from "../../lib/money";
+import { tg, haptic } from "../../lib/twa";
+import { formatDurationMinutes, formatDateTimePreferServer } from "../../lib/timezone";
+import { formatMoneyFromCents, formatMoneyPreferServer } from "../../lib/money";
 
-const [STATUS_DONE, STATUS_CANCELLED, STATUS_NO_SHOW] = TERMINAL_STATUSES;
-
-function chipClass(status?: string | null) {
-  const s = status?.toLowerCase().replace(/-/g, "_").trim();
-  if (isTerminalStatus(s)) {
-    if (s === STATUS_DONE) return "tma-chip";
-    if (s === STATUS_CANCELLED || s === STATUS_NO_SHOW) return "tma-chip tma-chip-ghost";
-  }
-  return "tma-chip tma-chip-soft";
-}
+// Status chip styles are now derived from server `status` directly via
+// CSS class names like `status-paid`, `status-cancelled`, etc.
 
 export function BookingDetailsModal({
   booking,
@@ -37,16 +27,16 @@ export function BookingDetailsModal({
   onClose,
   allowReschedule,
   allowCancel,
-  onReschedule,
-  onCancel,
+  onRescheduleClick,
+  onCancelClick,
 }: {
   booking: BookingItem | null;
   masterMap?: Record<number, string>;
   onClose: () => void;
   allowReschedule?: boolean;
   allowCancel?: boolean;
-  onReschedule?: () => void;
-  onCancel?: () => void;
+  onRescheduleClick?: () => void;
+  onCancelClick?: () => void;
 }) {
   if (!booking) return null;
 
@@ -55,23 +45,19 @@ export function BookingDetailsModal({
     const dm = (booking as any).duration_minutes;
     if (dm != null) return formatDurationMinutes(dm, unit) || "—";
     if (booking.starts_at && (booking as any).ends_at) {
-      try {
-        const s = new Date(booking.starts_at);
-        const e = new Date((booking as any).ends_at);
-        if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
-          const mins = Math.round((e.getTime() - s.getTime()) / 60000);
-          return formatDurationMinutes(mins, unit) || "—";
-        }
-      } catch (err) {}
+      const s = new Date(booking.starts_at);
+      const e = new Date((booking as any).ends_at);
+      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
+        const mins = Math.round((e.getTime() - s.getTime()) / 60000);
+        return formatDurationMinutes(mins, unit) || "—";
+      }
     }
     return "—";
   })();
 
   const masterLabel = masterMap?.[booking.master_id || 0] || booking.master_name || (t("master_default") as string);
 
-  const priceLabel = booking.price_cents != null
-    ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined)
-    : "—";
+  const priceLabel = formatMoneyPreferServer(booking.price_formatted, booking.price_cents ?? null, booking.currency || undefined);
 
   return createPortal(
     <div className="tma-modal-backdrop" onClick={onClose}>
@@ -90,7 +76,7 @@ export function BookingDetailsModal({
             <div className="tma-field-value">{masterLabel}</div>
 
             <div className="tma-field-label">{t("date_label")}</div>
-            <div className="tma-field-value">{friendlyDateTime(booking.starts_at)}</div>
+            <div className="tma-field-value">{formatDateTimePreferServer(booking.starts_at_formatted || booking.formatted_date, booking.starts_at)}</div>
 
             <div className="tma-field-label">{t("duration_label")}</div>
             <div className="tma-field-value">{durationLabel}</div>
@@ -103,12 +89,12 @@ export function BookingDetailsModal({
         {(allowReschedule || allowCancel) ? (
           <div className="tma-modal-actions">
             {allowReschedule ? (
-              <button className="tma-primary u-w-100" type="button" onClick={onReschedule}>
+              <button className="tma-primary u-w-100" type="button" onClick={onRescheduleClick}>
                 {t("reschedule_label") || "Перенести"}
               </button>
             ) : null}
             {allowCancel ? (
-              <button className="tma-danger tma-danger-ghost" type="button" onClick={onCancel}>
+              <button className="tma-danger tma-danger-ghost" type="button" onClick={onCancelClick}>
                 {t("cancel_btn")}
               </button>
             ) : null}
@@ -146,7 +132,7 @@ export default function MyVisits() {
     mutationFn: cancelBooking,
     onSuccess: (resp) => {
       if (resp.ok) {
-        tg?.HapticFeedback?.notificationOccurred?.("success");
+        haptic.notify("success");
         setRescheduleTarget(null);
         refetch();
       } else {
@@ -160,7 +146,7 @@ export default function MyVisits() {
     mutationFn: rescheduleBooking,
     onSuccess: (resp) => {
       if (resp.ok) {
-        tg?.HapticFeedback?.notificationOccurred?.("success");
+        haptic.notify("success");
         setRescheduleTarget(null);
         setNewSlot("");
         refetch();
@@ -175,7 +161,7 @@ export default function MyVisits() {
     mutationFn: rateBooking,
     onSuccess: (resp) => {
       if (resp.ok) {
-        tg?.HapticFeedback?.notificationOccurred?.("success");
+        haptic.notify("success");
         refetch();
       } else {
         setToast({ message: resp.error || (t("rate_failed") as string), tone: "error" });
@@ -202,14 +188,7 @@ export default function MyVisits() {
 
   const closeModal = () => setRescheduleTarget(null);
 
-  // Listen for booking updates from other parts of the app (booking wizard)
-  useEffect(() => {
-    const handler = () => {
-      try { refetch(); } catch (err) {}
-    };
-    window.addEventListener("tma:bookings-updated", handler as EventListener);
-    return () => window.removeEventListener("tma:bookings-updated", handler as EventListener);
-  }, [refetch]);
+  // Booking list is kept fresh via React Query invalidation from booking flows.
 
 
 
@@ -223,7 +202,7 @@ export default function MyVisits() {
       onClose={closeModal}
       allowReschedule={tab === "upcoming" && allowReschedule}
       allowCancel={tab === "upcoming" && allowCancel}
-      onReschedule={rescheduleTarget ? () => {
+      onRescheduleClick={rescheduleTarget ? () => {
         try {
           const detail = { booking_id: rescheduleTarget.id, master_id: rescheduleTarget.master_id, service_names: rescheduleTarget.service_names, starts_at: rescheduleTarget.starts_at };
           try { (window as any).__RESCHEDULE_BOOKING = detail; } catch (e) {}
@@ -235,7 +214,7 @@ export default function MyVisits() {
         }
         closeModal();
       } : undefined}
-      onCancel={rescheduleTarget ? () => cancelMut.mutate(rescheduleTarget.id) : undefined}
+      onCancelClick={rescheduleTarget ? () => cancelMut.mutate(rescheduleTarget.id) : undefined}
     />
   );
 
@@ -248,11 +227,12 @@ export default function MyVisits() {
           <p className="tma-subtle tma-hero-subtle">{t("my_visits_sub")}</p>
         </header>
 
+        <div className="tma-tabs" style={{ margin: '12px 0' }}>
+          <button type="button" className={`tma-tab ${tab === "upcoming" ? "active" : ""}`} onClick={() => setTab("upcoming")}>{t("tab_upcoming")}</button>
+          <button type="button" className={`tma-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>{t("tab_history")}</button>
+        </div>
+
         <section className="tma-card tma-stack">
-          <div className="tma-tabs">
-            <button type="button" className={`tma-tab ${tab === "upcoming" ? "active" : ""}`} onClick={() => setTab("upcoming")}>{t("tab_upcoming")}</button>
-            <button type="button" className={`tma-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>{t("tab_history")}</button>
-          </div>
 
           {isLoading && <div className="tma-skeleton tma-skeleton--lg" />}
           {!isLoading && (!Array.isArray(data) || data.length === 0) && (
@@ -324,58 +304,43 @@ function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRa
       : /done|completed|finished/.test(status)
         ? "✅"
         : "" );
-  const compactDateTime = formatDateTimeShort(booking.starts_at) || "";
+  const compactDateTime = (booking.formatted_date ? `${booking.formatted_date}${booking.formatted_time_range ? ' • ' + booking.formatted_time_range : ''}` : "") || "";
+
+  const {
+    topLine,
+    bottomLine,
+    servicesArr,
+    pricePart,
+    statusEmoji: statusEmojiRaw,
+    statusLabelText,
+    statusClassName,
+    svc,
+  } = formatBookingCardData(booking, masterName);
+
+  // Do not render inline emoji to avoid duplicates; icon-box shows single emoji
+  const showEmoji = "";
 
   return (
     <div className="tma-mini-card tma-booking-card" onClick={() => onOpen && onOpen()} role="button" tabIndex={0}>
       <div className="tma-booking-head">
         <div className="tma-booking-row">
-          <div className="tma-icon-box">
+          <div className="tma-icon-box" style={{ marginLeft: -6 }}>
             {disabledActions ? (
-              historyStatusEmoji ? <span style={{ fontSize: 22, lineHeight: 1 }}>{historyStatusEmoji}</span> : null
+              historyStatusEmoji ? <span style={{ fontSize: 15, lineHeight: 1, marginRight: 2 }}>{historyStatusEmoji}</span> : null
             ) : (
-              <span style={{ fontSize: 22, lineHeight: 1 }}>{booking.payment_method === "online" ? "💳" : "💵"}</span>
+              <span style={{ fontSize: 15, lineHeight: 1, marginRight: 2 }}>{booking.payment_method === "online" ? "💳" : "💵"}</span>
             )}
           </div>
           <div className="tma-flex-1">
-            {(() => {
-              const s = (booking.status || "").toLowerCase().replace(/-/g, "_").trim();
-              const statusLabelText = booking.status_label || booking.status || "";
-              const statusClass = chipClass(booking.status);
-
-              // Two-line preview: top -> date • time • master, bottom -> service • price
-              const svc = booking.service_names || (t("service_default") as string);
-              const servicesArr = (booking.service_names || "").split(",").map(s=>s.trim()).filter(Boolean);
-              const dateTimeLabel = compactDateTime;
-              const masterPart = masterName || (booking.master_id != null ? `Мастер #${booking.master_id}` : "");
-              const pricePart = booking.price_formatted || (() => {
-                return booking.price_cents != null ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined) : "";
-              })();
-
-              const topParts: string[] = [];
-              if (dateTimeLabel) topParts.push(dateTimeLabel);
-              if (masterPart) topParts.push(masterPart);
-              const topLine = topParts.join(" • ");
-
-              const bottomParts: string[] = [];
-              if (pricePart) bottomParts.push(pricePart);
-              const bottomLine = bottomParts.join(" • ");
-
-              // Show status emoji for entries in history (disabledActions === true)
-              const statusEmoji = disabledActions && isTerminalStatus(s)
-                ? (s === STATUS_CANCELLED ? "❌" : s === STATUS_NO_SHOW ? "🚫" : s === STATUS_DONE ? "✅" : "")
-                : "";
-
-              return (
-                <div className="u-flex u-items-center u-gap-8 u-justify-between">
-                  <div className="u-flex u-items-center u-gap-8 u-minw-0">
-                    {statusEmoji ? (
-                      <div style={{ fontSize: 22, lineHeight: 1 }}>{statusEmoji}</div>
+                <div className="u-flex u-items-center u-gap-1 u-justify-between">
+                    <div className="u-flex u-items-center u-gap-1 u-minw-0">
+                    {showEmoji ? (
+                      <div style={{ fontSize: 22, lineHeight: 1 }}>{showEmoji}</div>
                     ) : (
-                      <div style={{ width: 22 }} />
+                      <div style={{ width: 0 }} />
                     )}
                     <div className="u-flex-col u-gap-4 u-minw-0">
-                      <div className="u-font-16 u-fw-700 u-ellipsis">{topLine}</div>
+                      <div className="u-font-13 u-fw-700 u-ellipsis">{topLine}</div>
                       {/* Render each service on its own line (dynamically expand). Price shown as final line. */}
                       {servicesArr.length > 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -384,27 +349,25 @@ function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRa
                             if (isLast) {
                               return (
                                 <div key={idx} className="u-flex u-justify-between u-items-center">
-                                  <div className="u-fw-700 u-font-16 u-ellipsis" style={{ minWidth: 0 }}>{ss}</div>
-                                  <div className="u-fw-700 u-font-16">{`• ${pricePart}`.replace(/^•\s*/, '• ')}</div>
+                                  <div className="u-fw-700 u-font-14 u-ellipsis" style={{ minWidth: 0 }}>{ss}</div>
+                                  <div className="u-fw-700 u-font-14">{`• ${pricePart}`.replace(/^•\s*/, '• ')}</div>
                                 </div>
                               );
                             }
                             return (
-                              <div key={idx} className="u-fw-700 u-font-16 u-ellipsis">{ss}</div>
+                              <div key={idx} className="u-fw-700 u-font-14 u-ellipsis">{ss}</div>
                             );
                           })}
                           {/* If there are no services but price exists, show price */}
-                          {servicesArr.length === 0 && bottomLine && <div className="u-fw-700 u-font-16">{`• ${bottomLine}`}</div>}
+                          {servicesArr.length === 0 && bottomLine && <div className="u-fw-700 u-font-14">{`• ${bottomLine}`}</div>}
                         </div>
                       ) : (
-                        <div className="u-fw-700 u-font-16 u-ellipsis">{(svc ? svc + (bottomLine ? ' • ' + bottomLine : '') : bottomLine)}</div>
+                        <div className="u-fw-700 u-font-14 u-ellipsis">{(svc ? svc + (bottomLine ? ' • ' + bottomLine : '') : bottomLine)}</div>
                       )}
                     </div>
                   </div>
-                  {/* status text hidden in list preview (emoji/icon shown left) */}
+                  {false ? <div className={statusClassName + " tma-chip--compact"} style={{ marginLeft: 8 }}>{""}</div> : null}
                 </div>
-              );
-            })()}
           </div>
         </div>
       </div>
@@ -423,4 +386,31 @@ function RatingStars({ onRate }: { onRate: (rating: number) => void }) {
           ))}
     </div>
   );
+}
+
+function formatBookingCardData(booking: BookingItem, masterName?: string) {
+  // Prefer structured short label provided by backend; do not render bot-oriented `display_text`.
+  const statusLabelText = booking.status_label || booking.status || "";
+  const statusClassName = `tma-chip status-${(booking.status || "unknown").toString().replace(/\s+/g, "-")}`;
+
+  const svc = booking.service_names || (t("service_default") as string);
+  const servicesArr = (booking.service_names || "").split(",").map((s) => s.trim()).filter(Boolean);
+
+  const dateTimeLabel = booking.formatted_date ? `${booking.formatted_date}${booking.formatted_time_range ? ' • ' + booking.formatted_time_range : ''}` : (booking.starts_at_formatted || "");
+  const masterPart = masterName || (booking.master_id != null ? `Мастер #${booking.master_id}` : "");
+  const pricePart = booking.price_formatted || (booking.price_cents != null ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined) : "");
+
+  const topParts: string[] = [];
+  if (dateTimeLabel) topParts.push(dateTimeLabel);
+  if (masterPart) topParts.push(masterPart);
+  const topLine = topParts.join(" • ");
+
+  const bottomParts: string[] = [];
+  if (pricePart) bottomParts.push(pricePart);
+  const bottomLine = bottomParts.join(" • ");
+
+  // Prefer backend-provided emoji; frontend should not synthesize status emoji.
+  const statusEmoji = booking.status_emoji || "";
+
+  return { topLine, bottomLine, servicesArr, pricePart, statusEmoji, statusLabelText, statusClassName, svc };
 }
