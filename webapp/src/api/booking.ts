@@ -90,6 +90,7 @@ export type BookingItem = {
   starts_at_formatted?: string | null;
   starts_at?: string | null;
   ends_at?: string | null;
+  duration_minutes?: number | null;
   master_id?: number | null;
   service_names?: string | null;
   can_cancel: boolean;

@@ -28,7 +28,7 @@ import {
   MasterProfile,
 } from "../../api/booking";
 import { formatDateTimeLabel, formatDate, formatTime, formatYMD, normalizeSlotString } from "../../lib/timezone";
-import { formatMoneyFromCents } from "../../lib/money";
+import { formatMoney, getAppCurrency } from "../../lib/money";
 
 type Step = "SERVICE" | "MASTER" | "DATE" | "TIME" | "CONFIRM" | "SUCCESS";
 
@@ -64,7 +64,6 @@ const steps: { id: Step; label: string; hint: string }[] = [
   { id: "CONFIRM", label: "CONFIRM", hint: "" },
 ];
 const STEP_ORDER: Step[] = ["SERVICE", "MASTER", "DATE", "TIME", "CONFIRM", "SUCCESS"];
-const DEFAULT_CURRENCY = "UAH";
 
 const today = (() => {
   const d = new Date();
@@ -137,8 +136,7 @@ function TimeWheel({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const ITEM_HEIGHT = 50;
 
-  // Show slots exactly as provided by the backend.
-  // Keep original `orig` string so onPick can send server-provided value.
+  // Normalize slots once per change to keep render cheap (no try/catch in loops).
   const entries = useMemo(() => {
     const out: { orig: string; norm: string; display: string }[] = [];
     for (const s of slots) {
@@ -146,32 +144,36 @@ function TimeWheel({
         const norm = normalizeSlotString(s, selectedDate);
         const d = new Date(norm);
         if (Number.isNaN(d.getTime())) continue;
-        // do not filter by minute grid here — show backend-provided slots verbatim
         out.push({ orig: s, norm, display: formatTime(s, selectedDate) });
       } catch (e) {
-        // ignore
+        // ignore invalid slots
       }
     }
-    // If no 15-min aligned slots found, fallback to all slots preserving original strings
     if (out.length === 0) {
-      return slots.map((s) => ({ orig: s, norm: normalizeSlotString(s, selectedDate), display: formatTime(s, selectedDate) }));
+      return slots.map((s) => {
+        let norm = s;
+        try {
+          norm = normalizeSlotString(s, selectedDate);
+        } catch (e) {}
+        return { orig: s, norm, display: formatTime(s, selectedDate) };
+      });
     }
     return out;
   }, [slots, selectedDate]);
+
+  const selectedNorm = useMemo(() => {
+    try {
+      return selectedSlot ? normalizeSlotString(selectedSlot, selectedDate) : "";
+    } catch (e) {
+      return selectedSlot;
+    }
+  }, [selectedSlot, selectedDate]);
 
   // Scroll to the currently selected slot (if present) on mount / when slots change
   useEffect(() => {
     if (!scrollerRef.current) return;
     if (selectedSlot) {
-      const idx = entries.findIndex((entry) => {
-        try {
-          const a = entry.norm || normalizeSlotString(entry.orig, selectedDate);
-          const b = selectedSlot;
-          return a === b || entry.orig === b;
-        } catch (err) {
-          return entry.orig === selectedSlot;
-        }
-      });
+      const idx = entries.findIndex((entry) => entry.norm === selectedNorm || entry.orig === selectedSlot);
       if (idx !== -1) scrollerRef.current.scrollTop = idx * ITEM_HEIGHT;
     } else {
       scrollerRef.current.scrollTop = 0;
@@ -207,13 +209,7 @@ function TimeWheel({
         {entries.map((entry) => {
           const slotOrig = entry.orig;
           const display = entry.display;
-          let isSelected = false;
-          try {
-            const a = entry.norm || normalizeSlotString(slotOrig, selectedDate);
-            isSelected = a === selectedSlot || slotOrig === selectedSlot || display === (selectedSlot ? formatTime(selectedSlot, selectedDate) : "");
-          } catch (e) {
-            isSelected = slotOrig === selectedSlot;
-          }
+          const isSelected = entry.norm === selectedNorm || slotOrig === selectedSlot;
 
           return (
             <div
@@ -337,7 +333,7 @@ export default function BookingWizard() {
     }
   }, [onlinePaymentsAvailable, paymentMethod]);
 
-  const currencyCode = (priceQuote as any)?.currency || (typeof window !== "undefined" && (window as any).__APP_CURRENCY) || DEFAULT_CURRENCY;
+  const currencyCode = (priceQuote as any)?.currency || getAppCurrency();
   const [serviceAvailability, setServiceAvailability] = useState<Record<string, boolean>>({});
   // `prevStepRef` is declared above to track previous step for haptics/holds
   const mainButtonHandlerRef = useRef<(() => void) | null>(null);
@@ -589,7 +585,7 @@ export default function BookingWizard() {
   }, [masters, selectedMaster, updateDraft]);
 
   // Prefer hold-provided pricing when present (authoritative server-side values)
-  const displayCurrency = holdCurrency || priceQuote?.currency || DEFAULT_CURRENCY;
+  const displayCurrency = holdCurrency || priceQuote?.currency || getAppCurrency();
 
   // Price comes only from server responses: hold/finalize for fact, priceQuote for preview.
   const { finalPriceCents, originalPriceCents, discountAmountCents } = useMemo(() => {
@@ -857,6 +853,220 @@ export default function BookingWizard() {
     return () => tg.BackButton.offClick(backHandler);
   }, [step, handleBack]);
 
+  const getMainButtonState = useCallback(
+    (currentStep: Step, draft: BookingDraft, _priceQuote: any) => {
+      const { services, time, slot } = draft;
+      const hasServices = services.length > 0;
+      let text: string | null = null;
+      let isVisible = false;
+      let handler: (() => void) | null = null;
+
+      if (currentStep === "SERVICE") {
+        if (hasServices) {
+          const priceLabel = priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoney(finalPriceCents, displayCurrency || null) : "—";
+          text = `${t("continue")} (${services.length}) ${durationLabel} • ${priceLabel}`;
+          isVisible = true;
+          handler = () => handleContinueFromService();
+        }
+      } else if (currentStep === "TIME") {
+        if (slot || time) {
+          text = String(t("next")) || "Next";
+          isVisible = true;
+          handler = () => goToStep("CONFIRM");
+        }
+      } else if (currentStep === "CONFIRM") {
+        if (((selectedServiceIds.length > 0) || isRescheduling) && selectedDate && (slot || time)) {
+          if (isRescheduling && rescheduleBookingId) {
+            text = String(t("reschedule_label") || "Перенести");
+            isVisible = !rescheduleMutation.isPending;
+            handler = async () => {
+              try {
+                let finalSlot: string;
+                if (slot) {
+                  finalSlot = slot;
+                } else {
+                  const normalized = normalizeSlotString(time, selectedDate);
+                  const parsed = new Date(normalized);
+                  finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
+                }
+
+                if (!selectedMaster) {
+                  setToast({ message: t("choose_master") as string, tone: "error" });
+                  goToStep("MASTER");
+                  return;
+                }
+
+                try {
+                  if (selectedServiceIds.length > 0) {
+                    const chk = await checkSlot({ master_id: selectedMaster.id, slot: finalSlot, service_ids: selectedServiceIds });
+                    if (!chk.available) {
+                      setToast({ message: t("slot_taken") as string, tone: "error" });
+                      refetchSlots();
+                      goToStep("DATE");
+                      return;
+                    }
+                  }
+                } catch (err) {
+                  // if checkSlot fails, still attempt reschedule and surface backend error
+                }
+                await rescheduleMutation.mutateAsync({ booking_id: rescheduleBookingId, new_slot: finalSlot });
+              } catch (err) {
+                setToast({ message: (t("reschedule_failed") as string), tone: "error" });
+                refetchSlots();
+              }
+            };
+          } else {
+            if (paymentStatus === "pending" || paymentStatus === "opening") {
+              text = String(t("awaiting_payment"));
+            } else if (paymentMethod === "online") {
+              text = String(t("pay_label")) || "Оплатить";
+            } else {
+              text = String(t("confirm")) || "Записаться";
+            }
+            isVisible = paymentStatus !== "pending" && paymentStatus !== "opening" && !bookingSubmitting;
+            handler = async () => {
+              if (bookingSubmitting) return;
+              try {
+                let finalSlot: string;
+                if (slot) {
+                  finalSlot = slot; // server-provided slot string (preserves timezone)
+                } else {
+                  const normalized = normalizeSlotString(time, selectedDate);
+                  const parsed = new Date(normalized);
+                  finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
+                }
+
+                if (holdBookingId) {
+                  try {
+                    const resp = await finalizeBooking({ booking_id: holdBookingId, payment_method: paymentMethod });
+                    if (resp.ok) {
+                      if (resp.invoice_url) {
+                        if (resp.booking_id) setBookingId(resp.booking_id);
+                        if (resp.duration_minutes) setBookingDurationMinutes(resp.duration_minutes);
+                        updateHold({
+                          originalPriceCents: resp.original_price_cents ?? holdOriginalPriceCents,
+                          finalPriceCents: resp.final_price_cents ?? holdFinalPriceCents,
+                          discountAmountCents: resp.discount_amount_cents ?? holdDiscountAmountCents,
+                          discountPercent: (resp as any)?.discount_percent ?? (resp as any)?.discount_percent_applied ?? holdDiscountPercent ?? null,
+                          currency: resp.currency ?? holdCurrency,
+                          paymentMethod: resp.payment_method ?? holdPaymentMethod ?? paymentMethod,
+                        });
+
+                        if (!tg?.openInvoice) {
+                          setPaymentStatus("failed");
+                          setToast({ message: t("payment_unavailable_version") as string, tone: "error" });
+                          return;
+                        }
+
+                        setPaymentStatus("opening");
+
+                        try {
+                          handlePayment(resp.invoice_url, { resetHoldAfter: true });
+                        } catch (err) {
+                          console.warn("openInvoice callback attempt failed", err);
+                          setPaymentStatus("pending");
+                        }
+
+                        return;
+                      }
+
+                      if (resp.booking_id) setBookingId(resp.booking_id);
+                      if (resp.duration_minutes) setBookingDurationMinutes(resp.duration_minutes);
+                      if (resp.starts_at) {
+                        const d = new Date(resp.starts_at);
+                        if (!Number.isNaN(d.getTime())) {
+                          const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                          const timeLabel = formatTime(resp.starts_at, isoDate);
+                          updateDraft({ date: isoDate, time: timeLabel });
+                        }
+                      }
+                      resetHold();
+                      try { queryClient.invalidateQueries({ queryKey: ["bookings"] }); } catch (e) {}
+                      notifySuccess();
+                      goToStep("SUCCESS");
+                    } else {
+                      if (resp.error === "slot_unavailable") {
+                        setToast({ message: t("slot_taken") as string, tone: "error" });
+                        resetHold();
+                        refetchSlots();
+                        haptic.notify("error");
+                        goToStep("DATE");
+                      } else {
+                        setToast({ message: resp.error || (t("booking_failed") as string), tone: "error" });
+                        refetchSlots();
+                      }
+                    }
+                  } catch (err) {
+                    setToast({ message: (t("booking_failed") as string), tone: "error" });
+                    refetchSlots();
+                  }
+                } else {
+                  if (!selectedMaster) {
+                    setToast({ message: t("choose_master") as string, tone: "error" });
+                    goToStep("MASTER");
+                    return;
+                  }
+
+                  const chk = await checkSlot({ master_id: selectedMaster.id, slot: finalSlot, service_ids: selectedServiceIds });
+                  if (!chk.available) {
+                    setToast({ message: t("slot_taken") as string, tone: "error" });
+                    refetchSlots();
+                    return;
+                  }
+
+                  bookingMutation.mutate({
+                    master_id: selectedMaster.id,
+                    service_ids: selectedServiceIds,
+                    slot: finalSlot,
+                    payment_method: paymentMethod,
+                  });
+                }
+              } catch (err) {
+                setToast({ message: (t("reserve_failed") as string), tone: "error" });
+                refetchSlots();
+              }
+            };
+          }
+        }
+      } else if (currentStep === "SUCCESS") {
+        text = String(t("close"));
+        isVisible = true;
+        handler = () => tg.close();
+      }
+
+      return { text, isVisible, handler };
+    }, [
+      bookingSubmitting,
+      bookingMutation,
+      displayCurrency,
+      durationLabel,
+      finalPriceCents,
+      formatMoney,
+      goToStep,
+      handleContinueFromService,
+      holdBookingId,
+      holdDiscountAmountCents,
+      holdDiscountPercent,
+      holdFinalPriceCents,
+      holdOriginalPriceCents,
+      holdPaymentMethod,
+      holdCurrency,
+      isRescheduling,
+      paymentMethod,
+      paymentStatus,
+      priceQuoteLoading,
+      refetchSlots,
+      rescheduleBookingId,
+      rescheduleMutation,
+      selectedDate,
+      selectedMaster,
+      selectedServiceIds,
+      setPaymentStatus,
+      setToast,
+      updateHold,
+      updateDraft,
+    ]);
+
   useEffect(() => {
     const detachHandler = () => {
       if (mainButtonHandlerRef.current && tg?.MainButton?.offClick) {
@@ -873,226 +1083,28 @@ export default function BookingWizard() {
       detachHandler();
       if (!tg?.MainButton) return;
 
-      let label: string | null = null;
-      let enabled = false;
-      let handler: (() => void) | null = null;
-
-      switch (step) {
-        case "SERVICE": {
-          if (selectedServices.length > 0) {
-            const priceLabel = priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoneyFromCents(finalPriceCents, displayCurrency, 0) : "—";
-            // Show total count, total duration and total price on the MainButton
-            label = `${t("continue")} (${selectedServices.length}) ${durationLabel} • ${priceLabel}`;
-            enabled = true;
-            handler = () => handleContinueFromService();
-          }
-          break;
-        }
-        case "TIME": {
-          if (selectedSlot || selectedTime) {
-            label = String(t("next")) || "Next";
-            enabled = true;
-            handler = () => goToStep("CONFIRM");
-          }
-          break;
-        }
-        case "CONFIRM": {
-          if (((selectedServiceIds.length > 0) || isRescheduling) && selectedDate && (selectedSlot || selectedTime)) {
-            if (isRescheduling && rescheduleBookingId) {
-              label = String(t("reschedule_label") || "Перенести");
-              enabled = !rescheduleMutation.isPending;
-              handler = async () => {
-                try {
-                  let finalSlot: string;
-                  if (selectedSlot) {
-                    finalSlot = selectedSlot;
-                  } else {
-                    const normalized = normalizeSlotString(selectedTime, selectedDate);
-                    const parsed = new Date(normalized);
-                    finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
-                  }
-
-                  if (!selectedMaster) {
-                    setToast({ message: t("choose_master") as string, tone: "error" });
-                    goToStep("MASTER");
-                    return;
-                  }
-
-                  try {
-                    if (selectedServiceIds.length > 0) {
-                      const chk = await checkSlot({ master_id: selectedMaster.id, slot: finalSlot, service_ids: selectedServiceIds });
-                      if (!chk.available) {
-                        setToast({ message: t("slot_taken") as string, tone: "error" });
-                        refetchSlots();
-                        goToStep("DATE");
-                        return;
-                      }
-                    }
-                  } catch (err) {
-                    // if checkSlot fails, still attempt reschedule and surface backend error
-                  }
-                  await rescheduleMutation.mutateAsync({ booking_id: rescheduleBookingId, new_slot: finalSlot });
-                } catch (err) {
-                  setToast({ message: (t("reschedule_failed") as string), tone: "error" });
-                  refetchSlots();
-                }
-              };
-            } else {
-              if (paymentStatus === "pending" || paymentStatus === "opening") {
-                label = String(t("awaiting_payment"));
-              } else if (paymentMethod === "online") {
-                label = String(t("pay_label")) || "Оплатить";
-              } else {
-                label = String(t("confirm")) || "Записаться";
-              }
-              enabled = paymentStatus !== "pending" && paymentStatus !== "opening" && !bookingSubmitting;
-              handler = async () => {
-                if (bookingSubmitting) return;
-                try {
-                  let finalSlot: string;
-                  if (selectedSlot) {
-                    finalSlot = selectedSlot; // server-provided slot string (preserves timezone)
-                  } else {
-                    const normalized = normalizeSlotString(selectedTime, selectedDate);
-                    const parsed = new Date(normalized);
-                    finalSlot = Number.isNaN(parsed.getTime()) ? normalized : parsed.toISOString();
-                  }
-
-                  if (holdBookingId) {
-                    try {
-                      const resp = await finalizeBooking({ booking_id: holdBookingId, payment_method: paymentMethod });
-                      if (resp.ok) {
-                        if (resp.invoice_url) {
-                          if (resp.booking_id) setBookingId(resp.booking_id);
-                          if (resp.duration_minutes) setBookingDurationMinutes(resp.duration_minutes);
-                          updateHold({
-                            originalPriceCents: resp.original_price_cents ?? holdOriginalPriceCents,
-                            finalPriceCents: resp.final_price_cents ?? holdFinalPriceCents,
-                            discountAmountCents: resp.discount_amount_cents ?? holdDiscountAmountCents,
-                            discountPercent: (resp as any)?.discount_percent ?? (resp as any)?.discount_percent_applied ?? holdDiscountPercent ?? null,
-                            currency: resp.currency ?? holdCurrency,
-                            paymentMethod: resp.payment_method ?? holdPaymentMethod ?? paymentMethod,
-                          });
-
-                          if (!tg?.openInvoice) {
-                            setPaymentStatus("failed");
-                            setToast({ message: t("payment_unavailable_version") as string, tone: "error" });
-                            return;
-                          }
-
-                          setPaymentStatus("opening");
-
-                          try {
-                            handlePayment(resp.invoice_url, { resetHoldAfter: true });
-                          } catch (err) {
-                            console.warn("openInvoice callback attempt failed", err);
-                            setPaymentStatus("pending");
-                          }
-
-                          return;
-                        }
-
-                        if (resp.booking_id) setBookingId(resp.booking_id);
-                        if (resp.duration_minutes) setBookingDurationMinutes(resp.duration_minutes);
-                        if (resp.starts_at) {
-                          const d = new Date(resp.starts_at);
-                          if (!Number.isNaN(d.getTime())) {
-                            const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-                            const timeLabel = formatTime(resp.starts_at, isoDate);
-                            updateDraft({ date: isoDate, time: timeLabel });
-                          }
-                        }
-                        resetHold();
-                        try { queryClient.invalidateQueries({ queryKey: ["bookings"] }); } catch (e) {}
-                        notifySuccess();
-                        goToStep("SUCCESS");
-                      } else {
-                        if (resp.error === "slot_unavailable") {
-                          setToast({ message: t("slot_taken") as string, tone: "error" });
-                          resetHold();
-                          refetchSlots();
-                          haptic.notify("error");
-                          goToStep("DATE");
-                        } else {
-                          setToast({ message: resp.error || (t("booking_failed") as string), tone: "error" });
-                          refetchSlots();
-                        }
-                      }
-                    } catch (err) {
-                      setToast({ message: (t("booking_failed") as string), tone: "error" });
-                      refetchSlots();
-                    }
-                  } else {
-                    if (!selectedMaster) {
-                      setToast({ message: t("choose_master") as string, tone: "error" });
-                      goToStep("MASTER");
-                      return;
-                    }
-
-                    const chk = await checkSlot({ master_id: selectedMaster.id, slot: finalSlot, service_ids: selectedServiceIds });
-                    if (!chk.available) {
-                      setToast({ message: t("slot_taken") as string, tone: "error" });
-                      refetchSlots();
-                      return;
-                    }
-
-                    bookingMutation.mutate({
-                      master_id: selectedMaster.id,
-                      service_ids: selectedServiceIds,
-                      slot: finalSlot,
-                      payment_method: paymentMethod,
-                    });
-                  }
-                } catch (err) {
-                  setToast({ message: (t("reserve_failed") as string), tone: "error" });
-                  refetchSlots();
-                }
-              };
-            }
-          }
-          break;
-        }
-        case "SUCCESS": {
-          label = String(t("close"));
-          enabled = true;
-          handler = () => tg.close();
-          break;
-        }
-        default:
-          break;
-      }
-
-      if (label && handler) {
-        mainButtonHandlerRef.current = handler;
+      const state = getMainButtonState(step, bookingDraft, priceQuote);
+      if (state.text && state.handler && state.isVisible) {
+        mainButtonHandlerRef.current = state.handler;
         try {
-          // Try to set a brighter accent color for the MainButton when available
           try {
             const accent = getComputedStyle(document.documentElement).getPropertyValue("--t-accent")?.trim();
-                if (accent) {
+            if (accent) {
               try {
                 if (typeof tg.MainButton.setParams === "function") {
                   tg.MainButton.setParams({ color: accent });
                 } else if (typeof (tg.MainButton as any).setColor === "function") {
-                  // older sdk variants
                   (tg.MainButton as any).setColor(accent);
                 }
-              } catch (e) {
-                // ignore color set errors
-              }
+              } catch (e) {}
             }
           } catch (err) {}
 
-          tg.MainButton.setText(label);
-          if (tg.MainButton.offClick) tg.MainButton.offClick(handler);
-          if (enabled) {
-            tg.MainButton.show();
-            tg.MainButton.onClick(handler);
-          } else {
-            tg.MainButton.hide();
-          }
-        } catch (err) {
-          // ignore twa errors
-        }
+          tg.MainButton.setText(state.text);
+          if (tg.MainButton.offClick) tg.MainButton.offClick(state.handler);
+          tg.MainButton.show();
+          tg.MainButton.onClick(state.handler);
+        } catch (err) {}
       } else {
         try {
           tg.MainButton.hide();
@@ -1108,31 +1120,7 @@ export default function BookingWizard() {
         if (tg?.MainButton) tg.MainButton.hide();
       } catch (err) {}
     };
-  }, [
-    step,
-    selectedMaster,
-    selectedServiceIds,
-    selectedDate,
-    selectedTime,
-    selectedSlot,
-    bookingMutation,
-    paymentStatus,
-    selectedServices.length,
-    finalPriceCents,
-    priceQuoteLoading,
-    handleContinueFromService,
-    paymentMethod,
-    resetHold,
-    updateHold,
-    holdOriginalPriceCents,
-    holdFinalPriceCents,
-    refetchSlots,
-    goToStep,
-    bookingSubmitting,
-    isRescheduling,
-    rescheduleBookingId,
-    rescheduleMutation,
-  ]);
+  }, [bookingDraft, getMainButtonState, priceQuote, step]);
 
   useEffect(() => {
     if (selectedMaster && selectedDate && selectedServiceIds.length > 0) {
@@ -1462,10 +1450,10 @@ export default function BookingWizard() {
 
   if (step === "SUCCESS") {
     const successDate = formatDateTimeLabel(selectedDate, selectedTime);
-    const derivedOriginal = originalPriceCents ?? (discountAmountCents != null && finalPriceCents != null ? finalPriceCents + discountAmountCents : null);
-    const derivedFinal = finalPriceCents ?? (originalPriceCents != null && discountAmountCents != null ? originalPriceCents - discountAmountCents : originalPriceCents ?? null);
-    const derivedDiscount = discountAmountCents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
-    const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
+    const priceFinal = finalPriceCents ?? originalPriceCents;
+    const priceOriginal = originalPriceCents;
+    const priceDiscount = discountAmountCents;
+    const hasDiscount = priceOriginal != null && priceDiscount != null && priceDiscount > 0 && priceFinal != null;
     const leadMinutesRaw = (typeof window !== "undefined" && (window as any).__APP_REMINDER_LEAD_MINUTES) || null;
     const leadMinutes = typeof leadMinutesRaw === "number" ? leadMinutesRaw : null;
 
@@ -1545,13 +1533,13 @@ export default function BookingWizard() {
                   <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
                   <div className="tma-pay-row">
                     <span>{paymentStatus === "paid" ? t("paid_label") : t("to_be_paid")}</span>
-                    <strong>{priceQuoteLoading ? "…" : derivedFinal != null ? formatMoneyFromCents(derivedFinal, displayCurrency) : "—"}</strong>
-                    {hasDiscount && derivedOriginal != null && (
-                      <span className="tma-subtle tma-price-strike">{formatMoneyFromCents(derivedOriginal, displayCurrency)}</span>
+                    <strong>{priceQuoteLoading ? "…" : priceFinal != null ? formatMoney(priceFinal, displayCurrency || null) : "—"}</strong>
+                    {hasDiscount && priceOriginal != null && (
+                      <span className="tma-subtle tma-price-strike">{formatMoney(priceOriginal, displayCurrency || null)}</span>
                     )}
                   </div>
-                  {hasDiscount && derivedDiscount != null && (
-                    <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(derivedDiscount, displayCurrency)}</div>
+                  {hasDiscount && priceDiscount != null && (
+                    <div className="tma-subtle">{t("online_discount")} {formatMoney(priceDiscount, displayCurrency || null)}</div>
                   )}
                 </div>
                 {/* Адрес салона под карточкой брони (если задан админом) */}
@@ -1786,10 +1774,10 @@ const StepServiceSelect = ({ services, servicesLoading, serviceAvailability, ser
           const priceLabel = r && (r.min_price_cents != null || r.max_price_cents != null)
             ? (r.min_price_cents != null && r.max_price_cents != null
               ? (r.min_price_cents === r.max_price_cents
-                ? formatMoneyFromCents(r.min_price_cents, currencyCode)
-                : `${formatMoneyFromCents(r.min_price_cents, currencyCode)}–${formatMoneyFromCents(r.max_price_cents, currencyCode)}`)
-              : (r.min_price_cents != null ? formatMoneyFromCents(r.min_price_cents, currencyCode) : "—"))
-            : (s.price_cents != null ? formatMoneyFromCents(s.price_cents, currencyCode) : "—");
+                ? formatMoney(r.min_price_cents, currencyCode || null)
+                : `${formatMoney(r.min_price_cents, currencyCode || null)}–${formatMoney(r.max_price_cents, currencyCode || null)}`)
+              : (r.min_price_cents != null ? formatMoney(r.min_price_cents, currencyCode || null) : "—"))
+            : (s.price_cents != null ? formatMoney(s.price_cents, currencyCode || null) : "—");
 
           const isSelected = selectedServices.some((sel) => sel.id === s.id);
 
@@ -2003,11 +1991,10 @@ const StepConfirm = ({
     ? String(onlineSaveTemplate).replace("%s", String(discountPercentRounded))
     : t("online_sub");
 
-  // Derive a complete price breakdown so UI shows strike-through + discount even when server omits one of the fields
-  const derivedOriginal = originalPriceCents ?? (discountAmountCents != null && finalPriceCents != null ? finalPriceCents + discountAmountCents : null);
-  const derivedFinal = finalPriceCents ?? (originalPriceCents != null && discountAmountCents != null ? originalPriceCents - discountAmountCents : originalPriceCents ?? null);
-  const derivedDiscount = discountAmountCents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
-  const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
+  const priceFinal = finalPriceCents ?? originalPriceCents;
+  const priceOriginal = originalPriceCents;
+  const priceDiscount = discountAmountCents;
+  const hasDiscount = priceOriginal != null && priceDiscount != null && priceDiscount > 0 && priceFinal != null;
 
   return (
     <div className="tma-stack">
@@ -2029,15 +2016,15 @@ const StepConfirm = ({
           <>
             <div className="tma-pay-row">
               <span>{t("to_be_paid")}</span>
-              <strong>{priceQuoteLoading ? "…" : derivedFinal != null ? formatMoneyFromCents(derivedFinal, displayCurrency) : "—"}</strong>
-              {hasDiscount && derivedOriginal != null && (
+              <strong>{priceQuoteLoading ? "…" : priceFinal != null ? formatMoney(priceFinal, displayCurrency || null) : "—"}</strong>
+              {hasDiscount && priceOriginal != null && (
                 <span className="tma-subtle tma-price-strike">
-                  {formatMoneyFromCents(derivedOriginal, displayCurrency)}
+                  {formatMoney(priceOriginal, displayCurrency || null)}
                 </span>
               )}
             </div>
-            {hasDiscount && derivedDiscount != null && (
-              <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(derivedDiscount, displayCurrency)}</div>
+            {hasDiscount && priceDiscount != null && (
+              <div className="tma-subtle">{t("online_discount")} {formatMoney(priceDiscount, displayCurrency || null)}</div>
             )}
             {holdExpiresAt && (
               <div className="tma-subtle tma-pay-countdown">{t("hold_countdown")} {holdRemainingLabel}</div>
@@ -2218,7 +2205,7 @@ function MasterProfileSheet({
                       <strong className="tma-block-title">{t("services_label") || "Services"}</strong>
                       <ul className="tma-list tma-plain-list">
                         {profile.services.map((s, idx) => {
-                          const price = s.price_cents != null ? formatMoneyFromCents(s.price_cents, s.currency || undefined) : "";
+                          const price = s.price_cents != null ? formatMoney(s.price_cents, s.currency || null, (s as any).price_formatted) : "";
                           const dur = s.duration_minutes != null ? `${s.duration_minutes} ${t("minutes_short") as string || "min"}` : null;
                           return (
                             <li key={idx} className="tma-list-item">

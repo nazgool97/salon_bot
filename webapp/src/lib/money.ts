@@ -15,27 +15,15 @@ export const createMoneyFormatter = (currency?: string | null, maximumFractionDi
   return new Intl.NumberFormat(locale, { style: "currency", currency: String(currency), maximumFractionDigits: maximumFractionDigits ?? 2 });
 };
 
-export const formatMoneyFromCents = (cents: number | null | undefined, currency?: string | null, maximumFractionDigits?: number): string => {
-  if (cents == null) return "";
-  const num = Number(cents) / 100;
-  return createMoneyFormatter(currency, maximumFractionDigits).format(num as number);
-};
-
-export const formatMoney = (amount: number | null | undefined, currency?: string | null, maximumFractionDigits?: number): string => {
-  if (amount == null) return "";
-  return createMoneyFormatter(currency, maximumFractionDigits).format(amount as number);
-};
-
-// Prefer server-provided formatted money when available to avoid
-// duplicating formatting logic on the client. If `serverFormatted`
-// is provided and non-empty it is returned, otherwise we format
-// using cents+currency as a fallback.
-export const formatMoneyPreferServer = (
-  serverFormatted: string | null | undefined,
+// Unified money formatter: prefer server-provided string, otherwise format cents locally.
+export const formatMoney = (
   cents: number | null | undefined,
-  currency?: string | null,
-  maximumFractionDigits?: number
+  currency: string | null,
+  serverFormatted?: string | null
 ): string => {
-  if (serverFormatted) return String(serverFormatted);
-  return formatMoneyFromCents(cents, currency, maximumFractionDigits);
+  if (serverFormatted) return serverFormatted;
+  if (cents == null) return "—";
+
+  // Use Intl only when server did not supply ready-made formatting.
+  return createMoneyFormatter(currency).format(cents / 100);
 };

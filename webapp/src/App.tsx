@@ -57,6 +57,8 @@ export default function App() {
             (window as any).__APP_REMINDER_LEAD_MINUTES = cfg.reminder_lead_minutes ?? null;
           // support admin-provided address (prefer explicit keys)
           (window as any).__APP_ADDRESS = cfg.address ?? cfg.webapp_address ?? cfg.location_address ?? null;
+          (window as any).__APP_PHONE = cfg.contact_phone ?? null;
+          (window as any).__APP_INSTAGRAM = cfg.contact_instagram ?? null;
         } catch (err) {}
 
         if (cfg.locale) {

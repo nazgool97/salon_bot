@@ -570,6 +570,19 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         starts_iso = starts_obj.isoformat() if starts_obj is not None else None
         ends_iso = ends_obj.isoformat() if ends_obj is not None else None
 
+        # Duration: prefer explicit booking.duration_minutes, otherwise derive from starts/ends
+        try:
+            dur_val = getattr(booking, "duration_minutes", None)
+            if dur_val is None and starts_obj is not None and ends_obj is not None:
+                try:
+                    delta = ends_obj - starts_obj
+                    dur_val = int(delta.total_seconds() // 60)
+                except Exception:
+                    dur_val = None
+            duration_minutes_val = int(dur_val) if dur_val is not None else None
+        except Exception:
+            duration_minutes_val = None
+
         out = {
             "status": str(getattr(booking, "status", "")),
             "status_label": status_label or None,
@@ -588,6 +601,7 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             "can_reschedule": bool(can_reschedule),
             "starts_at": starts_iso,
             "ends_at": ends_iso,
+            "duration_minutes": duration_minutes_val,
         }
     except Exception:
         # Best-effort fallback: return minimal fields
@@ -607,6 +621,7 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             "can_reschedule": False,
             "starts_at": starts_iso,
             "ends_at": ends_iso,
+            "duration_minutes": None,
         }
     return out
 

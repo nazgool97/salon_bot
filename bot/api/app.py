@@ -107,8 +107,6 @@ class SessionResponse(BaseModel):
     locale: Optional[str] = None
     webapp_title: Optional[str] = None
     online_payments_available: Optional[bool] = None
-    # Backwards/frontend-friendly flag name
-    online_payment_enabled: Optional[bool] = None
     online_payment_discount_percent: Optional[int] = None
     # Preferred date format for client-side inputs (e.g. "YYYY-MM-DD")
     date_format: Optional[str] = None
@@ -116,6 +114,8 @@ class SessionResponse(BaseModel):
     # optional contact/address provided by admin
     address: Optional[str] = None
     webapp_address: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_instagram: Optional[str] = None
 
 
 class BookingRequest(BaseModel):
@@ -196,6 +196,7 @@ class BookingItemOut(BaseModel):
     currency: Optional[str] = None
     starts_at: Optional[str] = None
     ends_at: Optional[str] = None
+    duration_minutes: Optional[int] = None
     master_id: Optional[int] = None
     master_name: Optional[str] = None
     service_names: Optional[str] = None
@@ -515,9 +516,13 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         contact = await get_contact_info()
         address_val = contact.get("address") if isinstance(contact, dict) else None
         webapp_address_val = address_val
+        contact_phone_val = contact.get("phone") if isinstance(contact, dict) else None
+        contact_instagram_val = contact.get("instagram") if isinstance(contact, dict) else None
     except Exception:
         address_val = None
         webapp_address_val = None
+        contact_phone_val = None
+        contact_instagram_val = None
 
     return SessionResponse(
         token=token,
@@ -526,12 +531,13 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         locale=locale,
         webapp_title=webapp_title,
         online_payments_available=online_payments_available,
-        online_payment_enabled=bool(online_payments_available) if online_payments_available is not None else None,
         online_payment_discount_percent=online_discount_percent,
         date_format=date_format,
         reminder_lead_minutes=reminder_lead,
         address=address_val,
         webapp_address=webapp_address_val,
+        contact_phone=contact_phone_val,
+        contact_instagram=contact_instagram_val,
     )
 
 
@@ -567,22 +573,11 @@ async def get_slots(
         dt_obj = datetime.strptime(date, "%Y-%m-%d")
         ids_list = [sid.strip() for sid in service_ids.split(",") if sid.strip()]
         
-        # Resolve total duration using the service-layer helper so all
-        # duration/price logic stays in `client_services` (single source of truth).
-        try:
-            totals = await get_services_duration_and_price(ids_list, online_payment=False, master_id=master_id)
-            total_minutes = int(totals.get("total_minutes") or 0)
-        except Exception as exc:
-            logger.exception("Failed to compute service durations for %s: %s", ids_list, exc)
-            # Fallback to a sensible default slot duration if the service call fails
-            try:
-                total_minutes = int(await SettingsRepo.get_slot_duration())
-            except Exception as exc2:
-                logger.exception("Failed to read default slot duration: %s", exc2)
-                total_minutes = 60
+        # Resolve total duration via canonical helper; let it raise on error.
+        totals = await get_services_duration_and_price(ids_list, online_payment=False, master_id=master_id)
+        total_minutes = int(totals.get("total_minutes") or 0)
 
-        # Call the canonical slot calculation with a single-element list
-        # containing the aggregated total minutes (call sums service_durations).
+        # Call the canonical slot calculation with aggregated duration.
         from bot.app.services.client_services import get_available_time_slots_for_services
 
         slots = await get_available_time_slots_for_services(
@@ -591,7 +586,7 @@ async def get_slots(
             service_durations=[total_minutes]
         )
 
-        # Превращаем объекты time в строки "HH:MM"
+        # Превращаем слоты (aware datetime) в строки "HH:MM"
         return SlotsResponse(
             slots=[s.strftime("%H:%M") for s in slots],
             timezone=str(get_local_tz())
@@ -619,12 +614,11 @@ async def check_slot(
     total_minutes = int(agg.get("total_minutes") or 60)
 
     # Interpret incoming `slot` using salon local timezone when naive.
+    local_tz = get_local_tz() or UTC
     if slot.tzinfo is None:
-        local_tz = get_local_tz() or UTC
-        # Treat naive datetime as salon-local
         slot_local = slot.replace(tzinfo=local_tz)
     else:
-        slot_local = slot.astimezone(get_local_tz() or UTC)
+        slot_local = slot.astimezone(local_tz)
 
     # Require explicit master selection and cast to int so the canonical
     # slot calculator receives the expected `int` type (fixes Pylance
@@ -634,8 +628,10 @@ async def check_slot(
         raise ValueError("master_required")
     try:
         resolved_master_id = int(master_id)
-    except Exception:
-        raise ValueError("master_required")
+        if resolved_master_id < 0:
+            raise ValueError("master_required")
+    except Exception as exc:
+        raise ValueError("master_required") from exc
 
     # Call canonical slot calculator for the requested local day and master
     from bot.app.services.client_services import get_available_time_slots_for_services
@@ -646,20 +642,23 @@ async def check_slot(
         service_durations=[int(total_minutes)],
     )
 
-    # Compare by hour/minute in local timezone (slots are returned as time objects)
-    sl_time = slot_local.time()
-    is_available = any((s.hour == sl_time.hour and s.minute == sl_time.minute) for s in available_slots)
+    # Compare timezone-aware datetimes aligned to minute precision
+    slot_key = slot_local.replace(second=0, microsecond=0)
+    is_available = any(
+        s.astimezone(local_tz).replace(second=0, microsecond=0) == slot_key
+        for s in available_slots
+    )
 
     # When unavailable, include a conflict code computed by the canonical repo
     conflict = None
     if not is_available:
-        new_start = slot_local.astimezone(UTC)
+        new_start = slot_key.astimezone(UTC)
         new_end = new_start + timedelta(minutes=total_minutes)
         async with get_session() as session:
             conflict = await BookingRepo.find_conflicting_booking(
                 session,
                 None,
-                master_id,
+                resolved_master_id,
                 new_start,
                 new_end,
                 service_ids=service_ids,
@@ -991,8 +990,6 @@ async def list_bookings(
     else:
         bookings = await BookingRepo.list_history_by_user(int(principal.user_id), limit=100)
 
-    # History should include only final states: cancelled, done/completed, and no-shows
-    history_statuses = {"cancelled", "canceled", "done", "completed", "no_show"}
     now_utc = datetime.now(UTC)
     result: list[BookingItemOut] = []
 
@@ -1005,17 +1002,10 @@ async def list_bookings(
             logger.exception("render_booking_item_for_api failed for booking %s: %s", getattr(b, 'id', None), exc)
             rendered = {}
 
-        # Filtering for history/upcoming: keep behavior unchanged
+        # Normalize starts_at to aware datetime for formatting
         starts_at = getattr(b, "starts_at", None)
         if starts_at and starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=UTC)
-        if mode == "history":
-            try:
-                status_raw = (str(getattr(b, "status", "")) or "").lower()
-                if starts_at and starts_at > now_utc and status_raw not in history_statuses:
-                    continue
-            except Exception:
-                pass
 
         # Resolve service names directly from BookingItem -> Service (preferred)
         service_names = None
@@ -1101,8 +1091,9 @@ async def list_bookings(
                 currency=rendered.get("currency") or None,
                 starts_at=rendered.get("starts_at") or (starts_at.isoformat() if starts_at else None),
                 ends_at=rendered.get("ends_at") or None,
+                duration_minutes=rendered.get("duration_minutes"),
                 master_id=int(master_id) if master_id is not None else None,
-                master_name=master_name_val,
+                master_name=rendered.get("master_name") or master_name_val,
                 service_names=service_names,
                 payment_method=rendered.get("payment_method"),
                 can_cancel=bool(rendered.get("can_cancel")),
@@ -1141,6 +1132,7 @@ async def reschedule_booking(payload: RescheduleRequest, principal: Principal = 
         payload.booking_id,
         payload.new_slot,
         language=principal.language,
+        notify_client=False,
     )
     return BookingResponse(
         ok=bool(res.get("ok")),
@@ -1184,13 +1176,13 @@ async def create_booking(
     master_id = requested_master_id
     try:
         if master_id is None:
-            return BookingResponse(ok=False, error="master_required")
+            raise ValueError("master_required")
         master_id = int(master_id)
         if master_id < 0:
-            return BookingResponse(ok=False, error="master_required")
+            raise ValueError("master_required")
     except Exception as exc:
         logger.exception("Invalid master_id provided for booking: %s", exc)
-        return BookingResponse(ok=False, error="master_required")
+        raise ValueError("master_required") from exc
 
     totals = await client_services.get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=master_id)
     total_duration_minutes = int(totals.get("total_minutes") or 0)
@@ -1226,13 +1218,13 @@ async def create_booking(
         if ok_paid:
             status_val = "paid"
         else:
-            return BookingResponse(ok=False, error=reason or "booking_failed")
+            raise ValueError(reason or "booking_failed")
     else:  # cash
         ok_cash, reason = await BookingRepo.confirm_cash(booking_id)
         if ok_cash:
             status_val = "confirmed"
         else:
-            return BookingResponse(ok=False, error=reason or "booking_failed")
+            raise ValueError(reason or "booking_failed")
 
     # Notify admins + master (if present) about the new booking
     try:
@@ -1265,7 +1257,9 @@ async def create_booking(
                 logger.exception("Failed to import booking detail builders for booking notification: %s", exc)
                 build_booking_details = None
 
-            if build_booking_details is not None:
+            # For MiniApp flow: notify admins/masters always, but avoid
+            # sending a separate client confirmation when payment is cash.
+            if build_booking_details is not None and payment_method == "online":
                 try:
                     lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
                     bd = await build_booking_details(booking, user_id=principal.telegram_id, lang=lang)

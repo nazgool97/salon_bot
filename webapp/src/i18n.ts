@@ -103,6 +103,10 @@ const bundles: Record<string, Record<string, string | string[]>> = {
       master_orders_short: "orders",
       services_label: "Services",
       schedule_label: "Schedule",
+      contacts_title: "Contacts",
+      contacts_address: "Address:",
+      contacts_phone: "Phone:",
+      contacts_instagram: "Instagram:",
   },
   ru: {
     hub_book_btn: "Записаться",
@@ -208,6 +212,10 @@ const bundles: Record<string, Record<string, string | string[]>> = {
         master_orders_short: "Заказ.",
       services_label: "Услуги",
       schedule_label: "График",
+      contacts_title: "Контакты",
+      contacts_address: "Адрес:",
+      contacts_phone: "Телефон:",
+      contacts_instagram: "Instagram:",
   }
   ,
   uk: {
@@ -314,6 +322,10 @@ const bundles: Record<string, Record<string, string | string[]>> = {
       master_orders_short: "Замовл.",
       services_label: "Послуги",
       schedule_label: "Графік",
+      contacts_title: "Контакти",
+      contacts_address: "Адреса:",
+      contacts_phone: "Телефон:",
+      contacts_instagram: "Instagram:",
   }
 };
 

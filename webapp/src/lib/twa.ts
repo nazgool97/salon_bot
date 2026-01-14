@@ -98,3 +98,32 @@ export const haptic = {
     }
   },
 };
+
+/**
+ * Parse an instagram input which can be a full URL or a handle (@handle or plain).
+ * Returns normalized URL and display handle (without @ or trailing slashes/query).
+ */
+export function parseInstagram(input?: string | null): { url: string | null; handle: string | null } {
+  if (!input) return { url: null, handle: null };
+  const s = String(input).trim();
+  if (!s) return { url: null, handle: null };
+
+  // If it's a full URL, extract the path after domain
+  try {
+    if (/^https?:\/\//i.test(s)) {
+      const u = new URL(s);
+      const path = (u.pathname || "").replace(/^\/+|\/+$/g, "");
+      const handle = path.split("/")[0] || null;
+      const url = handle ? `https://instagram.com/${handle}` : null;
+      return { url, handle };
+    }
+  } catch (err) {
+    // fallthrough to handle as plain
+  }
+
+  // Remove leading @ and trailing params
+  const cleaned = s.replace(/^@/, "").replace(/[?#].*$/, "").replace(/\/$/, "");
+  const handle = cleaned || null;
+  const url = handle ? `https://instagram.com/${handle}` : null;
+  return { url, handle };
+}

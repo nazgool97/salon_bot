@@ -1,8 +1,8 @@
 export const getDefaultLocalTimezone = (): string => {
-  const win = window as any;
-  if (win && win.__SERVER_TZ) return String(win.__SERVER_TZ);
-  const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return resolved || "UTC";
+  if (typeof window !== "undefined" && (window as any).__SERVER_TZ) {
+    return String((window as any).__SERVER_TZ);
+  }
+  return "UTC";
 };
 
 export const getAppLocale = (): string => {
@@ -40,42 +40,44 @@ export const normalizeSlotString = (raw: string, dateHint?: string): string => {
 type Granularity = "short" | "long";
 
 export const formatDate = (iso?: string | Date | number | null, opts?: { granularity?: Granularity }): string => {
-  if (!iso) return "";
-  const d = typeof iso === "string" || typeof iso === "number" ? new Date(iso) : (iso as Date);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  const gran = opts?.granularity || "long";
-  const dateOpts: Intl.DateTimeFormatOptions = gran === "short"
-    ? { day: "2-digit", month: "2-digit", year: "numeric" }
-    : { day: "numeric", month: "long", year: "numeric" };
-  return formatInTimezone(d, dateOpts);
+  return formatISO(iso, opts?.granularity === "short" ? "date-short" : "date-long");
 };
 
 export const formatTime = (value?: string | Date | number | null, fallbackDate?: string, opts?: { granularity?: Granularity }): string => {
   if (!value) return "";
-  let normalized: string | Date | number;
-  if (typeof value === "string") normalized = normalizeSlotString(value, fallbackDate);
-  else normalized = value as Date | number;
-  const gran = opts?.granularity || "short";
-  const timeOpts: Intl.DateTimeFormatOptions = gran === "short" ? { hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit", second: "2-digit" };
-  return formatInTimezone(normalized as any, timeOpts);
+  const normalized = typeof value === "string" ? normalizeSlotString(value, fallbackDate) : (value as Date | number);
+  return formatISO(normalized, opts?.granularity === "short" ? "time-short" : "time-long");
 };
 
 export const formatDateTime = (iso?: string | Date | number | null, opts?: { granularity?: Granularity }): string => {
+  return formatISO(iso, opts?.granularity === "short" ? "datetime-short" : "datetime-long");
+};
+
+/**
+ * Generic ISO formatter. `pattern` controls which parts are rendered.
+ * Supported patterns: date-short, date-long, time-short, time-long, datetime-short, datetime-long
+ */
+export function formatISO(iso: string | Date | number | null | undefined, pattern: string): string {
   if (!iso) return "";
   const d = typeof iso === "string" || typeof iso === "number" ? new Date(iso) : (iso as Date);
   if (Number.isNaN(d.getTime())) return String(iso);
-  const gran = opts?.granularity || "long";
-  const dtOpts: Intl.DateTimeFormatOptions = gran === "short"
-    ? { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }
-    : { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" };
-  return formatInTimezone(d, dtOpts);
-};
+  const map: Record<string, Intl.DateTimeFormatOptions> = {
+    "date-short": { day: "2-digit", month: "2-digit", year: "numeric" },
+    "date-long": { day: "numeric", month: "long", year: "numeric" },
+    "time-short": { hour: "2-digit", minute: "2-digit" },
+    "time-long": { hour: "2-digit", minute: "2-digit", second: "2-digit" },
+    "datetime-short": { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" },
+    "datetime-long": { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" },
+  };
+  const opts = map[pattern] || map["datetime-long"];
+  return formatInTimezone(d, opts);
+}
 
 // Backwards-compatible thin wrappers for existing call sites. Prefer `formatDate`, `formatTime`, `formatDateTime`.
-export const friendlyDate = (value: string) => formatDate(value, { granularity: "long" });
-export const friendlyTime = (raw: string, fallbackDate?: string) => formatTime(raw, fallbackDate, { granularity: "short" });
-export const friendlyDateTime = (iso?: string | null) => formatDateTime(iso, { granularity: "long" });
-export const formatDateTimeShort = (iso?: string | null) => formatDateTime(iso, { granularity: "short" });
+export const friendlyDate = (value: string) => formatISO(value, "date-long");
+export const friendlyTime = (raw: string, fallbackDate?: string) => formatISO(normalizeSlotString(raw, fallbackDate), "time-short");
+export const friendlyDateTime = (iso?: string | null) => formatISO(iso, "datetime-long");
+export const formatDateTimeShort = (iso?: string | null) => formatISO(iso, "datetime-short");
 
 export const formatDateTimeLabel = (dateIso: string, timeStr: string): string => {
   if (!dateIso && !timeStr) return "";

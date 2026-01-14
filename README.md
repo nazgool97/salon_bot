@@ -8,17 +8,17 @@
 Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean Architecture. Clients self-book, masters manage schedules, owners get analytics — all inside Telegram. Open-core; commercial edition adds support and updates.
 
 👉 Commercial edition: 
-[![Telegram Demo](https://img.shields.io/badge/Telegram-Demo-blue?logo=telegram)](https://t.me/PaywallClubBot)
-[![Gumroad](https://img.shields.io/badge/Gumroad-Buy-orange?logo=gumroad)](https://pentogram.gumroad.com/l/xlbbb)
-[![Payhip](https://img.shields.io/badge/Payhip-Buy-green?logo=paypal)](https://payhip.com/b/8LY2T)
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy-red?logo=kofi)](https://ko-fi.com/s/937c0881d1)
+- [![Telegram Demo](https://img.shields.io/badge/Telegram-Demo-blue?logo=telegram)](https://t.me/PaywallClubBot)
+- [![Gumroad](https://img.shields.io/badge/Gumroad-Buy-orange?logo=gumroad)](https://pentogram.gumroad.com/l/xlbbb)
+- [![Payhip](https://img.shields.io/badge/Payhip-Buy-green?logo=paypal)](https://payhip.com/b/8LY2T)
+- [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy-red?logo=kofi)](https://ko-fi.com/s/937c0881d1)
 
 ---
 
 ## Screenshots
 
 <details>
-  <summary><b><u>Client booking flow</u></b></summary>
+  <summary><b><u>CLIENT BOOKING FLOW</u></b></summary>
 
   ![Main menu](screenshots/main_menu.jpg)  
   ![Service selection](screenshots/service_selection.jpg)  
@@ -31,7 +31,7 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 </details>
 
 <details>
-  <summary><b><u>Telegram Mini App — Client Booking Interface</u></b></summary>
+  <summary><b><u>TELEGRAM MINI APP — CLIENT BOOKING INTERFACE</u></b></summary>
 
   ![Mini App Home](screenshots/webapp_home.jpg)
   ![Mini App My upcoming isits](screenshots/webapp_upcoming_visits.jpg)
@@ -46,7 +46,7 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 
 
 <details>
-  <summary>Master & Admin</summary>
+  <summary>MASTER & ADMIN PANELS</summary>
 
   ![Master schedule](screenshots/master_schedule.jpg)  
   ![master_booking_detail](screenshots/master_booking_detail.jpg)  

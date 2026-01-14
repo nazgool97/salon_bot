@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { /*AnimatePresence, motion*/ } from "framer-motion";
 import { Toast } from "./BookingWizard";
 
 import {
@@ -16,7 +15,7 @@ import { t } from "../../i18n";
 import type { MasterOut } from "../../api/booking";
 import { tg, haptic } from "../../lib/twa";
 import { formatDurationMinutes, formatDateTime } from "../../lib/timezone";
-import { formatMoneyFromCents, formatMoneyPreferServer } from "../../lib/money";
+import { formatMoney } from "../../lib/money";
 
 // Status chip styles are now derived from server `status` directly via
 // CSS class names like `status-paid`, `status-cancelled`, etc.
@@ -40,37 +39,20 @@ export function BookingDetailsModal({
 }) {
   if (!booking) return null;
 
-  const durationLabel = (() => {
-    const unit = (t("minutes_short") as string) || "min";
-    const dm = (booking as any).duration_minutes;
-    if (dm != null) return formatDurationMinutes(dm, unit) || "—";
-    if (booking.starts_at && (booking as any).ends_at) {
-      const s = new Date(booking.starts_at);
-      const e = new Date((booking as any).ends_at);
-      if (!Number.isNaN(s.getTime()) && !Number.isNaN(e.getTime())) {
-        const mins = Math.round((e.getTime() - s.getTime()) / 60000);
-        return formatDurationMinutes(mins, unit) || "—";
-      }
-    }
-    return "—";
-  })();
+  const durationLabel = formatDurationMinutes(booking.duration_minutes) || "—";
 
   const masterLabel = masterMap?.[booking.master_id || 0] || booking.master_name || (t("master_default") as string);
-  const derivedOriginal = booking.original_price_cents ?? (booking.discount_amount_cents != null && booking.final_price_cents != null ? booking.final_price_cents + booking.discount_amount_cents : null);
-  const derivedFinal = booking.final_price_cents ?? booking.price_cents ?? (booking.original_price_cents != null && booking.discount_amount_cents != null ? booking.original_price_cents - booking.discount_amount_cents : booking.original_price_cents ?? null);
-  const derivedDiscount = booking.discount_amount_cents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
-  const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
+  const priceFinal = booking.final_price_cents ?? booking.price_cents ?? booking.original_price_cents ?? null;
+  const priceOriginal = booking.original_price_cents;
+  const priceDiscount = booking.discount_amount_cents;
+  const hasDiscount = priceOriginal != null && priceDiscount != null && priceDiscount > 0 && priceFinal != null;
 
-  const finalLabel = formatMoneyPreferServer(
-    booking.final_price_formatted || booking.price_formatted,
-    derivedFinal,
-    booking.currency || undefined
-  );
+  const finalLabel = formatMoney(priceFinal, booking.currency || null, booking.final_price_formatted || booking.price_formatted);
   const originalLabel = hasDiscount
-    ? formatMoneyPreferServer(booking.original_price_formatted, derivedOriginal, booking.currency || undefined)
+    ? formatMoney(priceOriginal, booking.currency || null, booking.original_price_formatted)
     : null;
   const discountLabel = hasDiscount
-    ? formatMoneyPreferServer(booking.discount_amount_formatted, derivedDiscount, booking.currency || undefined)
+    ? formatMoney(priceDiscount, booking.currency || null, booking.discount_amount_formatted)
     : null;
 
   return createPortal(
@@ -130,6 +112,41 @@ export function BookingDetailsModal({
   );
 }
 
+// Shared booking actions hook (kept in this file to avoid adding new files).
+export function useBookingActions(opts?: { onCancelSuccess?: () => void; onError?: (msg: string) => void }) {
+  const cancelMut = useMutation({
+    mutationFn: cancelBooking,
+    onSuccess: (resp: any) => {
+      if (resp && resp.ok) {
+        try { haptic.notify("success"); } catch (e) {}
+        try { window.dispatchEvent(new CustomEvent("tma:bookings-changed")); } catch (e) {}
+        opts?.onCancelSuccess?.();
+      } else {
+        opts?.onError?.(resp?.error || "");
+      }
+    },
+    onError: () => opts?.onError?.("network_unavailable"),
+  });
+
+  function startReschedule(b: BookingItem | null) {
+    if (!b) return;
+    try {
+      const detail = { booking_id: b.id, master_id: b.master_id, service_names: b.service_names, starts_at: b.starts_at };
+      try { (window as any).__RESCHEDULE_BOOKING = detail; } catch (e) {}
+      try { window.dispatchEvent(new CustomEvent("tma:reschedule-start", { detail })); } catch (e) {}
+      try { window.dispatchEvent(new CustomEvent("tma:repeat-booking")); } catch (e) {}
+    } catch (err) {
+      console.warn("startReschedule failed", err);
+    }
+  }
+
+  function cancel(id: number) {
+    cancelMut.mutate(id);
+  }
+
+  return { cancelMut, cancel, startReschedule };
+}
+
 export default function MyVisits() {
   const [toast, setToast] = useState<{ message: string; tone?: "error" | "success" } | null>(null);
   const [tab, setTab] = useState<"upcoming" | "history">("upcoming");
@@ -152,33 +169,9 @@ export default function MyVisits() {
   const [rescheduleTarget, setRescheduleTarget] = useState<BookingItem | null>(null);
   const [newSlot, setNewSlot] = useState<string>("");
 
-  const cancelMut = useMutation({
-    mutationFn: cancelBooking,
-    onSuccess: (resp) => {
-      if (resp.ok) {
-        haptic.notify("success");
-        setRescheduleTarget(null);
-        refetch();
-      } else {
-        setToast({ message: resp.error || (t("cancel_failed") as string), tone: "error" });
-      }
-    },
-    onError: () => setToast({ message: (t("network_unavailable") as string), tone: "error" }),
-  });
-
-  const rescheduleMut = useMutation({
-    mutationFn: rescheduleBooking,
-    onSuccess: (resp) => {
-      if (resp.ok) {
-        haptic.notify("success");
-        setRescheduleTarget(null);
-        setNewSlot("");
-        refetch();
-      } else {
-        setToast({ message: resp.error || (t("reschedule_failed") as string), tone: "error" });
-      }
-    },
-    onError: () => setToast({ message: (t("network_unavailable") as string), tone: "error" }),
+  const { cancel, startReschedule } = useBookingActions({
+    onCancelSuccess: () => { setRescheduleTarget(null); refetch(); },
+    onError: (msg) => setToast({ message: msg || (t("network_unavailable") as string), tone: "error" }),
   });
 
   const rateMut = useMutation({
@@ -227,18 +220,10 @@ export default function MyVisits() {
       allowReschedule={tab === "upcoming" && allowReschedule}
       allowCancel={tab === "upcoming" && allowCancel}
       onRescheduleClick={rescheduleTarget ? () => {
-        try {
-          const detail = { booking_id: rescheduleTarget.id, master_id: rescheduleTarget.master_id, service_names: rescheduleTarget.service_names, starts_at: rescheduleTarget.starts_at };
-          try { (window as any).__RESCHEDULE_BOOKING = detail; } catch (e) {}
-          // Dispatch reschedule-start for analytics/handlers and also trigger booking tab
-          window.dispatchEvent(new CustomEvent("tma:reschedule-start", { detail }));
-          try { window.dispatchEvent(new CustomEvent("tma:repeat-booking")); } catch (e) {}
-        } catch (err) {
-          console.warn("reschedule start event failed", err);
-        }
+        startReschedule(rescheduleTarget);
         closeModal();
       } : undefined}
-      onCancelClick={rescheduleTarget ? () => cancelMut.mutate(rescheduleTarget.id) : undefined}
+      onCancelClick={rescheduleTarget ? () => cancel(rescheduleTarget.id) : undefined}
     />
   );
 
@@ -274,7 +259,7 @@ export default function MyVisits() {
                   setRescheduleTarget(b);
                   setNewSlot(b.starts_at || "");
                 }}
-                onCancel={tab === "upcoming" && b.can_cancel ? () => cancelMut.mutate(b.id) : undefined}
+                onCancel={tab === "upcoming" && b.can_cancel ? () => cancel(b.id) : undefined}
                 onReschedule={tab === "upcoming" && b.can_reschedule ? () => {
                   setRescheduleTarget(b);
                   setNewSlot(b.starts_at || "");
@@ -305,7 +290,7 @@ function toLocalInput(iso?: string) {
   return local.toISOString().slice(0, 16);
 }
 
-function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRate, onRepeat, disabledActions }: {
+export function BookingCard({ booking, masterName, onOpen, onCancel, onReschedule, onRate, onRepeat, disabledActions }: {
   booking: BookingItem;
   masterName?: string | undefined;
   onOpen?: () => void;
@@ -422,7 +407,7 @@ function formatBookingCardData(booking: BookingItem, masterName?: string) {
 
   const dateTimeLabel = booking.formatted_date ? `${booking.formatted_date}${booking.formatted_time_range ? ' • ' + booking.formatted_time_range : ''}` : (booking.starts_at_formatted || "");
   const masterPart = masterName || (booking.master_id != null ? `Мастер #${booking.master_id}` : "");
-  const pricePart = booking.price_formatted || (booking.price_cents != null ? formatMoneyFromCents(booking.price_cents, booking.currency || undefined) : "");
+  const pricePart = formatMoney(booking.price_cents, booking.currency || null, booking.price_formatted);
 
   const topParts: string[] = [];
   if (dateTimeLabel) topParts.push(dateTimeLabel);

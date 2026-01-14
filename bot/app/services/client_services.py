@@ -856,13 +856,20 @@ class BookingRepo:
                 now = utc_now()
                 from bot.app.domain.models import BookingStatus
 
-                # Only include explicit history statuses: cancelled, done, no_show
-                history_statuses = (BookingStatus.CANCELLED, BookingStatus.DONE, BookingStatus.NO_SHOW)
+                # Treat explicit terminal states and any already-started booking as history.
+                history_statuses = (
+                    BookingStatus.CANCELLED,
+                    BookingStatus.DONE,
+                    BookingStatus.NO_SHOW,
+                )
                 stmt = (
                     select(Booking)
                     .where(
                         Booking.user_id == int(user_id),
-                        Booking.status.in_(history_statuses),
+                        or_(
+                            Booking.status.in_(history_statuses),
+                            Booking.starts_at < now,
+                        ),
                     )
                     .order_by(Booking.starts_at.desc())
                     .limit(int(limit))
@@ -1577,13 +1584,16 @@ async def get_available_time_slots_for_services(
     service_durations: list[int],
     *,
     exclude_booking_id: int | None = None,
-) -> List[dtime]:
+) -> list[datetime]:
     """
     Calculates available slots based on 'Gap' logic:
     1. Get work windows.
     2. Get busy intervals (bookings).
     3. Subtract busy intervals from windows to find free gaps.
     4. A slot is available at the START of each gap if the gap is long enough.
+
+    Returns timezone-aware datetimes in the business/local timezone so
+    callers can safely compare entire instants (not just hours/minutes).
     """
     total_duration = sum(service_durations)
     if total_duration <= 0:
@@ -1736,8 +1746,8 @@ async def get_available_time_slots_for_services(
                     except Exception:
                         pass
 
-                # Return time objects in local tz for UI (buttons expect local times)
-                slots.append(current.astimezone(local_tz).time())
+                # Return aware datetimes in local tz for precise comparisons
+                slots.append(current.astimezone(local_tz).replace(second=0, microsecond=0))
                 current = current + timedelta(minutes=slot_step_min)
 
     logger.debug("Slots (Gap-based) for master %s on %s: %s", master_id, date, slots)
@@ -2826,6 +2836,7 @@ async def process_booking_reschedule(
     new_slot: datetime,
     *,
     language: str | None = None,
+    notify_client: bool = True,
 ) -> BookingResult:
     """Handle reschedule flow for WebApp (permissions, ownership, notifications)."""
     can_res, code = await can_client_reschedule(booking_id, user_telegram_id)
@@ -2848,7 +2859,7 @@ async def process_booking_reschedule(
 
     ok = await BookingRepo.reschedule(booking_id, slot)
     if ok:
-        await _send_reschedule_notifications(booking_id, user_id, user_telegram_id, language)
+        await _send_reschedule_notifications(booking_id, user_id, user_telegram_id, language, notify_client=notify_client)
     return {
         "ok": ok,
         "booking_id": booking_id if ok else None,
@@ -2856,8 +2867,12 @@ async def process_booking_reschedule(
     }
 
 
-async def _send_reschedule_notifications(booking_id: int, user_id: int, user_telegram_id: int, lang: str | None) -> None:
-    """Notify master/admins and client about successful reschedule (best-effort)."""
+async def _send_reschedule_notifications(booking_id: int, user_id: int, user_telegram_id: int, lang: str | None, *, notify_client: bool = True) -> None:
+    """Notify master/admins and optionally client about successful reschedule (best-effort).
+
+    When `notify_client` is False, the client won't receive a direct message
+    (used for WebApp/MiniApp flows where UI already reflects the change).
+    """
     try:
         recipients: list[int] = []
         try:
@@ -2882,21 +2897,25 @@ async def _send_reschedule_notifications(booking_id: int, user_id: int, user_tel
                 logger.exception("reschedule: send_booking_notification failed for %s", booking_id)
 
             try:
-                lang_resolved = lang if lang else await safe_get_locale(user_telegram_id)
-            except Exception:
-                lang_resolved = lang
+                if notify_client:
+                    try:
+                        lang_resolved = lang if lang else await safe_get_locale(user_telegram_id)
+                    except Exception:
+                        lang_resolved = lang
 
-            try:
-                bd = await build_booking_details(await BookingRepo.ensure_owner(user_id, booking_id), user_id=user_telegram_id, lang=lang_resolved)
-                body = format_booking_details_text(bd, lang=lang_resolved)
-                await bot.send_message(chat_id=user_telegram_id, text=body, parse_mode="HTML")
-            except Exception:
-                logger.exception("Failed to send client confirmation after reschedule for %s", booking_id)
+                    try:
+                        bd = await build_booking_details(await BookingRepo.ensure_owner(user_id, booking_id), user_id=user_telegram_id, lang=lang_resolved)
+                        body = format_booking_details_text(bd, lang=lang_resolved)
+                        await bot.send_message(chat_id=user_telegram_id, text=body, parse_mode="HTML")
+                    except Exception:
+                        logger.exception("Failed to send client confirmation after reschedule for %s", booking_id)
 
-            try:
-                await bot.session.close()
+                try:
+                    await bot.session.close()
+                except Exception:
+                    pass
             except Exception:
-                pass
+                logger.exception("reschedule: notification block failed for %s", booking_id)
     except Exception:
         logger.exception("reschedule: notification block failed for %s", booking_id)
 
@@ -3072,7 +3091,7 @@ async def process_booking_finalization(user_id: int, user_telegram_id: int, book
     if not ok:
         return {"ok": False, "error": err or "finalize_failed", "booking_id": None}
 
-    await _notify_after_cash_confirmation(booking_id, user_telegram_id)
+    await _notify_after_cash_confirmation(booking_id, user_telegram_id, notify_client=False)
     starts_at = getattr(booking, "starts_at", None)
     return {
         "ok": True,
@@ -3082,8 +3101,12 @@ async def process_booking_finalization(user_id: int, user_telegram_id: int, book
     }
 
 
-async def _notify_after_cash_confirmation(booking_id: int, client_tid: int) -> None:
-    """Send cash confirmation notifications (best-effort)."""
+async def _notify_after_cash_confirmation(booking_id: int, client_tid: int, notify_client: bool = True) -> None:
+    """Send cash confirmation notifications (best-effort).
+
+    notify_client: if False, do not send a separate confirmation message to the
+    client chat (used by MiniApp flows to avoid duplicate notifications).
+    """
     try:
         booking = await BookingRepo.get(booking_id)
         recipients: list[int] = []
@@ -3105,17 +3128,18 @@ async def _notify_after_cash_confirmation(booking_id: int, client_tid: int) -> N
         except Exception:
             logger.exception("finalize: notification failed for booking=%s", booking_id)
 
-        try:
-            lang = await safe_get_locale(client_tid)
-        except Exception:
-            lang = None
+        if notify_client:
+            try:
+                lang = await safe_get_locale(client_tid)
+            except Exception:
+                lang = None
 
-        try:
-            bd = await build_booking_details(booking, user_id=client_tid, lang=lang)
-            body = format_booking_details_text(bd, lang=lang)
-            await bot.send_message(chat_id=client_tid, text=body, parse_mode="HTML")
-        except Exception:
-            pass
+            try:
+                bd = await build_booking_details(booking, user_id=client_tid, lang=lang)
+                body = format_booking_details_text(bd, lang=lang)
+                await bot.send_message(chat_id=client_tid, text=body, parse_mode="HTML")
+            except Exception:
+                pass
         try:
             await bot.session.close()
         except Exception:
