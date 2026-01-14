@@ -1,13 +1,9 @@
+import { getAppLocale } from "./timezone";
+
 export const getAppCurrency = (): string => {
   const win = window as any;
   if (win && win.__APP_CURRENCY) return String(win.__APP_CURRENCY);
   return "UAH";
-};
-
-export const getAppLocale = (): string => {
-  const win = window as any;
-  if (win && win.__APP_LOCALE) return String(win.__APP_LOCALE);
-  return "ru-RU";
 };
 
 export const createMoneyFormatter = (currency?: string | null, maximumFractionDigits?: number) => {

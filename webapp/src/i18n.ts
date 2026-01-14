@@ -48,6 +48,7 @@ const bundles: Record<string, Record<string, string | string[]>> = {
     cash_sub: "Pay at visit",
     online: "Online",
     online_sub: "Bank card",
+      online_save_percent: "Save %s%",
     month_names: [
       "January","February","March","April","May","June","July","August","September","October","November","December"
     ],
@@ -152,6 +153,7 @@ const bundles: Record<string, Record<string, string | string[]>> = {
     cash_sub: "Оплата при визите",
     online: "Онлайн",
     online_sub: "Банковская карта",
+      online_save_percent: "Сэкономьте %s%",
     month_names: [
       "Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"
     ],
@@ -257,6 +259,7 @@ const bundles: Record<string, Record<string, string | string[]>> = {
     cash_sub: "Оплата під час візиту",
     online: "Онлайн",
     online_sub: "Банківська картка",
+      online_save_percent: "Заощадьте %s%",
     month_names: [
       "Січень","Лютий","Березень","Квітень","Травень","Червень","Липень","Серпень","Вересень","Жовтень","Листопад","Грудень"
     ],

@@ -3,6 +3,8 @@ import logging
 import re
 import os
 from typing import Optional, Any, Callable, Awaitable
+from dataclasses import replace
+from decimal import Decimal, ROUND_HALF_UP
 
 from bot.app.domain.models import Booking, BookingStatus, Master, MasterService, Service, User
 
@@ -108,6 +110,8 @@ from bot.app.services.shared_services import (
     status_to_emoji,
     is_online_payments_available,
     get_telegram_provider_token,
+    resolve_online_payment_discount_percent,
+    apply_online_payment_discount,
     tr,
 )
 import bot.app.services.master_services as master_services
@@ -2694,10 +2698,24 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
     }
     exp = TELEGRAM_EXPONENTS.get(currency, 2)
 
-    # Stored price is in cents (2 decimal places). Adjust to target exponent safely.
+    # Stored price is in cents (2 decimal places). Apply discount (if any) and
+    # adjust to the target currency exponent safely.
     try:
-        from decimal import Decimal, ROUND_HALF_UP
-        price_minor = Decimal(int(price_cents))  # cents
+        try:
+            base_price_cents = int(price_cents or 0)
+        except Exception:
+            base_price_cents = 0
+
+        discount_pct = 0
+        try:
+            discount_pct = await resolve_online_payment_discount_percent()
+        except Exception:
+            discount_pct = 0
+
+        discounted_cents, _ = apply_online_payment_discount(base_price_cents, discount_pct)
+
+        price_minor = Decimal(int(discounted_cents))  # cents after discount
+
         if exp == 2:
             amount_minor = int(price_minor)
         elif exp > 2:
@@ -2707,12 +2725,43 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
             divisor = Decimal(10) ** Decimal(2 - exp)
             amount_minor = int((price_minor / divisor).to_integral_value(rounding=ROUND_HALF_UP))
     except Exception:
-        amount_minor = int(price_cents)
+        try:
+            amount_minor = int(price_cents)
+        except Exception:
+            amount_minor = 0
+        try:
+            base_price_cents = int(price_cents or 0)
+        except Exception:
+            base_price_cents = 0
+        discounted_cents = base_price_cents
+
+    try:
+        discount_amount_cents = max(0, int(base_price_cents) - int(discounted_cents))
+    except Exception:
+        discount_amount_cents = 0
 
     # Guard: Telegram requires positive amounts and reasonable bounds
     if amount_minor <= 0 or amount_minor > 10_000_000:
         await cb.answer(t("invoice_missing_price", locale), show_alert=True)
         return
+
+    # Persist pricing snapshot so DB and notifications reflect the online discount
+    try:
+        from bot.app.core.db import get_session
+
+        async with get_session() as session:
+            b = await session.get(Booking, booking_id)
+            if b:
+                b.original_price_cents = int(base_price_cents)  # type: ignore[attr-defined]
+                b.final_price_cents = int(discounted_cents)  # type: ignore[attr-defined]
+                b.discount_amount_cents = int(discount_amount_cents)  # type: ignore[attr-defined]
+                if currency:
+                    b.currency = currency  # type: ignore[attr-defined]
+                await session.commit()
+                await session.refresh(b)
+                booking = b
+    except Exception:
+        logger.exception("pay_online: failed to persist pricing for booking %s", booking_id)
 
     prices = [LabeledPrice(label=f"{service_name} у {master_name}", amount=amount_minor)]
 
@@ -2767,11 +2816,34 @@ async def pay_online_prepare(
         cols=1,
     )
 
+    # Apply configured online-payment discount for display so the client sees the real amount due.
+    try:
+        base_price_cents = int(getattr(bd, "price_cents", 0) or 0)
+    except Exception:
+        base_price_cents = 0
+    discount_pct = await resolve_online_payment_discount_percent()
+    discounted_cents, savings_cents = apply_online_payment_discount(base_price_cents, discount_pct)
+
+    bd_for_display = bd
+    if discount_pct and savings_cents > 0:
+        try:
+            bd_for_display = replace(bd, price_cents=discounted_cents)
+        except Exception:
+            bd_for_display = bd
+
     # Base booking info (service, master, date, price, duration, etc.)
-    header_body = format_booking_details_text(bd, lang)
+    header_body = format_booking_details_text(bd_for_display, lang)
 
     # Extra info: start time and duration (if not already shown)
     extra_lines: list[str] = []
+    if discount_pct and savings_cents > 0:
+        # Use plain (no-emoji) label in payment card when available
+        disc_label = t("online_discount_label_plain", lang) or t("online_discount_label", lang) or "Online discount"
+        try:
+            savings_text = format_money_cents(savings_cents, getattr(bd_for_display, "currency", None))
+        except Exception:
+            savings_text = format_money_cents(savings_cents)
+        extra_lines.append(f"{disc_label}: -{discount_pct}% ({savings_text})")
 
     # Start time
     start_time_str = None

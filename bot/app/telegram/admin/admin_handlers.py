@@ -1474,6 +1474,27 @@ EDITABLE_CONTACT_SETTINGS: dict[str, EditableSettingMeta] = {
 }
 
 
+# Business-editable single-value settings (uses same edit flow as contacts)
+def validate_discount_percent(value: str) -> tuple[str | None, str | None]:
+    try:
+        v = int(str(value).strip())
+        if v < 0 or v > 100:
+            return None, "invalid_data"
+        return str(v), None
+    except Exception:
+        return None, "invalid_data"
+
+
+EDITABLE_BUSINESS_SETTINGS: dict[str, EditableSettingMeta] = {
+    "online_payment_discount_percent": EditableSettingMeta(
+        prompt_key="enter_online_discount",
+        success_key="online_discount_updated",
+        validator=validate_discount_percent,
+        invalid_key="invalid_data",
+    ),
+}
+
+
 async def _reply_invalid_setting_input(message: Message, lang: str, invalid_key: str | None, old_value: str | None) -> None:
     text = t(invalid_key or "invalid_data", lang)
     try:
@@ -1501,11 +1522,80 @@ async def _refresh_contacts_menu(message: Message, lang: str) -> None:
     await message.answer(title, reply_markup=kb)
 
 
+async def _refresh_business_menu(message: Message, lang: str) -> None:
+    """Send the business settings keyboard (used after editing a business setting).
+
+    This mirrors `admin_settings_business` but sends the keyboard as a direct
+    message response (used after interactive edit flows that operate on
+    Message events rather than CallbackQuery).
+    """
+    try:
+        from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+        # Refresh runtime settings from DB to avoid stale in-process cache
+        try:
+            await load_settings_from_db()
+        except Exception:
+            pass
+
+        telegram_provider_token = await get_telegram_provider_token() or ""
+        try:
+            payments_enabled = bool(await SettingsRepo.get_setting("telegram_payments_enabled", False))
+        except Exception:
+            payments_enabled = await is_telegram_payments_enabled()
+        hold_min = await SettingsRepo.get_reservation_hold_minutes()
+        cancel_min = await SettingsRepo.get_client_cancel_lock_minutes()
+        reschedule_min = await SettingsRepo.get_client_reschedule_lock_minutes()
+        reminder_min = await SettingsRepo.get_reminder_lead_minutes()
+        same_day_min = await SettingsRepo.get_same_day_lead_minutes()
+        expire_sec = await SettingsRepo.get_expire_check_seconds()
+        try:
+            discount_pct = await SettingsRepo.get_online_payment_discount_percent()
+        except Exception:
+            discount_pct = 0
+        import os
+        timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
+        from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+        try:
+            mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
+        except Exception:
+            mini_now = await is_telegram_miniapp_enabled()
+
+        kb = business_settings_kb(
+            lang,
+            telegram_provider_token=telegram_provider_token,
+            payments_enabled=payments_enabled,
+            miniapp_enabled=mini_now,
+            hold_min=hold_min,
+            cancel_min=cancel_min,
+            reschedule_min=reschedule_min,
+            discount_percent=discount_pct,
+            reminder_min=reminder_min,
+            reminder_same_min=same_day_min,
+            expire_sec=expire_sec,
+            timezone=timezone_val,
+        )
+        title = t("settings_category_business", lang)
+        if not title or title == "settings_category_business":
+            title = tr("settings_category_business", lang=default_language())
+        try:
+            hint = t("online_discount_hint", lang)
+            if hint and hint != "online_discount_hint":
+                title = f"{title} — {hint}"
+        except Exception:
+            pass
+        await message.answer(title, reply_markup=kb)
+    except Exception:
+        try:
+            await message.answer(t("error", lang))
+        except Exception:
+            pass
+
+
 @admin_router.callback_query(AdminEditSettingCB.filter())
 async def admin_edit_contact_setting(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
     lang = locale
     setting_key = str(getattr(callback_data, "setting_key", "") or "")
-    meta = EDITABLE_CONTACT_SETTINGS.get(setting_key)
+    meta = EDITABLE_CONTACT_SETTINGS.get(setting_key) or EDITABLE_BUSINESS_SETTINGS.get(setting_key)
     if not meta:
         await callback.answer(t("error", lang), show_alert=True)
         return
@@ -1539,7 +1629,7 @@ async def admin_edit_setting_input(message: Message, state: FSMContext, locale: 
     setting_key = str(data.get("edit_setting_key") or "")
     if not setting_key:
         return
-    meta = EDITABLE_CONTACT_SETTINGS.get(setting_key)
+    meta = EDITABLE_CONTACT_SETTINGS.get(setting_key) or EDITABLE_BUSINESS_SETTINGS.get(setting_key)
     if not meta:
         return
     raw = message.text or ""
@@ -1557,7 +1647,12 @@ async def admin_edit_setting_input(message: Message, state: FSMContext, locale: 
     else:
         await message.answer(t("error", lang))
     await state.clear()
-    await _refresh_contacts_menu(message, lang)
+    # After saving, return to the appropriate settings submenu depending on
+    # which editable group the key belongs to.
+    if setting_key in EDITABLE_BUSINESS_SETTINGS:
+        await _refresh_business_menu(message, lang)
+    else:
+        await _refresh_contacts_menu(message, lang)
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "settings_business"))
@@ -1583,6 +1678,11 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         reminder_min = await SettingsRepo.get_reminder_lead_minutes()
         same_day_min = await SettingsRepo.get_same_day_lead_minutes()
         expire_sec = await SettingsRepo.get_expire_check_seconds()
+        # Discount percent for online payments
+        try:
+            discount_pct = await SettingsRepo.get_online_payment_discount_percent()
+        except Exception:
+            discount_pct = 0
         import os
         # Timezone is fixed from environment to avoid runtime drift between admins
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
@@ -1600,6 +1700,7 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
             hold_min=hold_min,
             cancel_min=cancel_min,
             reschedule_min=reschedule_min,
+            discount_percent=discount_pct,
             reminder_min=reminder_min,
             reminder_same_min=same_day_min,
             expire_sec=expire_sec,
@@ -1609,6 +1710,14 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
             title = t("settings_category_business", lang)
             if not title or title == "settings_category_business":
                 title = tr("settings_category_business", lang=default_language())
+            # Append a short hint about the online-payment discount so admins
+            # immediately understand this setting from the header.
+            try:
+                hint = t("online_discount_hint", lang)
+                if hint and hint != "online_discount_hint":
+                    title = f"{title} — {hint}"
+            except Exception:
+                pass
             await nav_push(state, title, kb, lang=lang)
             await safe_edit(m, title, reply_markup=kb)
     except Exception as e:
@@ -3153,6 +3262,7 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
                 lang,
                 telegram_provider_token=token,
                 payments_enabled=enabled_now,
+                discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
                 hold_min=hold_min,
                 cancel_min=cancel_min,
                 reschedule_min=reschedule_min,
@@ -3216,6 +3326,7 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
             lang,
             telegram_provider_token=token_now,
             payments_enabled=payments_now,
+            discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
             miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,
@@ -3314,6 +3425,7 @@ async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: 
             lang,
             telegram_provider_token=token,
             payments_enabled=payments_now,
+            discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
             miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,

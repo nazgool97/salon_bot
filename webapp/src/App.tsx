@@ -52,6 +52,8 @@ export default function App() {
           (window as any).__APP_LOCALE = cfg.locale ?? null;
             (window as any).__APP_TITLE = cfg.webapp_title ?? "Telegram Mini App • Beauty";
           (window as any).__APP_ONLINE_PAYMENTS_AVAILABLE = cfg.online_payments_available;
+          (window as any).__APP_ONLINE_PAYMENT_DISCOUNT_PERCENT = cfg.online_payment_discount_percent ?? null;
+          (window as any).__APP_ONLINE_DISCOUNT_PERCENT = cfg.online_payment_discount_percent ?? null;
             (window as any).__APP_REMINDER_LEAD_MINUTES = cfg.reminder_lead_minutes ?? null;
           // support admin-provided address (prefer explicit keys)
           (window as any).__APP_ADDRESS = cfg.address ?? cfg.webapp_address ?? cfg.location_address ?? null;

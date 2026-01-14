@@ -32,13 +32,63 @@ except Exception:
     # set to None so we don't accidentally catch all Exceptions below.
     TelegramAPIError = None
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 # Default online payment discount percent (used when SettingsRepo lookup fails)
 ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT = 5
+
+
+async def resolve_online_payment_discount_percent() -> int:
+    """Return the configured online payment discount percent (0-100).
+
+    Falls back to `ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT` only when settings
+    lookup fails; otherwise clamps invalid values to the 0-100 range.
+    """
+    pct: int | None
+    try:
+        from bot.app.services.admin_services import SettingsRepo
+
+        pct = await SettingsRepo.get_online_payment_discount_percent()
+    except Exception:
+        pct = ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT
+
+    try:
+        pct_int = int(pct or 0)
+    except Exception:
+        pct_int = ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT
+
+    if pct_int < 0:
+        return 0
+    if pct_int > 100:
+        return 100
+    return pct_int
+
+
+def apply_online_payment_discount(price_cents: int | Decimal | None, discount_pct: int) -> tuple[int, int]:
+    """Apply an online-payment discount to a cents amount.
+
+    Returns a tuple of (discounted_cents, savings_cents). Rounds half up to
+    mirror Telegram invoice rounding.
+    """
+    try:
+        base = Decimal(int(price_cents or 0))
+    except Exception:
+        base = Decimal(0)
+
+    pct = discount_pct if isinstance(discount_pct, int) else 0
+    pct = max(0, min(100, pct))
+
+    if base <= 0 or pct == 0:
+        return int(base), 0
+
+    multiplier = (Decimal(100 - pct) / Decimal(100))
+    discounted = (base * multiplier).to_integral_value(rounding=ROUND_HALF_UP)
+    discounted_int = int(discounted)
+    savings = max(0, int(base) - discounted_int)
+    return discounted_int, savings
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -423,20 +473,49 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         except Exception:
             status_emoji = ""
 
-        # Price snapshot
+        # Price snapshot — keep both original and final to drive discount UI in mini app
         try:
-            price_val = getattr(booking, "final_price_cents", None) or getattr(booking, "original_price_cents", None)
-            price_val = int(price_val) if price_val is not None else None
+            original_price_val = getattr(booking, "original_price_cents", None)
+            original_price_val = int(original_price_val) if original_price_val is not None else None
         except Exception:
-            price_val = None
+            original_price_val = None
+        try:
+            final_price_val = getattr(booking, "final_price_cents", None)
+            final_price_val = int(final_price_val) if final_price_val is not None else None
+        except Exception:
+            final_price_val = None
+        try:
+            discount_amount_val = getattr(booking, "discount_amount_cents", None)
+            discount_amount_val = int(discount_amount_val) if discount_amount_val is not None else None
+        except Exception:
+            discount_amount_val = None
+
+        # Derive missing pieces so the API always returns a full breakdown
+        if final_price_val is None and original_price_val is not None and discount_amount_val is not None:
+            final_price_val = original_price_val - discount_amount_val
+        if original_price_val is None and final_price_val is not None and discount_amount_val is not None:
+            original_price_val = final_price_val + discount_amount_val
+        if discount_amount_val is None and original_price_val is not None and final_price_val is not None:
+            delta = original_price_val - final_price_val
+            if delta > 0:
+                discount_amount_val = delta
+
+        # Backward compatible single price value still used by legacy UI bits
+        price_val = final_price_val or original_price_val
         try:
             currency_val = getattr(booking, "currency", None)
         except Exception:
             currency_val = None
         try:
             price_fmt = format_money_cents(price_val, currency_val) if price_val is not None else None
+            original_price_fmt = format_money_cents(original_price_val, currency_val) if original_price_val is not None else None
+            final_price_fmt = format_money_cents(final_price_val, currency_val) if final_price_val is not None else None
+            discount_amount_fmt = format_money_cents(discount_amount_val, currency_val) if discount_amount_val is not None else None
         except Exception:
             price_fmt = None
+            original_price_fmt = None
+            final_price_fmt = None
+            discount_amount_fmt = None
 
         # Payment method inference
         try:
@@ -497,6 +576,12 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             "status_emoji": status_emoji or None,
             "price_cents": price_val,
             "price_formatted": price_fmt,
+            "original_price_cents": original_price_val,
+            "final_price_cents": final_price_val,
+            "discount_amount_cents": discount_amount_val,
+            "original_price_formatted": original_price_fmt,
+            "final_price_formatted": final_price_fmt,
+            "discount_amount_formatted": discount_amount_fmt,
             "currency": currency_val or None,
             "payment_method": pm,
             "can_cancel": bool(can_cancel),
@@ -1403,6 +1488,8 @@ __all__ = [
     "toggle_telegram_miniapp",
     "get_telegram_provider_token",
     "is_online_payments_available",
+    "resolve_online_payment_discount_percent",
+    "apply_online_payment_discount",
     "format_money_cents",
     "status_to_emoji",
     "get_user_locale",

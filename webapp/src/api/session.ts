@@ -8,6 +8,7 @@ export type SessionResponse = {
   locale?: string;
   webapp_title?: string;
   online_payments_available?: boolean | null;
+  online_payment_discount_percent?: number | null;
   reminder_lead_minutes?: number | null;
   // optional admin-provided address fields
   address?: string | null;

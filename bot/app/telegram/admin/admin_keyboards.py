@@ -352,6 +352,7 @@ def business_settings_kb(
     hold_min: int | None = None,
     cancel_min: int | None = None,
     reschedule_min: int | None = None,
+    discount_percent: int | None = None,
     reminder_min: int | None = None,
     reminder_same_min: int | None = None,
     expire_sec: int | None = None,
@@ -368,6 +369,14 @@ def business_settings_kb(
             tr("payments_enabled_state", lang=lang) if enabled else tr("payments_disabled_state", lang=lang)
         )
     kb.button(text=state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_payments"))
+
+    # Online payment discount quick-edit
+    try:
+        _disc = int(discount_percent) if discount_percent is not None else 0
+    except Exception:
+        _disc = 0
+    disc_label = f"{tr('online_discount_label', lang=lang) or 'Online discount'}: {_disc}%"
+    kb.button(text=disc_label, callback_data=pack_cb(AdminEditSettingCB, setting_key="online_payment_discount_percent"))
 
     # MiniApp toggle on business panel for parity with settings
     try:

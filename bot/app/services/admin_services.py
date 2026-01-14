@@ -995,6 +995,11 @@ class SettingsRepo:
         return SettingsRepo._coerce_int(await SettingsRepo.get_setting("reservation_hold_minutes", 1), 1)
 
     @staticmethod
+    async def get_online_payment_discount_percent() -> int:
+        """Return configured online payment discount percent (0-100)."""
+        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("online_payment_discount_percent", 0), 0)
+
+    @staticmethod
     async def get_expire_check_seconds() -> int:
         """Frequency (seconds) for background worker to scan and expire stale RESERVED bookings.
 

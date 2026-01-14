@@ -38,7 +38,9 @@ type HoldDetails = {
   originalPriceCents: number | null;
   finalPriceCents: number | null;
   discountAmountCents: number | null;
+  discountPercent: number | null;
   currency: string | null;
+  paymentMethod: "cash" | "online" | null;
 };
 
 type BookingDraft = {
@@ -266,20 +268,31 @@ export default function BookingWizard() {
     } catch (err) {}
     return true;
   });
+  const [onlineDiscountPercentSetting] = useState<number | null>(() => {
+    try {
+      const win: any = typeof window !== "undefined" ? window : {};
+      const raw = win.__APP_ONLINE_PAYMENT_DISCOUNT_PERCENT ?? win.__APP_ONLINE_DISCOUNT_PERCENT;
+      const num = raw != null ? Number(raw) : null;
+      if (typeof num === "number" && !Number.isNaN(num) && num > 0) return num;
+    } catch (err) {}
+    return null;
+  });
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "online">("cash");
   const [paymentStatus, setPaymentStatus] = useState<"idle" | "opening" | "pending" | "polling" | "paid" | "failed" | "cancelled">("idle");
   const [bookingId, setBookingId] = useState<number | null>(null);
   const [rescheduleBookingId, setRescheduleBookingId] = useState<number | null>(null);
-  const [holdDetails, setHoldDetails] = useState<HoldDetails>({ bookingId: null, expiresAt: null, originalPriceCents: null, finalPriceCents: null, discountAmountCents: null, currency: null });
+  const [holdDetails, setHoldDetails] = useState<HoldDetails>({ bookingId: null, expiresAt: null, originalPriceCents: null, finalPriceCents: null, discountAmountCents: null, discountPercent: null, currency: null, paymentMethod: null });
   const {
     bookingId: holdBookingId,
     expiresAt: holdExpiresAt,
     originalPriceCents: holdOriginalPriceCents,
     finalPriceCents: holdFinalPriceCents,
     discountAmountCents: holdDiscountAmountCents,
+    discountPercent: holdDiscountPercent,
     currency: holdCurrency,
+    paymentMethod: holdPaymentMethod,
   } = holdDetails;
-  const resetHold = useCallback(() => setHoldDetails({ bookingId: null, expiresAt: null, originalPriceCents: null, finalPriceCents: null, discountAmountCents: null, currency: null }), []);
+  const resetHold = useCallback(() => setHoldDetails({ bookingId: null, expiresAt: null, originalPriceCents: null, finalPriceCents: null, discountAmountCents: null, discountPercent: null, currency: null, paymentMethod: null }), []);
   const updateHold = useCallback((partial: Partial<HoldDetails>) => setHoldDetails((prev) => ({ ...prev, ...partial })), []);
   const [bookingDurationMinutes, setBookingDurationMinutes] = useState<number | null>(null);
   const [viewYearMonth, setViewYearMonth] = useState<{ year: number; month: number }>(() => {
@@ -437,8 +450,8 @@ export default function BookingWizard() {
     if (!masters) return [] as (MasterOut & Partial<Pick<MasterProfile, "rating" | "completed_orders">>)[];
     return masters.map((m) => ({
       ...m,
-      rating: (masterProfilesMap && masterProfilesMap[m.id]) ? masterProfilesMap[m.id].rating : undefined,
-      completed_orders: (masterProfilesMap && masterProfilesMap[m.id]) ? masterProfilesMap[m.id].completed_orders : undefined,
+      rating: masterProfilesMap?.[m.id]?.rating,
+      completed_orders: masterProfilesMap?.[m.id]?.completed_orders,
     }));
   }, [masters, masterProfilesMap]);
 
@@ -578,14 +591,27 @@ export default function BookingWizard() {
   // Prefer hold-provided pricing when present (authoritative server-side values)
   const displayCurrency = holdCurrency || priceQuote?.currency || DEFAULT_CURRENCY;
 
-  // Use authoritative server values for pricing. If a hold exists prefer hold values.
+  // Price comes only from server responses: hold/finalize for fact, priceQuote for preview.
   const { finalPriceCents, originalPriceCents, discountAmountCents } = useMemo(() => {
-    const base = holdOriginalPriceCents ?? priceQuote?.original_price_cents ?? null;
-    const final = holdFinalPriceCents ?? priceQuote?.final_price_cents ?? null;
-    const discount = holdDiscountAmountCents ?? priceQuote?.discount_amount_cents ?? null;
-    return { finalPriceCents: final, originalPriceCents: base, discountAmountCents: discount };
-  }, [holdOriginalPriceCents, holdFinalPriceCents, holdDiscountAmountCents, priceQuote]);
+    const quoteBase = priceQuote?.original_price_cents ?? null;
+    const quoteFinal = priceQuote?.final_price_cents ?? null;
+    const quoteDiscount = priceQuote?.discount_amount_cents ?? null;
+    const holdMatchesMethod = holdPaymentMethod ? holdPaymentMethod === paymentMethod : false;
 
+    const base = holdMatchesMethod ? (holdOriginalPriceCents ?? quoteBase) : (quoteBase ?? holdOriginalPriceCents);
+    const final = holdMatchesMethod ? (holdFinalPriceCents ?? quoteFinal) : (quoteFinal ?? holdFinalPriceCents ?? quoteFinal);
+    const discount = holdMatchesMethod ? (holdDiscountAmountCents ?? quoteDiscount) : (quoteDiscount ?? holdDiscountAmountCents);
+
+    return { finalPriceCents: final ?? null, originalPriceCents: base ?? null, discountAmountCents: discount ?? null };
+  }, [holdOriginalPriceCents, holdFinalPriceCents, holdDiscountAmountCents, holdDiscountPercent, holdPaymentMethod, priceQuote, paymentMethod]);
+
+  const onlineDiscountPercent = useMemo(() => {
+    const fromQuote = (priceQuote as any)?.discount_percent ?? (priceQuote as any)?.discount_percent_applied;
+    if (typeof fromQuote === "number" && !Number.isNaN(fromQuote) && fromQuote > 0) return fromQuote;
+    if (typeof holdDiscountPercent === "number" && !Number.isNaN(holdDiscountPercent) && holdDiscountPercent > 0) return holdDiscountPercent;
+    if (typeof onlineDiscountPercentSetting === "number" && onlineDiscountPercentSetting > 0) return onlineDiscountPercentSetting;
+    return null;
+  }, [priceQuote, holdDiscountPercent, onlineDiscountPercentSetting]);
   const { data: availableDaysData } = useQuery({
     queryKey: ["available-days", selectedMaster?.id, viewYearMonth.year, viewYearMonth.month, selectedServiceIds],
     // Allow fetching availability for a master even if no services are selected
@@ -618,6 +644,13 @@ export default function BookingWizard() {
     refetchOnMount: "always",
   });
   const queryClient = useQueryClient();
+  const handlePaymentMethodChange = useCallback((method: "cash" | "online") => {
+    if (paymentMethod === method) return;
+    setPaymentMethod(method);
+    try {
+      queryClient.invalidateQueries({ queryKey: ["price-quote"] });
+    } catch (err) {}
+  }, [paymentMethod, queryClient]);
 
   // Prefer server-provided timezone: force UI to use salon timezone when available
   useEffect(() => {
@@ -935,6 +968,10 @@ export default function BookingWizard() {
                           updateHold({
                             originalPriceCents: resp.original_price_cents ?? holdOriginalPriceCents,
                             finalPriceCents: resp.final_price_cents ?? holdFinalPriceCents,
+                            discountAmountCents: resp.discount_amount_cents ?? holdDiscountAmountCents,
+                            discountPercent: (resp as any)?.discount_percent ?? (resp as any)?.discount_percent_applied ?? holdDiscountPercent ?? null,
+                            currency: resp.currency ?? holdCurrency,
+                            paymentMethod: resp.payment_method ?? holdPaymentMethod ?? paymentMethod,
                           });
 
                           if (!tg?.openInvoice) {
@@ -1290,7 +1327,9 @@ export default function BookingWizard() {
           originalPriceCents: resp.original_price_cents ?? null,
           finalPriceCents: resp.final_price_cents ?? null,
           discountAmountCents: resp.discount_amount_cents ?? null,
+          discountPercent: (resp as any)?.discount_percent ?? (resp as any)?.discount_percent_applied ?? null,
           currency: resp.currency ?? null,
+          paymentMethod: resp.payment_method ?? paymentMethod ?? null,
         });
           updateDraft({ slot: finalSlot, time: display });
         goToStep("CONFIRM");
@@ -1409,8 +1448,9 @@ export default function BookingWizard() {
             holdExpiresAt={holdExpiresAt}
             holdRemainingLabel={holdRemainingLabel}
             onlinePaymentsAvailable={onlinePaymentsAvailable}
+            onlineDiscountPercent={onlineDiscountPercent}
             paymentMethod={paymentMethod}
-            setPaymentMethod={setPaymentMethod}
+            setPaymentMethod={handlePaymentMethodChange}
             paymentStatus={paymentStatus}
             paymentMessage={paymentMessage}
           />
@@ -1422,6 +1462,10 @@ export default function BookingWizard() {
 
   if (step === "SUCCESS") {
     const successDate = formatDateTimeLabel(selectedDate, selectedTime);
+    const derivedOriginal = originalPriceCents ?? (discountAmountCents != null && finalPriceCents != null ? finalPriceCents + discountAmountCents : null);
+    const derivedFinal = finalPriceCents ?? (originalPriceCents != null && discountAmountCents != null ? originalPriceCents - discountAmountCents : originalPriceCents ?? null);
+    const derivedDiscount = discountAmountCents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
+    const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
     const leadMinutesRaw = (typeof window !== "undefined" && (window as any).__APP_REMINDER_LEAD_MINUTES) || null;
     const leadMinutes = typeof leadMinutesRaw === "number" ? leadMinutesRaw : null;
 
@@ -1501,11 +1545,14 @@ export default function BookingWizard() {
                   <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
                   <div className="tma-pay-row">
                     <span>{paymentStatus === "paid" ? t("paid_label") : t("to_be_paid")}</span>
-                    <strong>{priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoneyFromCents(finalPriceCents, displayCurrency, 0) : "—"}</strong>
-                    {discountAmountCents != null && discountAmountCents > 0 && originalPriceCents != null && (
-                      <span className="tma-subtle tma-price-strike">{formatMoneyFromCents(originalPriceCents, displayCurrency, 0)}</span>
+                    <strong>{priceQuoteLoading ? "…" : derivedFinal != null ? formatMoneyFromCents(derivedFinal, displayCurrency) : "—"}</strong>
+                    {hasDiscount && derivedOriginal != null && (
+                      <span className="tma-subtle tma-price-strike">{formatMoneyFromCents(derivedOriginal, displayCurrency)}</span>
                     )}
                   </div>
+                  {hasDiscount && derivedDiscount != null && (
+                    <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(derivedDiscount, displayCurrency)}</div>
+                  )}
                 </div>
                 {/* Адрес салона под карточкой брони (если задан админом) */}
                 {typeof window !== "undefined" && (window as any).__APP_ADDRESS ? (
@@ -1919,6 +1966,7 @@ type StepConfirmProps = {
   holdExpiresAt: string | null;
   holdRemainingLabel: string | null;
   onlinePaymentsAvailable: boolean;
+  onlineDiscountPercent: number | null;
   paymentMethod: "cash" | "online";
   setPaymentMethod: (method: "cash" | "online") => void;
   paymentStatus: "idle" | "opening" | "pending" | "polling" | "paid" | "failed" | "cancelled";
@@ -1942,90 +1990,113 @@ const StepConfirm = ({
   holdExpiresAt,
   holdRemainingLabel,
   onlinePaymentsAvailable,
+  onlineDiscountPercent,
   paymentMethod,
   setPaymentMethod,
   paymentStatus,
   paymentMessage,
-}: StepConfirmProps) => (
-  <div className="tma-stack">
-    <div className="tma-pay-card">
-      <div className="tma-pay-row">
-        <span>{t('tab_booking') as string}</span>
-        <strong>{(bookingId ?? holdBookingId) ? `№${bookingId ?? holdBookingId}` : ""}</strong>
-      </div>
-      <div className="tma-pay-row"><span>{t("service_label")}</span> <strong>{selectedServicesNames || "—"}</strong></div>
-      <div className="tma-pay-row"><span>{t("master_label")}</span> <strong>{selectedMaster?.name || "—"}</strong></div>
-      <div className="tma-pay-row"><span>{t("date_label")}</span> <strong>{formatDateTimeLabel(selectedDate, selectedTime)}</strong></div>
-      <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
-      {isRescheduling ? (
+}: StepConfirmProps) => {
+  const hasOnlineDiscount = onlineDiscountPercent != null && onlineDiscountPercent > 0;
+  const discountPercentRounded = hasOnlineDiscount ? Math.round(onlineDiscountPercent as number) : null;
+  const onlineSaveTemplate = t("online_save_percent") || "Save %s%";
+  const onlineSubLabel = hasOnlineDiscount
+    ? String(onlineSaveTemplate).replace("%s", String(discountPercentRounded))
+    : t("online_sub");
+
+  // Derive a complete price breakdown so UI shows strike-through + discount even when server omits one of the fields
+  const derivedOriginal = originalPriceCents ?? (discountAmountCents != null && finalPriceCents != null ? finalPriceCents + discountAmountCents : null);
+  const derivedFinal = finalPriceCents ?? (originalPriceCents != null && discountAmountCents != null ? originalPriceCents - discountAmountCents : originalPriceCents ?? null);
+  const derivedDiscount = discountAmountCents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
+  const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
+
+  return (
+    <div className="tma-stack">
+      <div className="tma-pay-card">
         <div className="tma-pay-row">
-          <span>{(t("reschedule_title") as string) || "Перенос записи"}</span>
-          <strong>{(t("reschedule_free") as string) || "Оплата не требуется"}</strong>
+          <span>{t('tab_booking') as string}</span>
+          <strong>{(bookingId ?? holdBookingId) ? `№${bookingId ?? holdBookingId}` : ""}</strong>
         </div>
-      ) : (
-        <>
+        <div className="tma-pay-row"><span>{t("service_label")}</span> <strong>{selectedServicesNames || "—"}</strong></div>
+        <div className="tma-pay-row"><span>{t("master_label")}</span> <strong>{selectedMaster?.name || "—"}</strong></div>
+        <div className="tma-pay-row"><span>{t("date_label")}</span> <strong>{formatDateTimeLabel(selectedDate, selectedTime)}</strong></div>
+        <div className="tma-pay-row"><span>{t("duration_label")}</span> <strong>{durationLabel}</strong></div>
+        {isRescheduling ? (
           <div className="tma-pay-row">
-            <span>{t("to_be_paid")}</span>
-            <strong>{priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoneyFromCents(finalPriceCents, displayCurrency, 0) : "—"}</strong>
-            {discountAmountCents != null && discountAmountCents > 0 && originalPriceCents != null && (
-              <span className="tma-subtle tma-price-strike">
-                {formatMoneyFromCents(originalPriceCents, displayCurrency, 0)}
-              </span>
-            )}
+            <span>{(t("reschedule_title") as string) || "Перенос записи"}</span>
+            <strong>{(t("reschedule_free") as string) || "Оплата не требуется"}</strong>
           </div>
-          {discountAmountCents != null && discountAmountCents > 0 && (
-            <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(discountAmountCents, displayCurrency, 0)}</div>
-          )}
-          {holdExpiresAt && (
-            <div className="tma-subtle tma-pay-countdown">{t("hold_countdown")} {holdRemainingLabel}</div>
+        ) : (
+          <>
+            <div className="tma-pay-row">
+              <span>{t("to_be_paid")}</span>
+              <strong>{priceQuoteLoading ? "…" : derivedFinal != null ? formatMoneyFromCents(derivedFinal, displayCurrency) : "—"}</strong>
+              {hasDiscount && derivedOriginal != null && (
+                <span className="tma-subtle tma-price-strike">
+                  {formatMoneyFromCents(derivedOriginal, displayCurrency)}
+                </span>
+              )}
+            </div>
+            {hasDiscount && derivedDiscount != null && (
+              <div className="tma-subtle">{t("online_discount")} {formatMoneyFromCents(derivedDiscount, displayCurrency)}</div>
+            )}
+            {holdExpiresAt && (
+              <div className="tma-subtle tma-pay-countdown">{t("hold_countdown")} {holdRemainingLabel}</div>
+            )}
+          </>
+        )}
+      </div>
+
+      {!isRescheduling && (
+        <>
+          <div className="tma-pay-method">
+            <div className="tma-pay-label">{t("choose_payment_method") || "Choose a payment method"}</div>
+            <div className="tma-pay-options">
+              <button
+                type="button"
+                className={`tma-pay-option ${paymentMethod === "cash" ? "active" : ""}`}
+                onClick={() => setPaymentMethod("cash")}
+              >
+                <span className="tma-pay-icon">💵</span>
+                <div>
+                  <strong>{t("cash")}</strong>
+                  <div className="tma-subtle">{t("cash_sub")}</div>
+                </div>
+              </button>
+              {onlinePaymentsAvailable && (
+                <button
+                  type="button"
+                  className={`tma-pay-option ${paymentMethod === "online" ? "active" : ""}`}
+                  onClick={() => { setPaymentMethod("online"); haptic.impact("light"); }}
+                >
+                  <span className="tma-pay-icon">💳</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <strong>{t("online")}</strong>
+                      {hasOnlineDiscount && discountPercentRounded !== null && (
+                        <span className="tma-chip tma-chip-soft" aria-label={onlineSubLabel || undefined}>
+                          -{discountPercentRounded}%
+                        </span>
+                      )}
+                    </div>
+                    <div className="tma-subtle">{onlineSubLabel || t("online_sub")}</div>
+                  </div>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {paymentStatus !== "idle" && (
+            <div className="tma-pay-status">
+              <strong>{t("pay_label")}</strong>
+              <p className="tma-subtle">{paymentMessage}</p>
+            </div>
           )}
         </>
       )}
+      <p className="tma-subtle">{isRescheduling ? (t("reschedule_confirm_hint") as string) || (t("press_confirm") as string) : t("press_confirm")}</p>
     </div>
-
-    {!isRescheduling && (
-      <>
-        <div className="tma-pay-method">
-          <div className="tma-pay-label">{t("choose_payment_method") || "Choose a payment method"}</div>
-          <div className="tma-pay-options">
-            <button
-              type="button"
-              className={`tma-pay-option ${paymentMethod === "cash" ? "active" : ""}`}
-              onClick={() => setPaymentMethod("cash")}
-            >
-              <span className="tma-pay-icon">💵</span>
-              <div>
-                <strong>{t("cash")}</strong>
-                <div className="tma-subtle">{t("cash_sub")}</div>
-              </div>
-            </button>
-            {onlinePaymentsAvailable && (
-                <button
-                type="button"
-                className={`tma-pay-option ${paymentMethod === "online" ? "active" : ""}`}
-                onClick={() => { setPaymentMethod("online"); haptic.impact("light"); }}
-              >
-                <span className="tma-pay-icon">💳</span>
-                <div>
-                  <strong>{t("online")}</strong>
-                  <div className="tma-subtle">{t("online_sub")}</div>
-                </div>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {paymentStatus !== "idle" && (
-          <div className="tma-pay-status">
-            <strong>{t("pay_label")}</strong>
-            <p className="tma-subtle">{paymentMessage}</p>
-          </div>
-        )}
-      </>
-    )}
-    <p className="tma-subtle">{isRescheduling ? (t("reschedule_confirm_hint") as string) || (t("press_confirm") as string) : t("press_confirm")}</p>
-  </div>
-);
+  );
+};
 
 
 type MasterProfileSheetProps = {

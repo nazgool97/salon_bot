@@ -41,6 +41,7 @@ from bot.app.services.shared_services import (
     status_to_emoji,
     format_money_cents,
     get_contact_info,
+    resolve_online_payment_discount_percent,
 )
 from bot.app.services.shared_services import format_booking_list_item, default_language, format_slot_label, format_date
 from bot.app.services.shared_services import normalize_error_code
@@ -108,6 +109,7 @@ class SessionResponse(BaseModel):
     online_payments_available: Optional[bool] = None
     # Backwards/frontend-friendly flag name
     online_payment_enabled: Optional[bool] = None
+    online_payment_discount_percent: Optional[int] = None
     # Preferred date format for client-side inputs (e.g. "YYYY-MM-DD")
     date_format: Optional[str] = None
     reminder_lead_minutes: Optional[int] = None
@@ -185,6 +187,12 @@ class BookingItemOut(BaseModel):
     formatted_date: Optional[str] = None
     price_cents: Optional[int] = None
     price_formatted: Optional[str] = None
+    original_price_cents: Optional[int] = None
+    final_price_cents: Optional[int] = None
+    discount_amount_cents: Optional[int] = None
+    original_price_formatted: Optional[str] = None
+    final_price_formatted: Optional[str] = None
+    discount_amount_formatted: Optional[str] = None
     currency: Optional[str] = None
     starts_at: Optional[str] = None
     ends_at: Optional[str] = None
@@ -220,6 +228,7 @@ class PriceQuoteResponse(BaseModel):
     final_price_cents: int
     original_price_cents: Optional[int] = None
     currency: str
+    discount_amount_cents: Optional[int] = None
     discount_percent_applied: Optional[float] = None
     duration_minutes: Optional[int] = None
 
@@ -471,6 +480,12 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         logger.exception("Failed to determine online payment availability: %s", exc)
         online_payments_available = None
 
+    try:
+        online_discount_percent = await resolve_online_payment_discount_percent()
+    except Exception as exc:
+        logger.exception("Failed to read online payment discount percent: %s", exc)
+        online_discount_percent = None
+
     # Provide a frontend-friendly alias and a date format setting (best-effort).
     try:
         date_format = await SettingsRepo.get_setting("date_format", "YYYY-MM-DD")
@@ -512,6 +527,7 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         webapp_title=webapp_title,
         online_payments_available=online_payments_available,
         online_payment_enabled=bool(online_payments_available) if online_payments_available is not None else None,
+        online_payment_discount_percent=online_discount_percent,
         date_format=date_format,
         reminder_lead_minutes=reminder_lead,
         address=address_val,
@@ -929,35 +945,30 @@ async def masters_for_service(service_id: str, principal: Principal = Depends(ge
 async def price_quote(payload: PriceQuoteRequest, principal: Principal = Depends(get_current_principal)) -> PriceQuoteResponse:
     """Calculate final price on the server to keep Mini App and bot in sync."""
     try:
-        base = await get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=payload.master_id)
-        online = (payload.payment_method or "cash") == "online"
-        final = base
-        if online:
-            final = await get_services_duration_and_price(payload.service_ids, online_payment=True, master_id=payload.master_id)
-
-        base_price = int(base.get("total_price_cents") or 0)
-        final_price = int(final.get("total_price_cents") or 0)
-        currency = str(final.get("currency") or base.get("currency") or "UAH")
-
-        discount_percent: float | None = None
-        if online and base_price > 0 and final_price < base_price:
-            try:
-                discount_percent = round(((base_price - final_price) * 100) / base_price, 2)
-            except Exception:
-                discount_percent = None
-
-        duration = None
-        try:
-            duration = int(base.get("total_minutes") or 0)
-        except Exception:
-            duration = None
+        quote = await client_services.calculate_price_quote(
+            payload.service_ids,
+            payment_method=payload.payment_method,
+            master_id=payload.master_id,
+        )
+        final_price_cents = int(quote.get("final_price_cents") or 0)
+        original_price_raw = quote.get("original_price_cents")
+        original_price_cents = int(original_price_raw) if original_price_raw is not None else None
+        discount_amount_raw = quote.get("discount_amount_cents")
+        discount_amount_cents = int(discount_amount_raw) if discount_amount_raw is not None else None
+        discount_percent_raw = quote.get("discount_percent_applied")
+        discount_percent_applied = float(discount_percent_raw) if discount_percent_raw is not None else None
+        duration_raw = quote.get("duration_minutes")
+        duration_minutes = int(duration_raw) if duration_raw is not None else None
+        currency_val = quote.get("currency") or "UAH"
+        currency = str(currency_val)
 
         return PriceQuoteResponse(
-            final_price_cents=final_price,
-            original_price_cents=base_price,
+            final_price_cents=final_price_cents,
+            original_price_cents=original_price_cents,
             currency=currency,
-            discount_percent_applied=discount_percent,
-            duration_minutes=duration,
+            discount_amount_cents=discount_amount_cents,
+            discount_percent_applied=discount_percent_applied,
+            duration_minutes=duration_minutes,
         )
     except HTTPException:
         raise
@@ -1081,6 +1092,12 @@ async def list_bookings(
                 formatted_date=formatted_date,
                 price_cents=rendered.get("price_cents"),
                 price_formatted=rendered.get("price_formatted"),
+                original_price_cents=rendered.get("original_price_cents"),
+                final_price_cents=rendered.get("final_price_cents"),
+                discount_amount_cents=rendered.get("discount_amount_cents"),
+                original_price_formatted=rendered.get("original_price_formatted"),
+                final_price_formatted=rendered.get("final_price_formatted"),
+                discount_amount_formatted=rendered.get("discount_amount_formatted"),
                 currency=rendered.get("currency") or None,
                 starts_at=rendered.get("starts_at") or (starts_at.isoformat() if starts_at else None),
                 ends_at=rendered.get("ends_at") or None,
@@ -1267,16 +1284,12 @@ async def create_booking(
     except Exception:
         logger.exception("booking notification block failed for booking=%s", booking_id)
 
-    try:
-        master_name_val = None
-        if master_id is not None:
-            master_name_val = await MasterRepo.get_master_name(master_id)
-        if not master_name_val:
-            master_obj = getattr(booking, "master", None)
-            master_name_val = getattr(master_obj, "name", None)
-    except Exception as exc:
-        logger.exception("Failed to resolve master name for booking %s: %s", booking_id, exc)
-        master_name_val = None
+    master_name_val = None
+    if master_id is not None:
+        master_name_val = await MasterRepo.get_master_name(master_id)
+    if not master_name_val:
+        master_obj = getattr(booking, "master", None)
+        master_name_val = getattr(master_obj, "name", None)
 
     return BookingResponse(
         ok=True,
@@ -1311,6 +1324,10 @@ async def finalize_booking(payload: dict, principal: Principal = Depends(get_cur
         status=res.get("status"),
         starts_at=res.get("starts_at"),
         invoice_url=res.get("invoice_url"),
+        final_price_cents=res.get("final_price_cents"),
+        original_price_cents=res.get("original_price_cents"),
+        discount_amount_cents=res.get("discount_amount_cents"),
+        currency=res.get("currency"),
         error=res.get("error"),
     )
 

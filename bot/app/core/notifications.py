@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 from datetime import timedelta
-from typing import Iterable
+from typing import Iterable, Any
+from dataclasses import replace
 
 from aiogram import Bot
 
@@ -92,7 +93,13 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
     try:
         # Lazy imports to avoid import-time cycles
         from bot.app.services.client_services import build_booking_details
-        from bot.app.services.shared_services import format_booking_details_text, format_date, safe_get_locale, utc_now
+        from bot.app.services.shared_services import (
+            format_booking_details_text,
+            format_date,
+            safe_get_locale,
+            utc_now,
+            format_money_cents,
+        )
         from bot.app.translations import tr
         from bot.app.domain.models import Booking, BookingStatus
         from bot.app.core.db import get_session
@@ -173,7 +180,61 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
             master_id_val = getattr(booking, "master_id", None)
             client_tg_id = bd.client_telegram_id
 
+            bd_for_body = bd
+            discount_line = None
+
             try:
+                if event_type == "paid":
+                    try:
+                        final_cents = int(getattr(booking, "final_price_cents", None) or 0)
+                    except Exception:
+                        final_cents = 0
+
+                    try:
+                        original_cents = int(getattr(booking, "original_price_cents", None) or final_cents)
+                    except Exception:
+                        original_cents = final_cents
+
+                    try:
+                        discount_cents = int(getattr(booking, "discount_amount_cents", None) or 0)
+                    except Exception:
+                        discount_cents = 0
+
+                    # Fallback: derive discount from price delta when explicit amount is missing
+                    if discount_cents <= 0:
+                        try:
+                            if original_cents and original_cents > final_cents:
+                                discount_cents = original_cents - final_cents
+                        except Exception:
+                            pass
+
+                    try:
+                        bd_for_body = replace(bd, price_cents=final_cents)
+                    except Exception:
+                        bd_for_body = bd
+
+                    if discount_cents > 0:
+                        try:
+                            pct_hint = int(getattr(booking, "discount_percent", None) or 0)
+                        except Exception:
+                            pct_hint = 0
+
+                        try:
+                            pct = pct_hint if pct_hint > 0 else (round((discount_cents * 100) / original_cents) if original_cents else 0)
+                        except Exception:
+                            pct = pct_hint if pct_hint > 0 else 0
+
+                        try:
+                            savings_text = format_money_cents(discount_cents, getattr(bd_for_body, "currency", None))
+                        except Exception:
+                            savings_text = format_money_cents(discount_cents)
+
+                        disc_label = tr("online_discount_label_plain", lang=lang) or tr("online_discount_label", lang=lang) or "Online discount"
+                        if pct and pct > 0:
+                            discount_line = f"{disc_label}: -{pct}% ({savings_text})"
+                        else:
+                            discount_line = f"{disc_label}: {savings_text}"
+
                 if event_type == "paid":
                     title_tpl = tr("notif_paid_online_confirmed", lang=lang)
                     if title_tpl == "notif_paid_online_confirmed":
@@ -202,7 +263,7 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
             except Exception:
                 title = f"#{booking_id}"
 
-            body = format_booking_details_text(bd, lang)
+            body = format_booking_details_text(bd_for_body, lang)
             if event_type == "paid":
                 try:
                     paid_label = tr("amount_paid_label", lang=lang)
@@ -211,6 +272,8 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                         body = body.replace(f"{amount_label}:", f"{paid_label}:", 1)
                 except Exception:
                     pass
+                if discount_line:
+                    body = f"{body}\n{discount_line}".strip()
             if event_type == "no_show" and no_show_count_recent is not None:
                 try:
                     stats_tpl = tr("no_show_stats_line", lang=lang)

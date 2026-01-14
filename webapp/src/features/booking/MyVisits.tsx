@@ -56,8 +56,22 @@ export function BookingDetailsModal({
   })();
 
   const masterLabel = masterMap?.[booking.master_id || 0] || booking.master_name || (t("master_default") as string);
+  const derivedOriginal = booking.original_price_cents ?? (booking.discount_amount_cents != null && booking.final_price_cents != null ? booking.final_price_cents + booking.discount_amount_cents : null);
+  const derivedFinal = booking.final_price_cents ?? booking.price_cents ?? (booking.original_price_cents != null && booking.discount_amount_cents != null ? booking.original_price_cents - booking.discount_amount_cents : booking.original_price_cents ?? null);
+  const derivedDiscount = booking.discount_amount_cents ?? (derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal ? derivedOriginal - derivedFinal : null);
+  const hasDiscount = derivedDiscount != null && derivedDiscount > 0 && derivedOriginal != null && derivedFinal != null && derivedOriginal > derivedFinal;
 
-  const priceLabel = formatMoneyPreferServer(booking.price_formatted, booking.price_cents ?? null, booking.currency || undefined);
+  const finalLabel = formatMoneyPreferServer(
+    booking.final_price_formatted || booking.price_formatted,
+    derivedFinal,
+    booking.currency || undefined
+  );
+  const originalLabel = hasDiscount
+    ? formatMoneyPreferServer(booking.original_price_formatted, derivedOriginal, booking.currency || undefined)
+    : null;
+  const discountLabel = hasDiscount
+    ? formatMoneyPreferServer(booking.discount_amount_formatted, derivedDiscount, booking.currency || undefined)
+    : null;
 
   return createPortal(
     <div className="tma-modal-backdrop" onClick={onClose}>
@@ -84,7 +98,15 @@ export function BookingDetailsModal({
             <div className="tma-field-value">{durationLabel}</div>
 
             <div className="tma-field-label">{booking.payment_method === "online" ? t("paid_label") : t("to_be_paid")}</div>
-            <div className="tma-field-value">{priceLabel}</div>
+            <div className="tma-field-value">
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <strong>{finalLabel}</strong>
+                {hasDiscount && originalLabel ? <span className="tma-price-strike tma-subtle">{originalLabel}</span> : null}
+              </div>
+              {hasDiscount && discountLabel ? (
+                <div className="tma-subtle">{t("online_discount") || "Скидка"} {discountLabel}</div>
+              ) : null}
+            </div>
           </div>
         </div>
 

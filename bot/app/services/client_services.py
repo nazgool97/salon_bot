@@ -23,7 +23,7 @@ from bot.app.domain.models import (
     ACTIVE_STATUSES,
 )
 from bot.app.core.db import get_session
-from bot.app.core.constants import REQUIRE_ROW_LOCK_STRICT, BOT_TOKEN, TELEGRAM_PROVIDER_TOKEN
+from bot.app.core.constants import DEFAULT_CURRENCY, REQUIRE_ROW_LOCK_STRICT, BOT_TOKEN, TELEGRAM_PROVIDER_TOKEN
 from bot.app.services import master_services
 from bot.app.services.master_services import MasterRepo
 
@@ -44,6 +44,8 @@ from bot.app.services.shared_services import (
     get_local_tz,
     get_service_duration,
     ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT,
+    resolve_online_payment_discount_percent,
+    apply_online_payment_discount,
     get_admin_ids,
     normalize_error_code,
 )
@@ -749,8 +751,12 @@ class BookingRepo:
             duration = timedelta(minutes=60)
             if b.ends_at and b.starts_at:
                 duration = b.ends_at - b.starts_at
-            elif getattr(b, "duration_minutes", None):
-                duration = timedelta(minutes=int(b.duration_minutes))
+            else:
+                dur_val = getattr(b, "duration_minutes", None)
+                try:
+                    duration = timedelta(minutes=int(dur_val)) if dur_val is not None else duration
+                except Exception:
+                    duration = duration
 
             b.starts_at = new_starts_at
             b.ends_at = new_starts_at + duration
@@ -1364,6 +1370,8 @@ async def build_booking_details(
             "price_cents": getattr(booking, "final_price_cents", None)
             or getattr(booking, "original_price_cents", None)
             or 0,
+            "original_price_cents": getattr(booking, "original_price_cents", None),
+            "discount_amount_cents": getattr(booking, "discount_amount_cents", None),
             "currency": getattr(booking, "currency", None) or global_currency,
             "starts_at": getattr(booking, "starts_at", None),
             "client_id": user_id,
@@ -1396,8 +1404,9 @@ async def build_booking_details(
             status_val = str(getattr(b, "status", ""))
         if not data.get("starts_at") and getattr(b, "starts_at", None):
             data["starts_at"] = b.starts_at
-        if not data.get("price_cents"):
-            data["price_cents"] = getattr(b, "final_price_cents", None) or getattr(b, "original_price_cents", None) or 0
+        data["price_cents"] = getattr(b, "final_price_cents", None) or getattr(b, "original_price_cents", None) or data.get("price_cents") or 0
+        data["original_price_cents"] = getattr(b, "original_price_cents", None) or data.get("original_price_cents")
+        data["discount_amount_cents"] = getattr(b, "discount_amount_cents", None) if getattr(b, "discount_amount_cents", None) is not None else data.get("discount_amount_cents")
         try:
             if getattr(b, "user_id", None):
                 u = await UserRepo.get_by_id(int(b.user_id))
@@ -1426,6 +1435,12 @@ async def build_booking_details(
 
         global_currency = _default_currency()
 
+    try:
+        dur_val = data.get("duration_minutes")
+        duration_val = int(dur_val) if dur_val is not None else None
+    except Exception:
+        duration_val = None
+
     return BookingDetails(
         booking_id=int(data.get("booking_id", 0) or 0),
         service_name=data.get("service_name"),
@@ -1434,7 +1449,7 @@ async def build_booking_details(
         currency=data.get("currency") or global_currency,
         starts_at=data.get("starts_at"),
         ends_at=data.get("ends_at"),
-        duration_minutes=(int(data.get("duration_minutes")) if data.get("duration_minutes") is not None else None),
+        duration_minutes=duration_val,
         date_str=data.get("date_str"),
         client_id=data.get("client_id"),
         raw=data,
@@ -1697,7 +1712,7 @@ async def get_available_time_slots_for_services(
             # otherwise fall back to 5 minutes which provides fine-grained
             # selection for clients.
             try:
-                slot_step_min = await SettingsRepo.get_slot_tick_minutes()
+                slot_step_min = await SettingsRepo.get_slot_tick_minutes()  # type: ignore[attr-defined]
                 slot_step_min = int(slot_step_min or 0)
             except Exception:
                 slot_step_min = 0
@@ -1930,6 +1945,8 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
                 logger.exception("Failed to resolve master id for %s", master_id)
                 raise
 
+            new_start = slot
+
             # Acquire advisory lock for the specific (master_id, slot) pair to
             # avoid races with the expiration worker. Use the two-int advisory
             # lock variant; reduce the surrogate id and epoch to 32-bit space
@@ -1937,7 +1954,7 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
             try:
                 from sqlalchemy import text
                 k1 = int(resolved_master_id) % 2147483647
-                k2 = int(new_start.timestamp()) % 2147483647 if 'new_start' in locals() else int(slot.timestamp()) % 2147483647
+                k2 = int(new_start.timestamp()) % 2147483647
                 await session.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
             except Exception:
                 # Advisory locks are best-effort; if unavailable, continue and
@@ -1954,7 +1971,6 @@ async def create_booking(client_id: int, master_id: int, service_id: str, slot: 
                 if not new_dur:
                     new_dur = await SettingsRepo.get_slot_duration()
 
-                new_start = slot
                 new_end = new_start + timedelta(minutes=new_dur)
 
                 conflict = await BookingRepo.find_conflicting_booking(session, client_id, resolved_master_id, new_start, new_end, service_ids=[service_id])
@@ -2039,6 +2055,7 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
     """
     total_minutes = 0
     total_price = 0
+    discount_amount = 0
     # Resolve global currency once (single source of truth).
     from bot.app.services.shared_services import _default_currency
     try:
@@ -2065,16 +2082,18 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
                 mid = await session.scalar(select(Master.id).where(Master.id == int(master_id)))
                 if not mid:
                     mid = await session.scalar(select(Master.id).where(Master.telegram_id == int(master_id)))
+
+                ms_rows_result = None
                 if mid:
-                    ms_rows = await session.execute(
+                    ms_rows_result = await session.execute(
                         select(MasterService.service_id, MasterService.duration_minutes).where(
                             MasterService.master_id == int(mid),
                             MasterService.service_id.in_(list(service_ids)),
                         )
                     )
-                else:
-                    ms_rows = []
-                for sid, dur in ms_rows.all():
+
+                ms_rows = ms_rows_result.all() if ms_rows_result is not None else []
+                for sid, dur in ms_rows:
                     try:
                         if dur and int(dur) > 0:
                             overrides[str(sid)] = int(dur)
@@ -2101,27 +2120,89 @@ async def get_services_duration_and_price(service_ids: Sequence[str], online_pay
                 total_minutes += dur if dur > 0 else 60
         if online_payment and total_price > 0:
             try:
-                # Allow override of the discount percent via SettingsRepo; fall back to module default.
-                dp = await SettingsRepo.get_setting(ONLINE_PAYMENT_DISCOUNT_SETTING, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
-                try:
-                    discount_percent = float(dp)
-                except Exception:
-                    discount_percent = float(ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
-                multiplier = max(0.0, 1.0 - (discount_percent / 100.0))
-                total_price = int(total_price * multiplier)
+                discount_pct = await resolve_online_payment_discount_percent()
             except Exception:
-                # On any error, fall back to the previous fixed 5% discount multiplier
-                total_price = int(total_price * (1.0 - (ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT / 100.0)))
-        return {"total_minutes": total_minutes, "total_price_cents": total_price, "currency": currency}
+                discount_pct = ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT
+            try:
+                total_price, discount_amount = apply_online_payment_discount(total_price, discount_pct)
+            except Exception:
+                total_price, discount_amount = apply_online_payment_discount(total_price, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
+        return {
+            "total_minutes": total_minutes,
+            "total_price_cents": total_price,
+            "currency": currency,
+            "discount_amount_cents": discount_amount if online_payment else 0,
+        }
     except Exception as e:
         logger.warning("Ошибка расчета суммы длительности/цены для %s: %s", service_ids, e)
         return {"total_minutes": total_minutes, "total_price_cents": 0, "currency": currency}
 
 
-## Removed: legacy pagination wrappers — callers should use BookingRepo.get_paginated_list.
+async def calculate_price_quote(
+    service_ids: Sequence[str],
+    payment_method: str | Any | None = None,
+    master_id: int | None = None,
+) -> dict[str, int | str | float | None]:
+    """Return a normalized price quote payload for WebApp API.
 
+    Delegates duration/price math to `get_services_duration_and_price` so the
+    API layer doesn't duplicate discount logic. Accepts either a raw string
+    ("cash"/"online") or an Enum-like object with a `.value` attribute.
+    """
 
-# render_bookings_page removed — use shared_services.render_bookings_list_page(role, user_id, mode, page, lang)
+    method_raw = getattr(payment_method, "value", payment_method)
+    method = str(method_raw or "cash")
+    online = method == "online"
+
+    base_totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=master_id)
+    online_totals = base_totals
+    discount_amount = 0
+
+    if online:
+        online_totals = await get_services_duration_and_price(service_ids, online_payment=True, master_id=master_id)
+        try:
+            discount_amount = int(online_totals.get("discount_amount_cents") or 0)
+        except Exception:
+            discount_amount = 0
+
+    try:
+        base_price = int(base_totals.get("total_price_cents") or 0)
+    except Exception:
+        base_price = 0
+
+    try:
+        final_price = int(online_totals.get("total_price_cents") or 0)
+    except Exception:
+        final_price = base_price
+
+    currency_val = online_totals.get("currency") or base_totals.get("currency") or DEFAULT_CURRENCY
+    currency = str(currency_val)
+
+    # Fallback: if savings weren't explicitly returned but prices differ, derive delta
+    if online and discount_amount <= 0 and base_price > final_price:
+        discount_amount = base_price - final_price
+    discount_amount = max(0, discount_amount)
+
+    discount_percent: float | None = None
+    if online and base_price > 0 and discount_amount > 0:
+        try:
+            discount_percent = round((discount_amount * 100) / base_price, 2)
+        except Exception:
+            discount_percent = None
+
+    try:
+        duration = int(base_totals.get("total_minutes") or 0)
+    except Exception:
+        duration = None
+
+    return {
+        "final_price_cents": final_price,
+        "original_price_cents": base_price,
+        "currency": currency,
+        "discount_amount_cents": discount_amount if online else None,
+        "discount_percent_applied": discount_percent,
+        "duration_minutes": duration,
+    }
 
 
 async def create_composite_booking(client_id: int, master_id: int, service_ids: Sequence[str], slot: datetime, *, hold_minutes: int | None = None) -> Booking:
@@ -2390,16 +2471,14 @@ async def calculate_price(service_id: str, online_payment: bool) -> Dict[str, An
             price = service.price_cents
             if online_payment:
                 try:
-                    dp = await SettingsRepo.get_setting(ONLINE_PAYMENT_DISCOUNT_SETTING, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
-                    try:
-                        discount_percent = float(dp)
-                    except Exception:
-                        discount_percent = float(ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
-                    multiplier = max(0.0, 1.0 - (discount_percent / 100.0))
-                    price = int(price * multiplier)
+                    discount_pct = await resolve_online_payment_discount_percent()
+                except Exception:
+                    discount_pct = ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT
+                try:
+                    price, _ = apply_online_payment_discount(price, discount_pct)
                 except Exception:
                     # conservative fallback to default 5% discount
-                    price = int(price * (1.0 - (ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT / 100.0)))
+                    price, _ = apply_online_payment_discount(price, ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT)
             # Resolve global currency once (avoid per-service currency fields).
             from bot.app.services.shared_services import _default_currency
             try:
@@ -2646,7 +2725,12 @@ async def process_booking_hold(
             online_totals = await get_services_duration_and_price(service_ids, online_payment=True, master_id=master_val)
             final_price = int(online_totals.get("total_price_cents") or base_price)
             currency = str(online_totals.get("currency") or currency)
-            discount_amount = base_price - final_price if base_price > final_price else 0
+            try:
+                discount_amount = int(online_totals.get("discount_amount_cents") or 0)
+            except Exception:
+                discount_amount = 0
+            if discount_amount <= 0 and base_price > final_price:
+                discount_amount = base_price - final_price
     except Exception as exc:
         logger.exception("process_booking_hold: pricing failed for services %s: %s", service_ids, exc)
         base_price = 0
@@ -2826,11 +2910,105 @@ async def process_booking_finalization(user_id: int, user_telegram_id: int, book
     payment_method = payment_method or "cash"
 
     if payment_method == "online":
+        def _to_int(val: object | None) -> int | None:
+            if val is None:
+                return None
+            if isinstance(val, (int, float, str)):
+                try:
+                    return int(val)
+                except Exception:
+                    return None
+            return None
+
+        base_price = _to_int(getattr(booking, "original_price_cents", None))
+        final_price = _to_int(getattr(booking, "final_price_cents", None))
+        discount_amount = _to_int(getattr(booking, "discount_amount_cents", None))
+        currency_val = getattr(booking, "currency", None)
+
+        needs_reprice = False
+        need_save = False
+
+        # If we lack prices or discount, we need a fresh price quote for online.
+        if base_price is None or final_price is None:
+            needs_reprice = True
+        else:
+            if discount_amount is None or discount_amount <= 0:
+                if base_price > final_price:
+                    discount_amount = base_price - final_price
+                    need_save = True
+                else:
+                    needs_reprice = True
+            if base_price == final_price and (discount_amount is None or discount_amount <= 0):
+                needs_reprice = True
+
+        if needs_reprice:
+            try:
+                from bot.app.domain.models import BookingItem, Booking
+
+                async with get_session() as session:
+                    rows = await session.execute(
+                        select(BookingItem.service_id)
+                        .where(BookingItem.booking_id == int(booking_id))
+                        .order_by(BookingItem.position)
+                    )
+                    service_ids = [str(r[0]) for r in rows.all() if r and r[0]]
+                    if not service_ids:
+                        sid = getattr(booking, "service_id", None)
+                        if sid is not None:
+                            service_ids = [str(sid)]
+
+                base_totals = await get_services_duration_and_price(service_ids, online_payment=False, master_id=getattr(booking, "master_id", None))
+                online_totals = await get_services_duration_and_price(service_ids, online_payment=True, master_id=getattr(booking, "master_id", None))
+
+                base_price = int(base_totals.get("total_price_cents") or 0)
+                final_price = int(online_totals.get("total_price_cents") or base_price)
+                try:
+                    discount_amount = int(online_totals.get("discount_amount_cents") or 0)
+                except Exception:
+                    discount_amount = 0
+                if discount_amount <= 0 and base_price > final_price:
+                    discount_amount = base_price - final_price
+
+                currency_val = online_totals.get("currency") or base_totals.get("currency") or getattr(booking, "currency", None)
+                need_save = True
+            except Exception:
+                logger.exception("process_booking_finalization: reprice failed for booking %s", booking_id)
+
+        if base_price is not None and final_price is not None:
+            # Always persist pricing for online payments so discount_amount_cents is non-null.
+            need_save = True
+            discount_amount = int(discount_amount or 0)
+
+        if need_save and base_price is not None and final_price is not None:
+            try:
+                from bot.app.domain.models import Booking
+                async with get_session() as session:
+                    b = await session.get(Booking, booking_id)
+                    if b:
+                        b.original_price_cents = base_price  # type: ignore[attr-defined]
+                        b.final_price_cents = final_price  # type: ignore[attr-defined]
+                        b.discount_amount_cents = (discount_amount if discount_amount is not None else 0)  # type: ignore[attr-defined]
+                        if currency_val:
+                            b.currency = currency_val  # type: ignore[attr-defined]
+                        await session.commit()
+                        await session.refresh(b)
+                        booking = b
+            except Exception:
+                logger.exception("process_booking_finalization: save failed for booking %s", booking_id)
+
         pending_ok = await BookingRepo.set_pending_payment(booking_id)
         if not pending_ok:
             return {"ok": False, "error": "finalize_failed", "booking_id": None}
 
-        amt = getattr(booking, "final_price_cents", None) or getattr(booking, "original_price_cents", None)
+        # Prefer the freshly calculated discounted total to avoid charging full price
+        # if persistence failed. Fall back to stored booking snapshot as last resort.
+        amt = None
+        if final_price is not None:
+            amt = final_price
+        elif base_price is not None:
+            amt = base_price
+        else:
+            amt = getattr(booking, "final_price_cents", None) or getattr(booking, "original_price_cents", None)
         try:
             amount_cents = int(amt) if amt is not None else 0
         except Exception:
@@ -2872,7 +3050,23 @@ async def process_booking_finalization(user_id: int, user_telegram_id: int, book
         except Exception:
             pass
 
-        return {"ok": True, "booking_id": booking_id, "status": "pending_payment", "invoice_url": invoice_url}
+        # Echo the freshest computed pricing even if the DB snapshot failed to persist.
+        final_out = final_price if final_price is not None else getattr(booking, "final_price_cents", None)
+        base_out = base_price if base_price is not None else getattr(booking, "original_price_cents", None)
+        discount_out = discount_amount if discount_amount is not None else getattr(booking, "discount_amount_cents", None)
+
+        return {
+            "ok": True,
+            "booking_id": booking_id,
+            "status": "pending_payment",
+            "invoice_url": invoice_url,
+            "final_price_cents": final_out,
+            "original_price_cents": base_out,
+            "discount_amount_cents": discount_out,
+            "currency": getattr(booking, "currency", None),
+            # Echo the method so the MiniApp UI can keep displaying the right mode.
+            "payment_method": payment_method,
+        }
 
     ok, err = await BookingRepo.confirm_cash(booking_id)
     if not ok:

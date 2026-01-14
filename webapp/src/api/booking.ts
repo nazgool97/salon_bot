@@ -66,6 +66,7 @@ export type BookingResponse = {
   original_price_cents?: number | null;
   final_price_cents?: number | null;
   discount_amount_cents?: number | null;
+  discount_percent?: number | null;
   currency?: string | null;
   master_id?: number | null;
   master_name?: string | null;
@@ -97,6 +98,12 @@ export type BookingItem = {
   master_name?: string | null;
   price_cents?: number | null; // Keep this line for backward compatibility
   price_formatted?: string | null;
+   original_price_cents?: number | null;
+   final_price_cents?: number | null;
+   discount_amount_cents?: number | null;
+   original_price_formatted?: string | null;
+   final_price_formatted?: string | null;
+   discount_amount_formatted?: string | null;
   currency?: string | null;
   payment_method?: PaymentMethod | null;
 };
@@ -117,6 +124,7 @@ export type PriceQuoteResponse = {
   final_price_cents: number;
   original_price_cents?: number | null;
   discount_amount_cents?: number | null;
+  discount_percent?: number | null;
   currency: string;
   discount_percent_applied?: number | null;
   duration_minutes?: number | null;
