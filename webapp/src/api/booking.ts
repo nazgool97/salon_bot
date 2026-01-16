@@ -186,8 +186,9 @@ export async function fetchSlots(params: {
       // Server expects query param name `date` (YYYY-MM-DD)
       date: params.date_param,
       ...(params.master_id != null ? { master_id: params.master_id } : {}),
-      // `GET /api/slots` in the backend expects a comma-separated string like "1,2,3"
+      // Send both legacy comma string and array form for compatibility with backend
       service_ids: params.service_ids.join(","),
+      "service_ids[]": params.service_ids,
     },
   });
   return data;

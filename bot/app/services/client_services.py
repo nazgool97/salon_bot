@@ -846,11 +846,12 @@ class BookingRepo:
     async def list_history_by_user(user_id: int, limit: int = 50) -> list[Booking]:
         """Return past or terminal bookings for a user (newest first).
 
-        History = starts_at < now OR status is terminal (cancelled/done/no_show/etc.).
+        History = status is terminal (cancelled/done/no_show/expired)
+        OR visit already started in a non-temporary status (confirmed/paid/done/etc.).
         """
         try:
             async with get_session() as session:
-                from sqlalchemy import select, or_
+                from sqlalchemy import select, or_, and_, not_
                 from bot.app.domain.models import Booking
 
                 now = utc_now()
@@ -862,13 +863,17 @@ class BookingRepo:
                     BookingStatus.DONE,
                     BookingStatus.NO_SHOW,
                 )
+                temp_statuses = (BookingStatus.RESERVED, BookingStatus.PENDING_PAYMENT)
                 stmt = (
                     select(Booking)
                     .where(
                         Booking.user_id == int(user_id),
                         or_(
                             Booking.status.in_(history_statuses),
-                            Booking.starts_at < now,
+                            and_(
+                                Booking.starts_at < now,
+                                not_(Booking.status.in_(temp_statuses)),
+                            ),
                         ),
                     )
                     .order_by(Booking.starts_at.desc())

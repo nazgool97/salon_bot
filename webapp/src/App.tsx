@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 
 import { setAuthToken, setLang } from "./api/client";
-import api from "./api/client";
 import { createSession } from "./api/session";
 import BookingWizard from "./features/booking/BookingWizard"; // <-- IMPORT NEW WIZARD
 import MyVisits from "./features/booking/MyVisits";
@@ -55,6 +54,9 @@ export default function App() {
           (window as any).__APP_ONLINE_PAYMENT_DISCOUNT_PERCENT = cfg.online_payment_discount_percent ?? null;
           (window as any).__APP_ONLINE_DISCOUNT_PERCENT = cfg.online_payment_discount_percent ?? null;
             (window as any).__APP_REMINDER_LEAD_MINUTES = cfg.reminder_lead_minutes ?? null;
+          if (cfg.timezone) {
+            (window as any).__SERVER_TZ = cfg.timezone;
+          }
           // support admin-provided address (prefer explicit keys)
           (window as any).__APP_ADDRESS = cfg.address ?? cfg.webapp_address ?? cfg.location_address ?? null;
           (window as any).__APP_PHONE = cfg.contact_phone ?? null;

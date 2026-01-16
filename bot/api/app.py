@@ -116,6 +116,7 @@ class SessionResponse(BaseModel):
     webapp_address: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_instagram: Optional[str] = None
+    timezone: Optional[str] = None
 
 
 class BookingRequest(BaseModel):
@@ -511,6 +512,14 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
     except Exception:
         reminder_lead = None
 
+    # Resolve timezone once from environment/settings for WebApp clients.
+    try:
+        tz_name = os.getenv("BUSINESS_TIMEZONE") or os.getenv("LOCAL_TIMEZONE")
+        if not tz_name:
+            tz_name = getattr(ZoneInfo("UTC"), "key", "UTC")
+    except Exception:
+        tz_name = "UTC"
+
     # Try to include contact address/title for the WebApp (best-effort)
     try:
         contact = await get_contact_info()
@@ -538,6 +547,7 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
         webapp_address=webapp_address_val,
         contact_phone=contact_phone_val,
         contact_instagram=contact_instagram_val,
+        timezone=tz_name,
     )
 
 

@@ -19,7 +19,10 @@ export function initWebApp(): void {
   }
 
   const url = new URL(window.location.href);
-  const serverTz = url.searchParams.get("server_tz") || url.searchParams.get("server_tz_name");
+  const serverTz =
+    (window as any).__SERVER_TZ ||
+    url.searchParams.get("server_tz") ||
+    url.searchParams.get("server_tz_name");
   if (serverTz) {
     (window as any).__SERVER_TZ = serverTz;
   }

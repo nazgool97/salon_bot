@@ -6,7 +6,7 @@ from typing import Optional, Any, Callable, Awaitable
 from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 
-from bot.app.domain.models import Booking, BookingStatus, Master, MasterService, Service, User
+from bot.app.domain.models import Booking, BookingStatus, Master, MasterService, Service, User, TERMINAL_STATUSES
 
 
 from aiogram import F, Router, Bot
@@ -2929,17 +2929,44 @@ async def pay_back_methods(cb: CallbackQuery, callback_data, locale: str, lang: 
 
 @client_router.pre_checkout_query()
 async def pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
-    """Handle Telegram PreCheckoutQuery by acknowledging it.
-
-    This is a minimal safe handler: for full payment handling the
-    successful_payment update should be used. We acknowledge the
-    pre-checkout query to satisfy Telegram API requirements and log
-    unexpected failures.
-    """
+    """Validate that the booking is still valid before confirming payment."""
     try:
-        await pre_checkout_query.answer(ok=True)
+        payload = getattr(pre_checkout_query, "invoice_payload", "") or ""
+        match = re.match(r"booking_(\d+)", str(payload))
+        booking_id = int(match.group(1)) if match else None
+
+        lang = getattr(pre_checkout_query.from_user, "language_code", None)
+        error_message: str | None = None
+
+        if booking_id is not None:
+            booking = await BookingRepo.get(booking_id)
+            if not booking:
+                error_message = t("booking_not_found", lang) or "Бронь не найдена"
+            else:
+                try:
+                    hold_minutes = await SettingsRepo.get_reservation_hold_minutes()
+                except Exception:
+                    hold_minutes = 5
+
+                now_utc = utc_now()
+                status = getattr(booking, "status", None)
+
+                if status in TERMINAL_STATUSES or status in {BookingStatus.CONFIRMED, BookingStatus.PAID}:
+                    error_message = t("booking_not_found", lang) or "Бронь недоступна"
+                elif not is_booking_slot_blocked(booking, now_utc, hold_minutes):
+                    try:
+                        await BookingRepo.update_status(booking_id, BookingStatus.EXPIRED)
+                    except Exception:
+                        pass
+                    error_message = t("slot_unavailable", lang) or "Слот недоступен, выберите другое время"
+
+        await pre_checkout_query.answer(ok=not bool(error_message), error_message=error_message)
     except Exception:
         logger.exception("pre_checkout_query: failed to answer pre-checkout query")
+        try:
+            await pre_checkout_query.answer(ok=False, error_message="Оплата недоступна, обновите счет")
+        except Exception:
+            pass
 
 
 @client_router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)

@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery } from "@tanstack/react-query";
 import { Toast } from "./BookingWizard";
 
 import {
@@ -150,17 +150,42 @@ export function useBookingActions(opts?: { onCancelSuccess?: () => void; onError
 export default function MyVisits() {
   const [toast, setToast] = useState<{ message: string; tone?: "error" | "success" } | null>(null);
   const [tab, setTab] = useState<"upcoming" | "history">("upcoming");
-  const { data, isLoading, refetch } = useQuery<BookingItem[], unknown, BookingItem[], ["bookings", string]>({
-    queryKey: ["bookings", tab],
-    queryFn: () => fetchBookings(tab),
+
+  const [upcomingQuery, historyQuery] = useQueries({
+    queries: [
+      { queryKey: ["bookings", "upcoming"] as const, queryFn: () => fetchBookings("upcoming") },
+      { queryKey: ["bookings", "history"] as const, queryFn: () => fetchBookings("history") },
+    ],
   });
+
+  const dedupe = (list: BookingItem[] | undefined) => {
+    const arr = Array.isArray(list) ? list : [];
+    return Array.from(new Map(arr.map((x) => [x.id, x])).values());
+  };
+
+  const upcomingList = useMemo(
+    () => dedupe(upcomingQuery.data as BookingItem[] | undefined),
+    [upcomingQuery.data]
+  );
+  const historyList = useMemo(
+    () => dedupe(historyQuery.data as BookingItem[] | undefined),
+    [historyQuery.data]
+  );
+  const activeList = tab === "upcoming" ? upcomingList : historyList;
+  const upcomingCount = upcomingList.length;
+  const historyCount = historyList.length;
+  const activeQuery = tab === "upcoming" ? upcomingQuery : historyQuery;
+  const isLoading = activeQuery.isLoading;
 
   // Log query results for debugging why upcoming bookings may be empty
   useEffect(() => {
     try {
-      if (!isLoading) console.debug("fetchBookings result", tab, Array.isArray(data) ? data.length : typeof data, data);
+      if (!isLoading && import.meta.env?.DEV) {
+        const payload = tab === "upcoming" ? upcomingList : historyList;
+        console.debug("fetchBookings result", tab, payload.length, payload);
+      }
     } catch (e) {}
-  }, [data, isLoading, tab]);
+  }, [historyList, isLoading, tab, upcomingList]);
   const { data: masters } = useQuery<MasterOut[]>({ queryKey: ["masters"], queryFn: fetchMasters });
   const masterMap = (masters || []).reduce<Record<number, string>>((acc, m) => {
     acc[m.id] = m.name;
@@ -169,8 +194,13 @@ export default function MyVisits() {
   const [rescheduleTarget, setRescheduleTarget] = useState<BookingItem | null>(null);
   const [newSlot, setNewSlot] = useState<string>("");
 
+  const refetchAll = useCallback(() => {
+    try { upcomingQuery.refetch(); } catch (e) {}
+    try { historyQuery.refetch(); } catch (e) {}
+  }, [historyQuery, upcomingQuery]);
+
   const { cancel, startReschedule } = useBookingActions({
-    onCancelSuccess: () => { setRescheduleTarget(null); refetch(); },
+    onCancelSuccess: () => { setRescheduleTarget(null); refetchAll(); },
     onError: (msg) => setToast({ message: msg || (t("network_unavailable") as string), tone: "error" }),
   });
 
@@ -179,7 +209,7 @@ export default function MyVisits() {
     onSuccess: (resp) => {
       if (resp.ok) {
         haptic.notify("success");
-        refetch();
+        refetchAll();
       } else {
         setToast({ message: resp.error || (t("rate_failed") as string), tone: "error" });
       }
@@ -237,20 +267,21 @@ export default function MyVisits() {
         </header>
 
         <div className="tma-tabs" style={{ margin: '12px 0' }}>
-          <button type="button" className={`tma-tab ${tab === "upcoming" ? "active" : ""}`} onClick={() => setTab("upcoming")}>{t("tab_upcoming")}</button>
-          <button type="button" className={`tma-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>{t("tab_history")}</button>
+          <button type="button" className={`tma-tab ${tab === "upcoming" ? "active" : ""}`} onClick={() => setTab("upcoming")}>
+            {`${t("tab_upcoming")}${upcomingCount ? ` (${upcomingCount})` : ""}`}
+          </button>
+          <button type="button" className={`tma-tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
+            {`${t("tab_history")}${historyCount ? ` (${historyCount})` : ""}`}
+          </button>
         </div>
 
         <section className="tma-card tma-stack">
 
           {isLoading && <div className="tma-skeleton tma-skeleton--lg" />}
-          {!isLoading && (!Array.isArray(data) || data.length === 0) && (
+          {!isLoading && activeList.length === 0 && (
             <div className="tma-empty">{tab === "upcoming" ? t("no_upcoming") : t("no_history")}</div>
           )}
-            {!isLoading && (() => {
-              const list = Array.isArray(data) ? data : [];
-              const uniq = Array.from(new Map(list.map((x) => [x.id, x])).values());
-              return uniq.map((b: BookingItem) => (
+            {!isLoading && activeList.map((b: BookingItem) => (
               <BookingCard
                 key={b.id}
                 booking={b}
@@ -268,8 +299,7 @@ export default function MyVisits() {
                 onRepeat={tab === "history" ? undefined : () => repeatBooking(b)}
                 disabledActions={tab === "history"}
               />
-              ));
-            })()}
+            ))}
         </section>
       </div>
 

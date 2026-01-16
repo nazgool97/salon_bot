@@ -864,7 +864,7 @@ export default function BookingWizard() {
       if (currentStep === "SERVICE") {
         if (hasServices) {
           const priceLabel = priceQuoteLoading ? "…" : finalPriceCents != null ? formatMoney(finalPriceCents, displayCurrency || null) : "—";
-          text = `${t("continue")} (${services.length}) ${durationLabel} • ${priceLabel}`;
+          text = `${t("continue")} (${services.length}) • ${priceLabel}`;
           isVisible = true;
           handler = () => handleContinueFromService();
         }

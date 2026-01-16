@@ -16,6 +16,7 @@ export type SessionResponse = {
   location_address?: string | null;
   contact_phone?: string | null;
   contact_instagram?: string | null;
+  timezone?: string | null;
 };
 
 export async function createSession(payload: SessionPayload): Promise<SessionResponse> {
