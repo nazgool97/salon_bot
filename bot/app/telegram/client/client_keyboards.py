@@ -764,7 +764,10 @@ async def get_master_keyboard(
 
 
 async def get_masters_catalog_keyboard(
-    masters: list | None, *, page: int = 1, total_pages: int = 1
+    masters: Sequence[_HasMasterAttrs] | Sequence[tuple[int, str]] | None,
+    *,
+    page: int = 1,
+    total_pages: int = 1,
 ) -> InlineKeyboardMarkup:
     """Build a generic masters catalog keyboard (no service preselected).
 
@@ -1248,7 +1251,7 @@ async def build_my_bookings_keyboard(
     current_page: int | None = None,
     role: str = "client",
     master_id: int | None = None,
-):
+) -> InlineKeyboardMarkup:
     """Build InlineKeyboardMarkup for the `my_bookings` handler.
 
     Accepts preformatted_rows (list of (text, booking_id)) so this module
@@ -1372,8 +1375,8 @@ async def build_my_bookings_keyboard(
 
 
 def build_booking_card_kb(
-    data: dict | Any, booking_id: int, role: str = "client", lang: str | None = None
-):
+    data: Any, booking_id: int, role: str = "client", lang: str | None = None
+) -> InlineKeyboardMarkup:
     """Build InlineKeyboardMarkup for a booking card (moved from services)."""
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from bot.app.telegram.common.callbacks import pack_cb, BookingActionCB, RescheduleCB, NavCB

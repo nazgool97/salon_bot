@@ -130,7 +130,9 @@ def build_time_slot_list(
     return times
 
 
-def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool = True) -> str:
+def format_master_profile_text(
+    data: Mapping[str, Any] | None, lang: str, *, with_title: bool = True
+) -> str:
     """Pure formatter: build profile text from pre-fetched `data`.
 
     This was previously defined in the master UI module. Move it here so
@@ -139,11 +141,11 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
     """
     try:
         if not data:
-            return tr("master_not_found", lang=lang)
+            return str(tr("master_not_found", lang=lang))
 
         master = data.get("master")
         services = data.get("services") or []
-        durations_map = data.get("durations_map") or {}
+        durations_map = dict(data.get("durations_map") or {})
         about_text = data.get("about_text")
 
         lines: list[str] = []
@@ -190,7 +192,7 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
                 svc_lines.append(f"{head} {tail}".strip())
             lines.extend(svc_lines or [])
         else:
-            lines.extend(["", "❌ " + tr("no_services_for_master", lang=lang)])
+            lines.extend(["", "❌ " + str(tr("no_services_for_master", lang=lang))])
 
         rating_val = getattr(master, "rating", None)
         if rating_val is not None:
@@ -205,7 +207,7 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
             )
 
         if about_text:
-            lines.extend(["", tr("about_title", lang=lang), str(about_text)])
+            lines.extend(["", str(tr("about_title", lang=lang)), str(about_text)])
 
         sched = data.get("schedule") or {}
         if isinstance(sched, dict):
@@ -234,7 +236,7 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
                     lines.append(f"• {wd_full[i]}: {fmt_windows(windows)}")
         return "\n".join(lines)
     except Exception:
-        return tr("error", lang=lang)
+        return str(tr("error", lang=lang))
 
 
 # ---------------- Masters cache (moved here from shared_services) ----------------
@@ -543,7 +545,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
 
         return f"{summary}{seven_line}"
     except Exception:
-        return tr("master_menu_header", lang=lang or default_language())
+        return str(tr("master_menu_header", lang=lang or default_language()))
 
 
 async def handle_mark_done(
@@ -699,7 +701,7 @@ class MasterRepo:
     """
 
     @staticmethod
-    async def _resolve_mid(session, master_identifier: int) -> int | None:
+    async def _resolve_mid(session: Any, master_identifier: int) -> int | None:
         """Resolve surrogate master id using an existing session.
 
         Accepts either surrogate id or telegram_id. Returns None if not found.
@@ -722,7 +724,7 @@ class MasterRepo:
             return None
 
     @staticmethod
-    async def get_schedule(master_id: int) -> dict:
+    async def get_schedule(master_id: int) -> dict[str, Any]:
         """Return normalized schedule dict (DB-only).
 
         Accepts either a surrogate `masters.id` or a legacy `masters.telegram_id`.
@@ -1454,9 +1456,9 @@ class MasterRepo:
                 # Attach metrics to master instance for downstream formatter
                 with suppress(Exception):
                     if rating_avg is not None:
-                        master.rating = float(rating_avg)
-                    master.completed_orders = completed_orders
-                    master.ratings_count = int(ratings_count or 0)
+                        setattr(master, "rating", float(rating_avg))
+                    setattr(master, "completed_orders", completed_orders)
+                    setattr(master, "ratings_count", int(ratings_count or 0))
 
                 # profile bio -> durations and about (now stored on masters.bio)
                 try:
@@ -1629,7 +1631,9 @@ class MasterRepo:
             return False
 
     @staticmethod
-    async def force_delete_master(master_id: int, *, backup: bool = False) -> tuple[bool, dict]:
+    async def force_delete_master(
+        master_id: int, *, backup: bool = False
+    ) -> tuple[bool, dict[str, object]]:
         """Permanently delete a master with cascade and optional JSON backup.
 
         Behavior:
@@ -1959,13 +1963,13 @@ class MasterRepo:
 
     @staticmethod
     async def set_master_service_duration(
-        master_telegram_id: int, service_id: str, minutes: int
+        master_telegram_id: int, service_id: str, minutes: int | None
     ) -> bool:
         """Upsert duration override for (master, service)."""
         try:
-            if minutes <= 0:
+            if minutes is not None and minutes <= 0:
                 # Treat non-positive as remove override (persist NULL)
-                minutes = None  # type: ignore[assignment]
+                minutes = None
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import MasterService, Master
@@ -2115,16 +2119,15 @@ class MasterRepo:
             return set()
 
     @staticmethod
-    async def get_master(master_telegram_id: int):
+    async def get_master(master_telegram_id: int) -> object | None:
         """Return Master model by telegram id or None."""
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Master
                 from sqlalchemy import select
 
-                return await session.scalar(
-                    select(Master).where(Master.telegram_id == master_telegram_id)
-                )
+                res = await session.scalar(select(Master).where(Master.telegram_id == master_telegram_id))
+                return cast(object | None, res)
         except Exception as e:
             logger.exception("MasterRepo.get_master failed for %s: %s", master_telegram_id, e)
             return None
@@ -2232,7 +2235,9 @@ async def build_client_history_view(booking_id: int) -> str | None:
         return None
 
 
-def format_client_history(hist: Mapping, user_id: int, lang: str | None = None) -> str:
+def format_client_history(
+    hist: Mapping[str, Any], user_id: int, lang: str | None = None
+) -> str:
     """Format client history mapping into a short text block for master UI.
 
     This formatter prefers a provided `lang` but will fall back to the
@@ -2363,7 +2368,7 @@ async def check_future_booking_conflicts(
 
 
 async def cancel_bookings_and_notify(
-    bot, booking_ids: list[int] | None, *, notify_admins: bool = True
+    bot: Any, booking_ids: list[int] | None, *, notify_admins: bool = True
 ) -> int:
     """Cancel bookings by id and notify clients + admins. Returns number cancelled.
 
@@ -2467,7 +2472,9 @@ def _parse_master_schedule_time(value: str | _time | None) -> _time | None:
         return None
 
 
-async def set_master_schedule(master_telegram_id: int, schedule: dict) -> bool:
+async def set_master_schedule(
+    master_telegram_id: int, schedule: dict[str, list[list[str]]]
+) -> bool:
     """Persist master schedule into relational table (DB-only).
 
     Input format: keys are weekday numbers (0=Mon..6=Sun) as int/str, values are
@@ -2656,12 +2663,10 @@ async def remove_schedule_window_by_value(
         return False, []
 
 
-def _normalize_schedule(schedule: dict | None) -> dict:
-    """Normalize various schedule shapes into canonical mapping of str(weekday)->list[[HH:MM,HH:MM],...].
+def _normalize_schedule(schedule: dict[str, Any] | None) -> dict[str, list[list[str]]]:
+    """Normalize schedule into {weekday: [[HH:MM, HH:MM], ...]} mapping."""
 
-    This consolidates the duplicated inner functions used elsewhere.
-    """
-    out: dict = {}
+    out: dict[str, list[list[str]]] = {}
     if not schedule:
         return out
     for k, v in (schedule or {}).items():
@@ -2937,8 +2942,12 @@ async def get_work_windows_for_day(
 
 
 def insert_window(
-    schedule: dict | None, day: int, start: str, end: str, adjacency_min: int = 0
-) -> dict:
+    schedule: dict[str, list[list[str]]] | None,
+    day: int,
+    start: str,
+    end: str,
+    adjacency_min: int = 0,
+) -> dict[str, list[list[str]]]:
     """Insert a time window into schedule[day], merging overlaps and normalizing.
 
     - schedule: dict as returned by get_master_schedule (may be None).
@@ -2999,7 +3008,9 @@ def insert_window(
     return out
 
 
-def remove_all_windows(schedule: dict | None, day: int) -> dict:
+def remove_all_windows(
+    schedule: dict[str, list[list[str]]] | None, day: int
+) -> dict[str, list[list[str]]]:
     """Mark given day as empty list (workday cleared)."""
     if schedule is None:
         schedule = {}
@@ -3009,8 +3020,11 @@ def remove_all_windows(schedule: dict | None, day: int) -> dict:
 
 
 def copy_day(
-    schedule: dict | None, target_day: int, source_day: int, mode: str = "replace"
-) -> dict:
+    schedule: dict[str, list[list[str]]] | None,
+    target_day: int,
+    source_day: int,
+    mode: str = "replace",
+) -> dict[str, list[list[str]]]:
     """Copy windows from source_day to target_day.
 
     mode: 'replace' (default) or 'append' (append and normalize)
@@ -3034,18 +3048,20 @@ def copy_day(
     return tmp
 
 
-def render_schedule_table(schedule: dict | None, lang: str | None = None) -> str:
+def render_schedule_table(
+    schedule: dict[str, list[list[str]]] | None, lang: str | None = None
+) -> str:
     """Render schedule dict into human-readable multi-line table for Mon..Sun.
 
     Accepts optional `lang` so output can be localized. Uses the translation
     key `closed_label` when a day has no windows.
     """
-    sched = schedule or {}
+    sched: dict[str, list[list[str]]] = schedule or {}
     days = tr("weekday_short", lang=lang) or ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     closed_lbl = tr("closed_label", lang=lang) or "Closed"
     lines: list[str] = []
     for idx, name in enumerate(days):
-        w = sched.get(str(idx)) or sched.get(idx) or []
+        w = sched.get(str(idx), [])
         if not w:
             lines.append(f"{name}: {closed_lbl}")
             continue

@@ -275,7 +275,9 @@ class SafeUIMiddleware:
         router.callback_query.middleware(SafeUIMiddleware())
     """
 
-    async def __call__(self, handler, event, data):
+    async def __call__(
+        self, handler: Callable[..., Any], event: Any, data: dict[str, Any] | Any
+    ) -> Any:
         # Use local handle_callback_error to avoid circular imports
         _hcb = handle_callback_error
 
@@ -311,7 +313,7 @@ class SafeUIMiddleware:
                 raise
 
 
-def safe_handler(require_from_user: bool = True, fallback_text: str | None = None):
+def safe_handler(require_from_user: bool = True, fallback_text: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to centralize handler-level UI safety and error handling.
 
     - Verifies `.from_user.id` presence when `require_from_user` is True; if
@@ -341,7 +343,7 @@ def safe_handler(require_from_user: bool = True, fallback_text: str | None = Non
         if inspect.iscoroutinefunction(fn):
 
             @functools.wraps(fn)
-            async def _wrapped(*args: Any, **kwargs: Any):
+            async def _wrapped(*args: Any, **kwargs: Any) -> Any:
                 target = _find_target(args, kwargs)
                 # Check presence of from_user.id when required
                 if require_from_user:
@@ -387,7 +389,7 @@ def safe_handler(require_from_user: bool = True, fallback_text: str | None = Non
         else:
 
             @functools.wraps(fn)
-            def _wrapped_sync(*args: Any, **kwargs: Any):
+            def _wrapped_sync(*args: Any, **kwargs: Any) -> Any:
                 return fn(*args, **kwargs)
 
             return _wrapped_sync

@@ -36,14 +36,14 @@ async def get_status_label(status: Any, lang: str | None = None) -> str:
     try:
         # Direct mapping by status object
         if status in status_label_map:
-            return tr(status_label_map[status], lang=lang)
+            return str(tr(status_label_map[status], lang=lang))
 
         # Try by underlying value (e.g., Enum.value)
         sval = getattr(status, "value", None)
         if sval is not None:
             for k, v in status_label_map.items():
                 if getattr(k, "value", None) == sval:
-                    return tr(v, lang=lang)
+                    return str(tr(v, lang=lang))
 
         # Fallback to string representation
         return str(status)

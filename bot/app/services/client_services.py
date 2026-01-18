@@ -202,7 +202,7 @@ def format_client_booking_row(fields: dict[str, str]) -> str:
 
 
 async def calculate_booking_permissions(
-    obj: dict | Any,
+    obj: dict[str, Any] | Any,
     lock_r_minutes: int | None = None,
     lock_c_minutes: int | None = None,
     settings: Any | None = None,
@@ -232,28 +232,30 @@ async def calculate_booking_permissions(
             # resolve lock settings: explicit args take precedence, then provided
             # settings object, then SettingsRepo, then default 3 hours
             if lock_r_minutes is not None:
-                lock_r = lock_r_minutes
+                lock_r = int(lock_r_minutes)
             else:
                 try:
                     if settings and hasattr(settings, "get_client_reschedule_lock_minutes"):
-                        lock_r = settings.get_client_reschedule_lock_minutes()
-                        if asyncio.iscoroutine(lock_r):
-                            lock_r = await lock_r
+                        lock_r_val = settings.get_client_reschedule_lock_minutes()
+                        if asyncio.iscoroutine(lock_r_val):
+                            lock_r_val = await lock_r_val
+                        lock_r = int(lock_r_val)
                     else:
-                        lock_r = await SettingsRepo.get_client_reschedule_lock_minutes()
+                        lock_r = int(await SettingsRepo.get_client_reschedule_lock_minutes())
                 except Exception:
                     lock_r = 180
 
             if lock_c_minutes is not None:
-                lock_c = lock_c_minutes
+                lock_c = int(lock_c_minutes)
             else:
                 try:
                     if settings and hasattr(settings, "get_client_cancel_lock_minutes"):
-                        lock_c = settings.get_client_cancel_lock_minutes()
-                        if asyncio.iscoroutine(lock_c):
-                            lock_c = await lock_c
+                        lock_c_val = settings.get_client_cancel_lock_minutes()
+                        if asyncio.iscoroutine(lock_c_val):
+                            lock_c_val = await lock_c_val
+                        lock_c = int(lock_c_val)
                     else:
-                        lock_c = await SettingsRepo.get_client_cancel_lock_minutes()
+                        lock_c = int(await SettingsRepo.get_client_cancel_lock_minutes())
                 except Exception:
                     lock_c = 60
             can_reschedule = delta_seconds >= (lock_r * 60)
@@ -494,7 +496,7 @@ def compute_month_label(year: int, month: int, lang: str) -> str:
 
     # 2) Fallback to Babel month names if available
     try:
-        from babel.dates import get_month_names  # type: ignore
+        from babel.dates import get_month_names
 
         locale = (lang or "").replace("-", "_") or "en"
         names = get_month_names(width="wide", context="format", locale=locale)
@@ -520,7 +522,7 @@ class BookingRepo:
     """
 
     @staticmethod
-    async def get(booking_id: int):
+    async def get(booking_id: int) -> Booking | None:
         async with get_session() as session:
             from bot.app.domain.models import Booking
 
@@ -528,7 +530,7 @@ class BookingRepo:
 
     @staticmethod
     async def find_conflicting_booking(
-        session,
+        session: Any,
         client_id: int | None,
         master_id: int | None,
         new_start: datetime,
@@ -606,11 +608,11 @@ class BookingRepo:
 
         default_slot = await SettingsRepo.get_slot_duration()
 
-        def compute_end(b_obj):
+        def compute_end(b_obj: Any) -> datetime:
             # Prefer stored ends_at if present (populated during booking creation).
             try:
                 stored_end = getattr(b_obj, "ends_at", None)
-                if stored_end:
+                if isinstance(stored_end, datetime):
                     return stored_end
             except Exception:
                 pass
@@ -622,9 +624,15 @@ class BookingRepo:
             if total <= 0:
                 total = default_slot
             try:
-                return b_obj.starts_at + timedelta(minutes=total)
+                starts_val = getattr(b_obj, "starts_at", None)
+                if isinstance(starts_val, datetime):
+                    return starts_val + timedelta(minutes=total)
             except Exception:
-                return b_obj.starts_at
+                pass
+            fallback_start = getattr(b_obj, "starts_at", None)
+            if isinstance(fallback_start, datetime):
+                return fallback_start
+            return utc_now()
 
         # check user overlaps first
         for ub in user_rows:
@@ -703,11 +711,11 @@ class BookingRepo:
 
         async with get_session() as session:
             if return_ids_only:
-                stmt = select(Booking.id).where(*filters).order_by(Booking.starts_at)
-                res = await session.execute(stmt)
+                stmt_ids = select(Booking.id).where(*filters).order_by(Booking.starts_at)
+                res = await session.execute(stmt_ids)
                 return [int(r) for r in res.scalars().all()]
 
-            stmt = (
+            stmt_full = (
                 select(
                     Booking.id,
                     Booking.starts_at,
@@ -721,7 +729,7 @@ class BookingRepo:
                 .where(*filters)
                 .order_by(Booking.starts_at)
             )
-            res = await session.execute(stmt)
+            res = await session.execute(stmt_full)
             rows: list[BookingConflictRow] = []
             for row in res.fetchall():
                 try:
@@ -742,7 +750,7 @@ class BookingRepo:
             return rows
 
     @staticmethod
-    async def update_status(booking_id: int, new_status) -> bool:
+    async def update_status(booking_id: int, new_status: Any) -> bool:
         async with get_session() as session:
             from bot.app.domain.models import Booking, BookingStatusHistory
 
@@ -763,7 +771,7 @@ class BookingRepo:
             return True
 
     @staticmethod
-    async def recent_by_user(user_id: int, limit: int = 10):
+    async def recent_by_user(user_id: int, limit: int = 10) -> list[Booking]:
         """Return recent Booking objects for given internal user id (limit newest first)."""
         async with get_session() as session:
             from sqlalchemy import select
@@ -775,10 +783,10 @@ class BookingRepo:
                 .order_by(Booking.starts_at.desc())
                 .limit(int(limit))
             )
-            return res.scalars().all()
+            return list(res.scalars().all())
 
     @staticmethod
-    async def recent_by_master(master_id: int, limit: int = 10):
+    async def recent_by_master(master_id: int, limit: int = 10) -> list[Booking]:
         """Return recent Booking objects for given master telegram id (limit newest first)."""
         async with get_session() as session:
             from sqlalchemy import select
@@ -790,7 +798,7 @@ class BookingRepo:
                 .order_by(Booking.starts_at.desc())
                 .limit(int(limit))
             )
-            return res.scalars().all()
+            return list(res.scalars().all())
 
     @staticmethod
     async def confirm_cash(booking_id: int) -> tuple[bool, str | None]:
@@ -1004,7 +1012,7 @@ class BookingRepo:
             return True
 
     @staticmethod
-    async def ensure_owner(user_id: int, booking_id: int):
+    async def ensure_owner(user_id: int, booking_id: int) -> Booking | None:
         async with get_session() as session:
             from bot.app.domain.models import Booking
 
@@ -1087,9 +1095,9 @@ class BookingRepo:
 
     @staticmethod
     async def _prepare_pagination_context(
-        session,
-        Booking,
-        BookingStatus,
+        session: Any,
+        Booking: Any,
+        BookingStatus: Any,
         base_where: list[Any],
         mode: str,
         page: int,
@@ -1524,7 +1532,7 @@ async def build_booking_details(
     except Exception:
         lang = default_language()
 
-    data: dict | None = None
+    data: dict[str, Any] | None = None
     try:
         # import here to avoid cycles
         from bot.app.services import master_services as _ms
@@ -1698,7 +1706,9 @@ class UserRepo:
         return await UserRepo.get_locale(telegram_id)
 
     @staticmethod
-    async def get_or_create(telegram_id: int, name: str | None = None, username: str | None = None):
+    async def get_or_create(
+        telegram_id: int, name: str | None = None, username: str | None = None
+    ) -> Any:
         async with get_session() as session:
             from sqlalchemy import select
 
@@ -1849,7 +1859,7 @@ async def get_available_time_slots_for_services(
     # Merge overlapping busy intervals
     # Sort by start time
     busy_intervals.sort(key=lambda x: x[0])
-    merged_busy = []
+    merged_busy: list[tuple[datetime, datetime]] = []
     for b_start, b_end in busy_intervals:
         if not merged_busy:
             merged_busy.append((b_start, b_end))
@@ -2005,7 +2015,7 @@ async def get_available_days_for_month(
             schedule_rows = schedule_result.scalars().all()
 
         # 4. Преобразуем расписание в удобный словарь: {день_недели (0-6): [(start, end), ...]}
-        weekly_schedule = {}
+        weekly_schedule: dict[int, list[tuple[dtime, dtime]]] = {}
         for row in schedule_rows:
             if row.start_time and row.end_time:
                 # В базе хранятся time объекты (напр. 09:00:00)
@@ -2740,7 +2750,7 @@ async def get_client_active_bookings(user_id: int) -> list[Booking]:
 
 
 async def _create_booking_base(
-    session,
+    session: Any,
     client_id: int,
     master_id: int,
     slot: datetime,
@@ -2896,8 +2906,8 @@ async def process_successful_payment(booking_id: int, charge_id: str) -> tuple[b
 
 
 async def cancel_client_booking(
-    booking_id: int, user_telegram_id: int, *, bot=None, lang: str | None = None
-) -> tuple[bool, str, dict]:
+    booking_id: int, user_telegram_id: int, *, bot: Any = None, lang: str | None = None
+) -> tuple[bool, str, dict[str, Any]]:
     """Cancel a client's booking with business checks centralized.
 
     Returns (ok, message_key, params). On success notifications are sent when bot provided.
@@ -3407,13 +3417,15 @@ async def process_booking_finalization(
                 async with get_session() as session:
                     b = await session.get(Booking, booking_id)
                     if b:
-                        b.original_price_cents = base_price  # type: ignore[attr-defined]
-                        b.final_price_cents = final_price  # type: ignore[attr-defined]
-                        b.discount_amount_cents = (
-                            discount_amount if discount_amount is not None else 0
-                        )  # type: ignore[attr-defined]
+                        setattr(b, "original_price_cents", base_price)
+                        setattr(b, "final_price_cents", final_price)
+                        setattr(
+                            b,
+                            "discount_amount_cents",
+                            discount_amount if discount_amount is not None else 0,
+                        )
                         if currency_val:
-                            b.currency = currency_val  # type: ignore[attr-defined]
+                            setattr(b, "currency", currency_val)
                         await session.commit()
                         await session.refresh(b)
                         booking = b
@@ -3572,14 +3584,16 @@ async def process_invoice_link(user_id: int, booking_id: int) -> BookingResult:
         return {"ok": False, "error": "invalid_amount", "booking_id": None}
 
     try:
-        from aiogram.types import LabeledPrice
-    except Exception:
-        LabeledPrice = None
+        from aiogram.types import LabeledPrice as _LabeledPrice
 
-    prices = []
-    if LabeledPrice is not None:
+        LabeledPriceType: Any = _LabeledPrice
+    except Exception:
+        LabeledPriceType = None
+
+    prices: list[Any] = []
+    if LabeledPriceType is not None:
         try:
-            prices = [LabeledPrice(label=f"Booking #{booking_id}", amount=int(amount_cents))]
+            prices = [LabeledPriceType(label=f"Booking #{booking_id}", amount=int(amount_cents))]
         except Exception:
             prices = []
 
