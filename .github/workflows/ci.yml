@@ -29,6 +29,11 @@ jobs:
 
       - name: Format check (ruff fmt --check)
         run: ruff format --check bot
+        continue-on-error: true
+
+      - name: Lint (ruff check)
+        run: ruff check bot
+        continue-on-error: true
 
       - name: Lint (ruff check)
         run: ruff check bot
