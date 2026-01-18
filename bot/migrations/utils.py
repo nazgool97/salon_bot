@@ -1,6 +1,8 @@
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.engine.reflection import Inspector
+from typing import Any
 
 
 def _get_bind(conn: sa.engine.Connection | None = None) -> sa.engine.Connection:
@@ -9,7 +11,7 @@ def _get_bind(conn: sa.engine.Connection | None = None) -> sa.engine.Connection:
     return op.get_bind()
 
 
-def _inspector(conn: sa.engine.Connection | None = None):
+def _inspector(conn: sa.engine.Connection | None = None) -> Inspector | None:
     bind = _get_bind(conn)
     try:
         return sa.inspect(bind)
@@ -60,7 +62,8 @@ def constraint_exists(
         return False
     try:
         # check primary key, unique, foreign, and check constraints
-        pk = insp.get_pk_constraint(table_name) or {}
+        default_pk: dict[str, Any] = {"constrained_columns": [], "name": None}
+        pk = insp.get_pk_constraint(table_name) or default_pk
         if pk.get("name") == constraint_name:
             return True
         for uq in insp.get_unique_constraints(table_name):

@@ -1708,7 +1708,7 @@ TRANSLATIONS = {
 }
 
 
-def tr(key: str, lang: str | None = None, **fmt) -> Any:
+def tr(key: str, lang: str | None = None, **fmt: Any) -> Any:
     """Unified translation function with dynamic default fallback.
 
     Resolution order:

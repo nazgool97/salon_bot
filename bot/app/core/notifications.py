@@ -128,7 +128,7 @@ async def send_booking_notification(
 
             if event_type == "no_show":
                 try:
-                    from sqlalchemy import select, func, and_  # type: ignore
+                    from sqlalchemy import select, func, and_
 
                     window_start = utc_now() - timedelta(days=90)
                     no_show_count_recent = int(

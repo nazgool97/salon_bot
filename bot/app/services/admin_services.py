@@ -8,10 +8,12 @@ from contextlib import suppress, ExitStack
 from datetime import UTC, datetime, timedelta
 import json
 from zoneinfo import ZoneInfo
-from typing import Any
+from typing import Any, IO
 from collections.abc import Mapping
 
 from sqlalchemy import func, select, String, and_
+from sqlalchemy.sql.expression import ColumnElement
+from sqlalchemy.sql.elements import BinaryExpression
 
 
 from bot.app.domain.models import Booking, Master, Service, User, BookingStatus, REVENUE_STATUSES
@@ -335,6 +337,7 @@ class ServiceRepo:
         from bot.app.core.db import get_session
 
         now = utc_now()
+        order_expr: Any = Booking.starts_at
         async with get_session() as session:
             base_where: list[Any] = []  # Админ видит всё
             # Optional filter for master-specific view (passed from admin UI)
@@ -631,7 +634,7 @@ class ServiceRepo:
         return str(service_id)
 
     @staticmethod
-    async def get(service_id: str):
+    async def get(service_id: str) -> Service | None:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
@@ -788,7 +791,7 @@ class ServiceRepo:
             return {}
 
     @staticmethod
-    async def update_price_cents(service_id: int | str, new_cents: int):
+    async def update_price_cents(service_id: int | str, new_cents: int) -> Service | None:
         """Update price_cents (and final_price_cents if present) for a Service.
 
         Returns the updated Service instance or None on error/not found.
@@ -875,20 +878,24 @@ async def generate_bookings_csv(
         file_name = f"bookings_{mode}_{now_local:%Y_%m}.csv"
         with ExitStack() as stack:
             if in_memory:
-                tmp = stack.enter_context(
+                tmp_bytes = stack.enter_context(
                     tempfile.SpooledTemporaryFile(max_size=2_000_000, mode="w+b")
                 )
                 text_wrapper = stack.enter_context(
-                    io.TextIOWrapper(tmp, encoding="utf-8", newline="")
+                    io.TextIOWrapper(tmp_bytes, encoding="utf-8", newline="")
                 )
-                writer = csv.writer(text_wrapper)
+                writer_handle: IO[str] = text_wrapper
+                tmp_obj = tmp_bytes
             else:
-                tmp = stack.enter_context(
+                tmp_file = stack.enter_context(
                     tempfile.NamedTemporaryFile(
                         "w", newline="", suffix=".csv", delete=False, encoding="utf-8"
                     )
                 )
-                writer = csv.writer(tmp)
+                writer_handle = tmp_file
+                tmp_obj = tmp_file
+
+            writer = csv.writer(writer_handle)
 
             writer.writerow(["ID", "Date", "Client", "Master", "Service", "Amount", "Status"])
 
@@ -923,16 +930,12 @@ async def generate_bookings_csv(
                     except Exception:
                         continue  # skip malformed row
                 page += 1
-            if in_memory:
-                with suppress(Exception):
-                    text_wrapper.flush()
-            else:
-                with suppress(Exception):
-                    tmp.flush()
+            with suppress(Exception):
+                writer_handle.flush()
 
             if in_memory:
-                tmp.seek(0)
-                raw_bytes = tmp.read()
+                tmp_obj.seek(0)
+                raw_bytes = tmp_obj.read()
                 if isinstance(raw_bytes, str):
                     raw_bytes = raw_bytes.encode("utf-8")
                 if compress:
@@ -949,7 +952,7 @@ async def generate_bookings_csv(
                     final_path = final_file.name
                 return final_path, file_name
 
-            return tmp.name, file_name
+            return tmp_obj.name, file_name
     except Exception as e:
         logger.exception("generate_bookings_csv failed: %s", e)
         raise
@@ -2234,7 +2237,7 @@ async def _revenue_split_for_bounds(
             in_cash_statuses = (BookingStatus.PAID, BookingStatus.DONE)
             expected_statuses = (BookingStatus.CONFIRMED, BookingStatus.RESERVED)
 
-            preds_base = [Booking.starts_at.between(start, end)]
+            preds_base: list[ColumnElement[bool]] = [Booking.starts_at.between(start, end)]
             if master_id is not None:
                 preds_base = [*preds_base, Booking.master_id == int(master_id)]
 

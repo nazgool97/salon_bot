@@ -1,5 +1,6 @@
 from datetime import datetime, time as _time, date as _date
 from enum import Enum as _Enum
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -222,7 +223,7 @@ class Setting(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(120), unique=True)
     value: Mapped[str] = mapped_column(String(400))
-    value_json: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    value_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: __import__(

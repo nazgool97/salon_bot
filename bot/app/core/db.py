@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 import logging
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from typing import Any
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -59,7 +60,7 @@ def get_engine() -> AsyncEngine:
 
             logger = logging.getLogger(__name__)
 
-            def _on_checkout(dbapi_con, con_record, con_proxy):
+            def _on_checkout(dbapi_con: Any, con_record: Any, con_proxy: Any) -> None:
                 """Pool checkout listener with improved caller attribution.
 
                 Captures a longer stack, then picks the first frame that comes
@@ -76,7 +77,7 @@ def get_engine() -> AsyncEngine:
                     task_name,
                 )
 
-            def _on_checkin(dbapi_con, con_record):
+            def _on_checkin(dbapi_con: Any, con_record: Any) -> None:
                 task = asyncio.current_task()
                 task_name = getattr(task, "get_name", lambda: None)() if task is not None else None
                 logger.debug(

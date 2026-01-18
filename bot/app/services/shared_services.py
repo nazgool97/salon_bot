@@ -4,7 +4,7 @@ import os
 import re
 from importlib import import_module
 from typing import Any, TYPE_CHECKING
-from collections.abc import Mapping
+from collections.abc import Mapping, Callable
 from dataclasses import dataclass
 from contextlib import suppress
 
@@ -24,12 +24,18 @@ from bot.app.core.constants import (
 from bot.app.translations import tr as _tr_raw
 from aiogram import Bot
 
-try:
-    from aiogram.exceptions import TelegramAPIError
-except Exception:
-    # If aiogram isn't available at import time (tests, static analysis),
-    # set to None so we don't accidentally catch all Exceptions below.
-    TelegramAPIError = None
+if TYPE_CHECKING:
+    from aiogram.exceptions import TelegramAPIError as TelegramAPIErrorType
+else:
+    try:
+        from aiogram.exceptions import TelegramAPIError as TelegramAPIErrorType
+    except Exception:
+        class TelegramAPIErrorType(Exception):
+            """Fallback exception type when aiogram is unavailable."""
+
+            pass
+
+TelegramAPIError: type[BaseException] = TelegramAPIErrorType
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
@@ -464,13 +470,13 @@ STATUS_EMOJI: dict[str, str] = {
 
 async def render_booking_item_for_api(
     booking: Any, user_telegram_id: int | None = None, lang: str | None = None
-) -> dict:
+) -> dict[str, Any]:
     """Return a dict with API-friendly booking fields.
 
     This centralizes status label/emoji, price formatting and permission
     checks so API endpoints can be thin and consistent.
     """
-    out: dict = {}
+    out: dict[str, Any] = {}
     try:
         from bot.app.services.shared_services import STATUS_EMOJI as _SE  # local alias
         from bot.app.services.shared_services import LOCAL_TZ as _LT  # noqa: F401
@@ -890,6 +896,8 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
         amount = Decimal(cents_int) / Decimal(100)
 
         # Try to use Babel for proper locale-aware currency formatting.
+        Locale: Any | None = None
+        _babel_default_locale: Callable[[], Any] | None = None
         try:
             # Use dynamic import to avoid static-analysis missing-import errors
             _bn = import_module("babel.numbers")
@@ -900,8 +908,8 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
                 _b = import_module("babel")
                 _babel_default_locale = _b.default_locale
             except Exception:
-                Locale = None  # type: ignore
-                _babel_default_locale = None  # type: ignore
+                Locale = None
+                _babel_default_locale = None
 
             # Resolve a best-effort locale using Babel parsing instead of manual mappings.
             locale_str = "en_US"
@@ -925,7 +933,7 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
                     pass
 
             try:
-                formatted = format_currency(amount, str(currency), locale=locale_str)
+                formatted = str(format_currency(amount, str(currency), locale=locale_str))
                 logger.debug("Formatted money (Babel): %s %s -> %s", cents_int, currency, formatted)
                 return formatted
             except Exception:
@@ -1163,8 +1171,11 @@ def _decode_time(tok: str | None) -> str | None:
         return None
 
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
 async def get_service_duration(
-    session, service_id: str | None, master_id: int | None = None
+    session: AsyncSession, service_id: str | None, master_id: int | None = None
 ) -> int:
     """Resolve the effective duration (minutes) for a service+master pair.
 
@@ -1302,17 +1313,20 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     # Prefer role-specific formatters defined in service modules. Import lazily
     # to avoid circular imports at module import time. Fall back to a simple
     # client-style formatter when the role module isn't importable (tests/etc.).
+    _client_fmt: Callable[[dict[str, Any]], str]
     try:
         from bot.app.services.client_services import format_client_booking_row as _client_fmt
     except Exception:
         def _client_fmt(f: dict[str, Any]) -> str:
-            return f.get("service_name", "")
+            return str(f.get("service_name", ""))
 
+    _master_fmt: Callable[[dict[str, Any]], str]
     try:
         from bot.app.services.master_services import format_master_booking_row as _master_fmt
     except Exception:
         _master_fmt = _client_fmt
 
+    _admin_fmt: Callable[[dict[str, Any]], str]
     try:
         # Import module then getattr to avoid static import symbol warnings
         import bot.app.services.admin_services as _admin_mod
@@ -1321,13 +1335,21 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     except Exception:
         _admin_fmt = _client_fmt
 
-    formatter = {
+    formatter: dict[str, Callable[[dict[str, Any]], str]] = {
         "master": _master_fmt,
         "admin": _admin_fmt,
         "client": _client_fmt,
     }
-    formatter_fn = formatter.get(str(role).lower(), _client_fmt)
-    text = formatter_fn(row_fields)
+
+    def _wrap(fn: Callable[[dict[str, Any]], object]) -> Callable[[dict[str, Any]], str]:
+        def _wrapped(fields: dict[str, Any]) -> str:
+            return str(fn(fields))
+
+        return _wrapped
+
+    formatter_fn = formatter.get(str(role).lower()) or _client_fmt
+    safe_formatter = _wrap(formatter_fn)
+    text: str = safe_formatter(row_fields)
     return text, bid
 
 
@@ -1377,7 +1399,7 @@ def normalize_booking_row(row: Any) -> BookingInfo:
         if isinstance(row, Mapping):
             return booking_info_from_mapping(row)
         if hasattr(row, "_mapping"):
-            m = dict(row._mapping)  # type: ignore[attr-defined]
+            m = dict(row._mapping)
             return normalize_booking_row(m)
         return booking_info_from_mapping(
             {
@@ -1420,7 +1442,7 @@ def _to_str(v: Any) -> str | None:
 
 
 def format_booking_details_text(
-    data: dict | Any, lang: str | None = None, role: str = "client"
+    data: dict[str, Any] | Any, lang: str | None = None, role: str = "client"
 ) -> str:
     """Pure formatter that builds booking details text from pre-fetched data.
 
@@ -1576,7 +1598,7 @@ async def translate_for_user(user_id: int, key: str, **kwargs: Any) -> str:
         use_lang = kwargs.pop("lang", None) or _default_language()
         translated = _tr_raw(key, lang=use_lang, **kwargs)
         logger.debug("Перевод для пользователя %s: key=%s, result=%s", user_id, key, translated)
-        return translated
+        return str(translated)
     except Exception as e:
         logger.error("Ошибка перевода: user_id=%s, key=%s, error=%s", user_id, key, e)
         return key
@@ -1613,7 +1635,7 @@ from aiogram.types import Message, CallbackQuery
 # Provide type-only imports for optional third-party libs to satisfy Pylance
 if TYPE_CHECKING:
     with suppress(Exception):
-        pass  # type: ignore
+        pass
 # (Repository classes are intentionally not duplicated here.)
 
 
@@ -1694,7 +1716,8 @@ def tr(key: str, *, lang: str | None = None, user_id: int | None = None, **fmt: 
     """Unified translation helper delegating to translations.tr()."""
     try:
         use_lang = lang or _default_language()
-        return _tr_raw(key, lang=use_lang, **fmt)
+        translated = _tr_raw(key, lang=use_lang, **fmt)
+        return str(translated)
     except Exception:
         return key
 
