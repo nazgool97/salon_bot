@@ -3,15 +3,13 @@ import logging
 import os
 import re
 from importlib import import_module
-from typing import Any, Dict, Iterable, Sequence, Mapping, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
-from sqlalchemy import select, or_
-from sqlalchemy import func, delete
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 
-from bot.app.core.db import get_session
 from bot.app.core.constants import (
     ADMIN_IDS_LIST,
     DEFAULT_CURRENCY,
@@ -22,7 +20,6 @@ from bot.app.core.constants import (
     SETTINGS_CACHE_TTL_SECONDS,
     TELEGRAM_PROVIDER_TOKEN,
 )
-from bot.app.domain.models import User
 from bot.app.translations import tr as _tr_raw
 from aiogram import Bot
 
@@ -455,7 +452,7 @@ LOCAL_TZ = _resolve_local_tz()
 
 
 # Эмодзи для статусов
-STATUS_EMOJI: Dict[str, str] = {
+STATUS_EMOJI: dict[str, str] = {
     "paid": "💳",
     "confirmed": "💵",
     "pending_payment": "⏳",
@@ -889,9 +886,7 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
         # Coerce to integer cents; accept float/int/Decimal
         cents_int = 0
         try:
-            if isinstance(cents, Decimal):
-                cents_int = int(cents)
-            elif isinstance(cents, (int, float)):
+            if isinstance(cents, Decimal) or isinstance(cents, (int, float)):
                 cents_int = int(cents)
             else:
                 cents_int = int(float(cents)) if cents is not None else 0
@@ -904,12 +899,12 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
         try:
             # Use dynamic import to avoid static-analysis missing-import errors
             _bn = import_module("babel.numbers")
-            format_currency = getattr(_bn, "format_currency")
+            format_currency = _bn.format_currency
             try:
                 _bc = import_module("babel.core")
-                Locale = getattr(_bc, "Locale")
+                Locale = _bc.Locale
                 _b = import_module("babel")
-                _babel_default_locale = getattr(_b, "default_locale")
+                _babel_default_locale = _b.default_locale
             except Exception:
                 Locale = None  # type: ignore
                 _babel_default_locale = None  # type: ignore
@@ -970,16 +965,16 @@ def format_minutes_short(minutes: int, lang: str | None = None) -> str:
         return str(minutes)
 
     try:
-        l = lang or default_language()
+        lang_value = lang or default_language()
     except Exception:
-        l = lang or default_language()
+        lang_value = lang or default_language()
 
     try:
-        hours_label = _tr_raw("hours_short", lang=l) or "h"
+        hours_label = _tr_raw("hours_short", lang=lang_value) or "h"
     except Exception:
         hours_label = "h"
     try:
-        minutes_label = _tr_raw("minutes_short", lang=l) or "min"
+        minutes_label = _tr_raw("minutes_short", lang=lang_value) or "min"
     except Exception:
         minutes_label = "min"
 
@@ -1071,7 +1066,6 @@ def get_local_tz() -> ZoneInfo:
     # modules consistently produce timezone-aware datetimes.
 
 
-from datetime import timezone
 
 
 def utc_now() -> datetime:
@@ -1081,9 +1075,8 @@ def utc_now() -> datetime:
         return datetime.now(UTC)
     except Exception:
         # Fallback to the well-known timezone.utc instance.
-        from datetime import timezone as _tz
 
-        return datetime.now(_tz.utc)
+        return datetime.now(UTC)
 
 
 def local_now() -> datetime:
@@ -1125,7 +1118,7 @@ def format_slot_label(
         else:
             lt = tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
         # If slot is a datetime with tzinfo, convert; if it's time-only, just format
-        if hasattr(slot, "tzinfo") and getattr(slot, "tzinfo") is not None:
+        if hasattr(slot, "tzinfo") and slot.tzinfo is not None:
             try:
                 return slot.astimezone(lt).strftime(fmt)
             except Exception:
@@ -1208,7 +1201,7 @@ async def get_service_duration(
                     )
                 )
                 if ms and getattr(ms, "duration_minutes", None):
-                    return int(getattr(ms, "duration_minutes") or 0)
+                    return int(ms.duration_minutes or 0)
             except Exception:
                 # best-effort: continue to other fallbacks
                 pass
@@ -1218,7 +1211,7 @@ async def get_service_duration(
             try:
                 svc = await session.scalar(select(Service).where(Service.id == service_id))
                 if svc and getattr(svc, "duration_minutes", None):
-                    return int(getattr(svc, "duration_minutes") or 0)
+                    return int(svc.duration_minutes or 0)
             except Exception:
                 pass
 
@@ -1624,15 +1617,12 @@ __all__ = [
 ]
 
 # ---------------- New shared helpers (i18n, profiles, notifications) ---------------- #
-from typing import Optional, Mapping
 from aiogram.types import Message, CallbackQuery
 
 # Provide type-only imports for optional third-party libs to satisfy Pylance
 if TYPE_CHECKING:
     try:
-        from babel.numbers import format_currency  # type: ignore
-        from babel.core import Locale  # type: ignore
-        from babel import default_locale as _babel_default_locale  # type: ignore
+        pass  # type: ignore
     except Exception:
         pass
 # (Repository classes are intentionally not duplicated here.)
@@ -1672,7 +1662,7 @@ def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
         return 0
 
 
-def _get_id_from_callback(data: str | None, prefix: str) -> Optional[int]:
+def _get_id_from_callback(data: str | None, prefix: str) -> int | None:
     """Extract trailing integer id from callback data that starts with prefix.
 
     Returns None when data is missing/doesn't start with prefix/has no int tail.

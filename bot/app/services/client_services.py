@@ -3,7 +3,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta, UTC
-from typing import Any, Dict, Iterable, List, Sequence, TypedDict
+from typing import Any, TypedDict
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select, and_, func, or_, String
 
@@ -32,20 +33,16 @@ from bot.app.core.constants import (
 from bot.app.services import master_services
 from bot.app.services.master_services import MasterRepo
 
-from zoneinfo import ZoneInfo
 from aiogram import Bot
 from bot.app.services.shared_services import (
     BookingInfo,
     booking_info_from_mapping,
-    format_money_cents,
-    status_to_emoji,
     safe_get_locale,
     default_language,
     format_booking_list_item,
     format_booking_details_text,
     format_date,
     utc_now,
-    local_now,
     get_local_tz,
     get_service_duration,
     ONLINE_PAYMENT_DISCOUNT_PERCENT_DEFAULT,
@@ -327,7 +324,7 @@ async def get_filtered_services() -> list[ServiceDTO]:
     try:
         from bot.app.core.db import get_session
         from bot.app.domain.models import Service, MasterService
-        from sqlalchemy import select, join, outerjoin
+        from sqlalchemy import select
 
         async with get_session() as session:
             # Join Service <- MasterService to ensure only services that have at least
@@ -541,7 +538,7 @@ class BookingRepo:
         """Return conflict code string if a conflicting booking exists for the
         given client or master in the provided time interval, otherwise None.
         """
-        from bot.app.domain.models import Booking, BookingItem, BookingStatus, Service
+        from bot.app.domain.models import Booking, BookingItem, Service
 
         if window_back is None:
             window_back = timedelta(hours=12)
@@ -624,14 +621,14 @@ class BookingRepo:
             if total <= 0:
                 total = default_slot
             try:
-                return getattr(b_obj, "starts_at") + timedelta(minutes=total)
+                return b_obj.starts_at + timedelta(minutes=total)
             except Exception:
-                return getattr(b_obj, "starts_at")
+                return b_obj.starts_at
 
         # check user overlaps first
         for ub in user_rows:
             try:
-                ub_start = getattr(ub, "starts_at")
+                ub_start = ub.starts_at
                 ub_end = compute_end(ub)
                 if new_start < ub_end and new_end > ub_start:
                     return "client_already_has_booking_at_this_time"
@@ -640,7 +637,7 @@ class BookingRepo:
 
         for mb in master_rows:
             try:
-                mb_start = getattr(mb, "starts_at")
+                mb_start = mb.starts_at
                 mb_end = compute_end(mb)
                 if new_start < mb_end and new_end > mb_start:
                     return "slot_unavailable"
@@ -674,8 +671,8 @@ class BookingRepo:
         """
         if not windows:
             return []
-        from bot.app.domain.models import Booking, BookingStatus, User
-        from sqlalchemy import select, and_, or_, func
+        from bot.app.domain.models import Booking, User
+        from sqlalchemy import select, func
 
         if excluded_statuses is None:
             excluded_statuses = tuple(TERMINAL_STATUSES)
@@ -894,7 +891,7 @@ class BookingRepo:
         try:
             async with get_session() as session:
                 from sqlalchemy import select
-                from bot.app.domain.models import Booking, BookingStatus
+                from bot.app.domain.models import Booking
 
                 now = utc_now()
                 stmt = (
@@ -1753,7 +1750,7 @@ class UserRepo:
         return True
 
     @staticmethod
-    async def get_by_ids(ids: set[int]) -> dict[int, "User"]:
+    async def get_by_ids(ids: set[int]) -> dict[int, User]:
         if not ids:
             return {}
         async with get_session() as session:
@@ -1764,7 +1761,7 @@ class UserRepo:
             return {u.id: u for u in rows}
 
     @staticmethod
-    async def get_by_telegram_ids(tids: set[int]) -> dict[int, "User"]:
+    async def get_by_telegram_ids(tids: set[int]) -> dict[int, User]:
         if not tids:
             return {}
         async with get_session() as session:
@@ -1966,7 +1963,7 @@ async def get_available_days_for_month(
     """
     try:
         from calendar import monthrange
-        from sqlalchemy import select, and_
+        from sqlalchemy import select
 
         _, days_in_month = monthrange(year, month)
 
@@ -2739,7 +2736,7 @@ async def book_slot(
         return {"ok": False, "error": "booking_failed"}
 
 
-async def get_client_active_bookings(user_id: int) -> List[Booking]:
+async def get_client_active_bookings(user_id: int) -> list[Booking]:
     """Возвращает активные и будущие записи клиента.
 
     Args:
@@ -2808,7 +2805,7 @@ async def _create_booking_base(
     return booking
 
 
-async def calculate_price(service_id: str, online_payment: bool) -> Dict[str, Any]:
+async def calculate_price(service_id: str, online_payment: bool) -> dict[str, Any]:
     """Рассчитывает стоимость услуги с учетом скидки за онлайн-оплату.
 
     Args:
@@ -3008,7 +3005,7 @@ async def can_client_reschedule(booking_id: int, user_telegram_id: int) -> tuple
         return False, "error_retry"
 
 
-async def record_booking_rating(booking_id: int, rating: int) -> Dict[str, Any]:
+async def record_booking_rating(booking_id: int, rating: int) -> dict[str, Any]:
     """Записывает оценку для завершенной записи.
 
     Args:

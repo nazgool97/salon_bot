@@ -9,8 +9,9 @@ start_expiration_worker returns an async callable that stops the worker graceful
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import update, select
 
@@ -18,7 +19,6 @@ from bot.app.core.db import get_session
 from bot.app.services.shared_services import get_env_int as _get_env_int, get_admin_ids, utc_now
 from bot.app.domain.models import Booking, BookingStatus
 from aiogram import Bot
-from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ async def _expire_once(now_utc: datetime) -> int:
                 groups.setdefault(key, []).append(int(bid))
 
             count = 0
-            for (mid, starts), ids in groups.items():
+            for (mid, starts), _ids in groups.items():
                 try:
                     from sqlalchemy import text
 
@@ -146,13 +146,13 @@ async def _run_loop(stop_event: asyncio.Event, interval_seconds: int | None) -> 
         cur_interval = _get_env_int("RESERVATION_EXPIRE_CHECK_SECONDS", 30)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=cur_interval)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except Exception:
             break
 
 
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 
 async def start_expiration_worker() -> Callable[[], Awaitable[None]]:
@@ -177,7 +177,7 @@ async def start_expiration_worker() -> Callable[[], Awaitable[None]]:
 
 
 async def stop_expiration_worker(
-    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+    stop_callable: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Compatibility helper: call provided stop callable if any."""
     if stop_callable:
@@ -185,8 +185,6 @@ async def stop_expiration_worker(
 
 
 # Примерная логика для cleanup_worker.py
-from datetime import datetime, timedelta, UTC
-from sqlalchemy import select, update, or_
 
 
 # Статусы, которые считаются "активными", но уже должны были завершиться
@@ -261,20 +259,14 @@ async def _cleanup_loop(
                                     master_tid = bd.get("master_telegram_id") if bd else None
                                     recipients: list[int] = []
                                     if client_tid:
-                                        try:
+                                        with contextlib.suppress(Exception):
                                             recipients.append(int(client_tid))
-                                        except Exception:
-                                            pass
                                     if master_tid:
-                                        try:
+                                        with contextlib.suppress(Exception):
                                             recipients.append(int(master_tid))
-                                        except Exception:
-                                            pass
                                     for a in admins:
-                                        try:
+                                        with contextlib.suppress(Exception):
                                             recipients.append(int(a))
-                                        except Exception:
-                                            pass
                                     recipients = list(dict.fromkeys(recipients))
                                     if recipients:
                                         try:
@@ -296,7 +288,7 @@ async def _cleanup_loop(
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=check_interval_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except Exception:
             break
@@ -332,7 +324,7 @@ async def start_cleanup_worker(bot: Bot | None = None) -> Callable[[], Awaitable
 
 
 async def stop_cleanup_worker(
-    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+    stop_callable: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Compatibility helper: call provided stop callable if any."""
     if stop_callable:

@@ -1,16 +1,15 @@
-from typing import Optional
 
 from alembic import op
 import sqlalchemy as sa
 
 
-def _get_bind(conn: Optional[sa.engine.Connection] = None) -> sa.engine.Connection:
+def _get_bind(conn: sa.engine.Connection | None = None) -> sa.engine.Connection:
     if conn is not None:
         return conn
     return op.get_bind()
 
 
-def _inspector(conn: Optional[sa.engine.Connection] = None):
+def _inspector(conn: sa.engine.Connection | None = None):
     bind = _get_bind(conn)
     try:
         return sa.inspect(bind)
@@ -19,7 +18,7 @@ def _inspector(conn: Optional[sa.engine.Connection] = None):
         return None
 
 
-def table_exists(table_name: str, conn: Optional[sa.engine.Connection] = None) -> bool:
+def table_exists(table_name: str, conn: sa.engine.Connection | None = None) -> bool:
     insp = _inspector(conn)
     if insp is None:
         return False
@@ -30,7 +29,7 @@ def table_exists(table_name: str, conn: Optional[sa.engine.Connection] = None) -
 
 
 def column_exists(
-    table_name: str, column_name: str, conn: Optional[sa.engine.Connection] = None
+    table_name: str, column_name: str, conn: sa.engine.Connection | None = None
 ) -> bool:
     insp = _inspector(conn)
     if insp is None:
@@ -42,7 +41,7 @@ def column_exists(
 
 
 def index_exists(
-    table_name: str, index_name: str, conn: Optional[sa.engine.Connection] = None
+    table_name: str, index_name: str, conn: sa.engine.Connection | None = None
 ) -> bool:
     insp = _inspector(conn)
     if insp is None:
@@ -54,7 +53,7 @@ def index_exists(
 
 
 def constraint_exists(
-    table_name: str, constraint_name: str, conn: Optional[sa.engine.Connection] = None
+    table_name: str, constraint_name: str, conn: sa.engine.Connection | None = None
 ) -> bool:
     insp = _inspector(conn)
     if insp is None:

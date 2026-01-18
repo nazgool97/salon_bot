@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from aiogram import Bot
-from sqlalchemy import select, update, or_
+from sqlalchemy import select, update
 
 from bot.app.core.db import get_session
 from bot.app.core.constants import REMINDERS_CHECK_SECONDS, REMINDERS_CHECK_SECONDS_INVALID
-from bot.app.domain.models import Booking, BookingStatus, Service, User, Master, BookingItem
+from bot.app.domain.models import Booking
 from bot.app.services.shared_services import safe_get_locale, local_now, utc_now, get_local_tz
 from bot.app.translations import t
 
@@ -60,7 +60,6 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
 
     try:
         from bot.app.domain.models import Booking as BookingModel, TERMINAL_STATUSES
-        from sqlalchemy import or_
 
         async def _process_config(kind: str, minutes: int, flag_attr: str) -> int:
             window_utc = now_utc + timedelta(minutes=minutes)
@@ -247,7 +246,7 @@ async def _run_loop(stop_event: asyncio.Event, bot: Bot, interval_seconds: int) 
             logger.exception("Reminders worker iteration error: %s", e)
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except Exception:
             break
@@ -278,7 +277,7 @@ async def start_reminders_worker(bot: Bot) -> Callable[[], Awaitable[None]]:
 
 
 async def stop_reminders_worker(
-    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+    stop_callable: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     if stop_callable:
         await stop_callable()

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
-from datetime import datetime, timezone
+from datetime import datetime
 from bot.app.telegram.common.roles import MasterRoleFilter
 from bot.app.telegram.master.states import MasterScheduleStates, MasterStates
 
@@ -19,7 +20,6 @@ from bot.app.telegram.common.callbacks import (
     MasterScheduleCB,
     BookingActionCB,
     BookingsPageCB,
-    NavCB,
     MasterBookingsCB,
     ClientInfoCB,
     MasterClientNoteCB,
@@ -34,12 +34,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramAPIError
 from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler
 from bot.app.telegram.common.navigation import (
-    nav_back,
     nav_current,
     nav_push,
     nav_replace,
     nav_reset,
-    nav_get_lang,
 )
 from bot.app.core.constants import DEFAULT_PAGE_SIZE
 from bot.app.telegram.master.master_keyboards import (
@@ -51,7 +49,6 @@ from bot.app.telegram.master.master_keyboards import (
 )
 
 # Prefer services over direct DB/domain imports in handlers
-import json
 import re
 from bot.app.translations import t, tr
 from bot.app.services.shared_services import default_language
@@ -62,7 +59,6 @@ logger = logging.getLogger(__name__)
 master_router = Router(name="master")
 # Apply master role filter and locale middleware so handlers receive `locale: str` from middleware
 from bot.app.telegram.common.locale_middleware import LocaleMiddleware
-from bot.app.telegram.common.errors import handle_telegram_error, handle_db_error
 from bot.app.telegram.common.ui_fail_safe import SafeUIMiddleware
 
 # 1. Ensure only masters reach these handlers (redundant if applied elsewhere)
@@ -297,10 +293,8 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
             except Exception:
                 logger.exception("master_edit_note_fallback: client history restore failed")
 
-        try:
+        with contextlib.suppress(Exception):
             await msg.answer(t("master_menu_header", lang), reply_markup=get_master_main_menu(lang))
-        except Exception:
-            pass
 
     async def _show_updated_screen() -> bool:
         """Render freshly updated card/history so the new note is visible immediately."""
@@ -309,10 +303,8 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
                 res = await master_services.handle_cancel_note(booking_id, lang)
                 if res:
                     text_card, markup = res
-                    try:
+                    with contextlib.suppress(Exception):
                         await nav_replace(state, text_card, markup, lang=lang)
-                    except Exception:
-                        pass
                     await msg.answer(
                         text=text_card,
                         reply_markup=markup,
@@ -343,10 +335,8 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
                 )
                 builder.adjust(2)
                 kb = builder.as_markup()
-                try:
+                with contextlib.suppress(Exception):
                     await nav_replace(state, text_card, kb, lang=lang)
-                except Exception:
-                    pass
                 await msg.answer(text_card, reply_markup=kb)
                 return True
             except Exception:
@@ -397,20 +387,16 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
         ok = False
 
     if ok:
-        try:
+        with contextlib.suppress(Exception):
             await msg.answer(t("master_note_saved", lang))
-        except Exception:
-            pass
         await _cleanup_note_state()
         sent = await _show_updated_screen()
         if not sent:
             await _restore_previous_screen()
         return
 
-    try:
+    with contextlib.suppress(Exception):
         await msg.answer(t("error_retry", lang))
-    except Exception:
-        pass
     await _cleanup_note_state()
     await _restore_previous_screen()
 
@@ -647,15 +633,11 @@ async def master_client_note_edit(
             else:
                 await cb.answer()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await cb.answer()
-            except Exception:
-                pass
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer()
-        except Exception:
-            pass
 
 
 @master_router.callback_query(MasterClientNoteCB.filter(F.action == "cancel_edit"))
@@ -695,10 +677,8 @@ async def show_schedule(cb: CallbackQuery, state: FSMContext, locale: str) -> No
     base_text = t("master_schedule_week_overview", lang)
     full_text = f"{base_text}\n\n{schedule_text}"
     await safe_edit(cb.message, text=full_text, reply_markup=kb)
-    try:
+    with contextlib.suppress(AttributeError):
         await nav_push(state, full_text, kb, lang=lang)
-    except AttributeError:
-        pass
     # show a small toast confirming refresh (let Telegram errors bubble to centralized handler)
     await cb.answer(t("master_schedule_refreshed", lang))
 
@@ -791,14 +771,10 @@ async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, l
 
     try:
         text, kb = await _show_day_actions(cb.message, master_id, int(day), lang=lang)
-        try:
+        with contextlib.suppress(TelegramAPIError):
             await nav_replace(state, text, kb)
-        except TelegramAPIError:
-            pass
-        try:
+        with contextlib.suppress(TelegramAPIError):
             await safe_edit(cb.message, text=text, reply_markup=kb)
-        except TelegramAPIError:
-            pass
     except Exception:
         # ignore UI refresh failures
         pass
@@ -815,10 +791,8 @@ async def schedule_pick_end(
     except SQLAlchemyError as e:
         logger.exception("DB error in pick_end: %s", e)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer()
-        except Exception:
-            pass
 
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "clear_day"))
@@ -837,10 +811,8 @@ async def schedule_clear_day(
     except Exception:
         day = None
     if master_id is None or day is None:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer(t("error_retry"), show_alert=False)
-        except Exception:
-            pass
         return
     await _check_and_confirm_day_clear(cb, int(day), clear_mode=True, state=state, locale=locale)
     return
@@ -891,10 +863,8 @@ async def schedule_remove_window(
     try:
         # Require value tokens; if missing, instruct user to refresh the day view.
         if not (start_val and end_val):
-            try:
+            with contextlib.suppress(Exception):
                 await cb.answer(tr("stale_schedule_refresh"), show_alert=True)
-            except Exception:
-                pass
             return
         # Value-based removal path only
         success, conflicts = await master_services.remove_schedule_window_by_value(
@@ -918,37 +888,27 @@ async def schedule_remove_window(
                 )
                 kb.button(text=tr("cancel"), callback_data=pack_cb(MasterMenuCB, act="menu"))
                 kb.adjust(2)
-                try:
+                with contextlib.suppress(Exception):
                     await cb.answer()
-                except Exception:
-                    pass
                 await safe_edit(
                     cb.message,
                     text=tr("master_clear_all_confirm_with_conflicts", count=count),
                     reply_markup=kb.as_markup(),
                 )
                 return
-            try:
+            with contextlib.suppress(Exception):
                 await cb.answer()
-            except Exception:
-                pass
             return
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer(t("toast_window_removed"))
-        except Exception:
-            pass
         lang = locale or default_language()
         text, kb = await _show_day_actions(
             cb.message, int(master_id) if master_id is not None else 0, int(day), lang=lang
         )
-        try:
+        with contextlib.suppress(Exception):
             await nav_replace(state, text, kb)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(TelegramAPIError):
             await safe_edit(cb.message, text=text, reply_markup=kb)
-        except TelegramAPIError:
-            pass
     except SQLAlchemyError as e:
         logger.exception("Failed to remove window (DB error): %s", e)
         await safe_edit(cb.message, text=t("error_retry"))
@@ -1101,22 +1061,18 @@ async def _check_and_confirm_day_clear(
             await safe_edit(cb.message, text=full_text, reply_markup=kb)
         except Exception:
             # As a final fallback show a simple confirmation text
-            try:
+            with contextlib.suppress(Exception):
                 if off_mode:
                     await safe_edit(cb.message, text=t("master_day_marked_off", lang))
                 else:
                     await safe_edit(cb.message, text=t("master_cleared", lang))
-            except Exception:
-                pass
     except SQLAlchemyError as e:
         if off_mode:
             logger.exception("Failed to mark day off %s for master (DB error): %s", day, e)
         else:
             logger.exception("Failed to clear day %s for master: %s", day, e)
-        try:
+        with contextlib.suppress(Exception):
             await safe_edit(cb.message, text=t("error_retry"))
-        except Exception:
-            pass
     return
 
 
@@ -1147,18 +1103,14 @@ async def schedule_edit_day(
     except Exception:
         day = None
     if master_id is None or day is None:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer(t("error_retry"), show_alert=True)
-        except Exception:
-            pass
         return
     try:
         lang = locale or default_language()
         text, kb = await _show_day_actions(cb.message, int(master_id), int(day), lang=lang)
-        try:
+        with contextlib.suppress(Exception):
             await nav_push(state, text, kb)
-        except Exception:
-            pass
         await safe_edit(cb.message, text=text, reply_markup=kb)
     except SQLAlchemyError as e:
         logger.exception("Failed to show day actions for master %s day=%s: %s", master_id, day, e)
@@ -1333,10 +1285,8 @@ async def schedule_confirm_clear_day(
         await show_schedule(cb, state, lang)
     except Exception:
         # fallback to editing message with summary
-        try:
+        with contextlib.suppress(Exception):
             await safe_edit(cb.message, text=msg)
-        except Exception:
-            pass
     return
 
 
@@ -1364,7 +1314,6 @@ async def _show_day_actions(
     except Exception:
         sched = {}
 
-    from typing import Any
 
     windows: list[Any] = []
     try:
@@ -1395,7 +1344,7 @@ async def _show_day_actions(
         try:
             lines = []
             for w in windows:
-                if isinstance(w, (list, tuple)) and len(w) >= 2:
+                if isinstance(w, list | tuple) and len(w) >= 2:
                     lines.append(f"{w[0]}-{w[1]}")
                 else:
                     lines.append(str(w))
@@ -1527,7 +1476,7 @@ async def master_cmd_start(message: Message, state: FSMContext, locale: str) -> 
         logger.exception("booking_cancel_flow: state.clear failed: %s", e)
         raise
     try:
-        await _show_master_menu(message, state, locale)
+        await show_master_menu(message, state, locale)
     except Exception as e:
         logger.exception("master_cmd_start: _show_master_menu failed: %s", e)
         try:
@@ -1876,7 +1825,7 @@ async def master_save_service_duration(cb: CallbackQuery, state: FSMContext, loc
     # Directly read master id; let exceptions surface if missing (aiogram ensures from_user exists).
     master_id = cb.from_user.id
     try:
-        ok = await master_services.MasterRepo.set_master_service_duration(
+        await master_services.MasterRepo.set_master_service_duration(
             int(master_id), str(service_id), int(minutes)
         )
         await cb.answer(t("master_service_duration_set_success", lang))
@@ -1899,10 +1848,8 @@ async def master_save_service_duration(cb: CallbackQuery, state: FSMContext, loc
         await safe_edit(cb.message, text=header, reply_markup=kb.as_markup())
     except Exception as e:
         logger.exception("master_save_service_duration failed: %s", e)
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer(t("error_retry", lang))
-        except Exception:
-            pass
     return
 
 
@@ -1919,7 +1866,6 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
     if not m:
         await msg.answer(t("invalid_time_format", lang))
         return
-    interval = f"{m.group(1)}-{m.group(2)}"
     data = await state.get_data()
     day = data.get("chosen_day")
     # get raw master id and validate (direct access)
@@ -1927,13 +1873,11 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
     if day is None or master_id is None:
         await msg.answer(t("error_retry", lang))
         # keep FSM so master can try again; clear ephemeral chosen_start
-        try:
+        with contextlib.suppress(AttributeError):
             await state.update_data(chosen_start=None)
-        except AttributeError:
-            pass
         return
 
-    master_id = int(master_id_raw)
+    master_id = int(master_id)
     try:
         # Use service helpers: insert and persist
         sched = await master_services.MasterRepo.get_schedule(master_id)
@@ -1943,32 +1887,24 @@ async def receive_time_window(msg: Message, state: FSMContext, locale: str) -> N
         await master_services.set_master_schedule(master_id, new_sched)
     except SQLAlchemyError as e:
         logger.exception("Failed to save interval for master (DB): %s", e)
-        try:
+        with contextlib.suppress(TelegramAPIError):
             await msg.answer(t("error_retry"))
-        except TelegramAPIError:
-            pass
     else:
         # quick toast confirmation, then show day actions so master can add more
         try:
             await msg.answer(t("toast_window_added", lang))
             text, kb = await _show_day_actions(msg, master_id, int(day), lang=lang)
-            try:
+            with contextlib.suppress(TelegramAPIError):
                 await nav_replace(state, text, kb)
-            except TelegramAPIError:
-                pass
         except TelegramAPIError:
             # fallback to simple confirmation
             start, end = m.group(1), m.group(2)
-            try:
+            with contextlib.suppress(TelegramAPIError):
                 await msg.answer(tr("master_add_window_confirm", lang=lang, start=start, end=end))
-            except TelegramAPIError:
-                pass
     finally:
         # Keep FSM active; clear ephemeral chosen_start only
-        try:
+        with contextlib.suppress(AttributeError):
             await state.update_data(chosen_start=None)
-        except AttributeError:
-            pass
 
 
 class _HasModePage(Protocol):
@@ -2090,10 +2026,8 @@ async def master_bookings_navigate(
     except Exception as e:
         # Catch-all for DB/UI/other failures during bookings navigation
         logger.exception("Error while fetching master bookings: %s", e)
-        try:
+        with contextlib.suppress(Exception):
             await safe_edit(cb.message, text=t("error_retry", lang))
-        except Exception:
-            pass
     await cb.answer()
 
 
@@ -2102,41 +2036,35 @@ async def master_bookings_navigate(
 async def booking_master_detail(
     cb: CallbackQuery, callback_data, state: FSMContext, locale: str
 ) -> None:
-    try:
-        booking_id_raw = getattr(callback_data, "booking_id", None)
-        if not booking_id_raw:
-            await cb.answer()
-            return
-        try:
-            booking_id = int(booking_id_raw)
-        except Exception:
-            await cb.answer()
-            return
-        lang = locale or default_language()
-        try:
-            bd = await build_booking_details(booking_id, user_id=None, lang=lang)
-            text = format_booking_details_text(bd, lang, role="master")
-            markup = build_booking_card_kb(bd, booking_id, role="master", lang=lang)
-            if cb.message:
-                await safe_edit(
-                    cb.message,
-                    text=text,
-                    reply_markup=markup,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                try:
-                    await nav_push(state, text, markup)
-                except Exception:
-                    pass
-        except Exception as _e:
-            logger.exception("Failed to render master_detail booking card: %s", _e)
-            try:
-                await cb.answer(t("error_retry", lang), show_alert=True)
-            except Exception:
-                pass
-    finally:
+    booking_id_raw = getattr(callback_data, "booking_id", None)
+    if not booking_id_raw:
+        await cb.answer()
         return
+    try:
+        booking_id = int(booking_id_raw)
+    except Exception:
+        await cb.answer()
+        return
+    lang = locale or default_language()
+    try:
+        bd = await build_booking_details(booking_id, user_id=None, lang=lang)
+        text = format_booking_details_text(bd, lang, role="master")
+        markup = build_booking_card_kb(bd, booking_id, role="master", lang=lang)
+        if cb.message:
+            await safe_edit(
+                cb.message,
+                text=text,
+                reply_markup=markup,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            with contextlib.suppress(Exception):
+                await nav_push(state, text, markup)
+    except Exception as _e:
+        logger.exception("Failed to render master_detail booking card: %s", _e)
+        with contextlib.suppress(Exception):
+            await cb.answer(t("error_retry", lang), show_alert=True)
+    return
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "mark_done"))
@@ -2313,10 +2241,8 @@ async def booking_show_full_note(
         await safe_edit(cb.message, text=text, reply_markup=kb.as_markup())
         await cb.answer()
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer()
-        except Exception:
-            pass
     return
 
 
@@ -2343,20 +2269,16 @@ async def booking_client_history(
             await safe_edit(cb.message, text=t("master_no_client_history", lang), reply_markup=None)
             await cb.answer()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await cb.answer()
-            except Exception:
-                pass
         return
     view_text, kb = res
     try:
         await safe_edit(cb.message, text=view_text, reply_markup=kb)
         await cb.answer()
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer()
-        except Exception:
-            pass
     return
 
 
@@ -2559,10 +2481,8 @@ async def booking_add_note(
         else:
             await safe_edit(cb.message, text=t("master_enter_note", locale), reply_markup=None)
     except Exception:
-        try:
+        with contextlib.suppress(Exception):
             await safe_edit(cb.message, text=t("master_enter_note", locale), reply_markup=None)
-        except Exception:
-            pass
     return
 
 
@@ -2579,10 +2499,8 @@ async def booking_cancel_note(
     except Exception:
         await cb.answer()
         return
-    try:
+    with contextlib.suppress(AttributeError):
         await state.clear()
-    except AttributeError:
-        pass
     try:
         res = await master_services.handle_cancel_note(booking_id, locale)
         if res:
@@ -2654,10 +2572,8 @@ async def booking_cancel_note(
                 )
     except Exception as e:
         logger.exception("Failed to cancel_note/render booking card for %s: %s", booking_id, e)
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer()
-        except Exception:
-            pass
     return
 
 
@@ -2699,11 +2615,8 @@ async def show_stats(cb: CallbackQuery, state: FSMContext, locale: str) -> None:
     text = "\n".join(text_parts)
     kb = get_master_main_menu(lang)
     await safe_edit(cb.message, text=text, reply_markup=kb)
-    try:
+    with contextlib.suppress(TelegramAPIError):
         await nav_replace(state, text, kb, lang=lang)
-    except TelegramAPIError:
-        # ignore navigation UI failures
-        pass
 
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "stats_week"))

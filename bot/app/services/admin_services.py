@@ -7,10 +7,10 @@ import time
 from datetime import UTC, datetime, timedelta
 import json
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any
+from collections.abc import Mapping
 
 from sqlalchemy import func, select, String, and_
-from sqlalchemy.exc import SQLAlchemyError
 
 
 from bot.app.domain.models import Booking, Master, Service, User, BookingStatus, REVENUE_STATUSES
@@ -18,7 +18,6 @@ from bot.app.core.db import get_session
 from bot.app.services.shared_services import (
     BookingInfo,
     booking_info_from_mapping,
-    format_booking_list_item,
     format_date,
     format_money_cents,
     format_user_display_name,
@@ -208,7 +207,6 @@ from bot.app.core.constants import (
     DEFAULT_RESCHEDULE_LOCK_MINUTES,
     DEFAULT_REMINDER_LEAD_MINUTES as ENV_REMINDER_LEAD_MINUTES,
     DEFAULT_REMINDER_SAME_DAY_MINUTES as ENV_REMINDER_SAME_DAY_MINUTES,
-    MASTER_IDS_LIST,
     PRIMARY_ADMIN_TG_ID,
 )
 
@@ -332,7 +330,7 @@ class ServiceRepo:
         Если optimized=True, использует двухфазный запрос (IDs -> детали -> агрегирование
         услуг) чтобы уменьшить нагрузку string_agg/outer join на больших таблицах.
         """
-        from bot.app.domain.models import Booking, BookingStatus, BookingItem, Service
+        from bot.app.domain.models import Booking, BookingStatus, BookingItem
         from bot.app.core.db import get_session
 
         now = utc_now()
@@ -810,7 +808,7 @@ class ServiceRepo:
                 svc.price_cents = int(new_cents)
                 try:
                     if hasattr(svc, "final_price_cents"):
-                        setattr(svc, "final_price_cents", int(new_cents))
+                        svc.final_price_cents = int(new_cents)
                 except Exception:
                     logger.debug("Could not set final_price_cents for service %s", service_id)
                 await session.commit()
@@ -1450,7 +1448,7 @@ class SettingsRepo:
                     if s:
                         s.value = str(value)
                         try:
-                            setattr(s, "updated_at", now_ts)
+                            s.updated_at = now_ts
                         except Exception:
                             pass
                     else:
@@ -1689,7 +1687,7 @@ class AdminRepo:
             start, end = _range_bounds(kind)
             async with get_session() as session:
                 from sqlalchemy import select, func, and_
-                from bot.app.domain.models import Booking, Master
+                from bot.app.domain.models import Booking
 
                 base_pred = Booking.starts_at.between(start, end)
                 if master_id is not None:
@@ -2116,7 +2114,7 @@ async def _stats_for_bounds(
     try:
         async with get_session() as session:
             from sqlalchemy import select, func, and_
-            from bot.app.domain.models import Booking, Master
+            from bot.app.domain.models import Booking
 
             base_pred = Booking.starts_at.between(start, end)
             if master_id is not None:

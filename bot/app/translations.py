@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import contextlib
 from typing import Any
 
 
@@ -1728,10 +1728,8 @@ def tr(key: str, lang: str | None = None, **fmt) -> Any:
         if text is None:
             text = key
         if isinstance(text, str) and fmt:
-            try:
+            with contextlib.suppress(Exception):
                 text = text.format(**fmt)
-            except Exception:
-                pass
         return text
     except Exception:
         return key

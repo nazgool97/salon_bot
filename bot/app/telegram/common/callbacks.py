@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Any, get_origin, get_args, cast
-import types
 from aiogram.filters.callback_data import CallbackData
 
 __all__ = [
@@ -51,7 +50,6 @@ def create_callback_data(prefix: str, **fields: Any) -> type[CallbackData]:
     for fname, ftype in fields.items():
         annotations[fname] = ftype
         # If the annotation allows None (Optional[...] or X | None), set a default of None
-        origin = get_origin(ftype)
         args = get_args(ftype)
         allows_none = False
         if args and type(None) in args:

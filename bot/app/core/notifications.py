@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import timedelta
-from typing import Iterable, Any
+from collections.abc import Iterable
 from dataclasses import replace
 
 from aiogram import Bot
@@ -329,7 +329,7 @@ async def send_booking_notification(
                     from bot.app.telegram.client.client_keyboards import build_rating_keyboard
 
                     if getattr(bd, "client_telegram_id", None) and int(
-                        getattr(bd, "client_telegram_id")
+                        bd.client_telegram_id
                     ) == int(rid_int):
                         reply_kb = build_rating_keyboard(int(booking_id))
                         # Use localized prompt for rating instead of hardcoded text

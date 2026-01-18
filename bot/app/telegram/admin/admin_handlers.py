@@ -1,9 +1,9 @@
 from __future__ import annotations
 import logging
-import re
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Optional, Callable, Awaitable, Protocol
+from typing import Any, Protocol
+from collections.abc import Callable
 from bot.app.telegram.common.callbacks import (
     pack_cb,
     BookingsPageCB,
@@ -40,7 +40,6 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State
 from aiogram.filters.state import StateFilter
 from aiogram.types import (
     CallbackQuery,
@@ -50,13 +49,9 @@ from aiogram.types import (
     FSInputFile,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramAPIError
-from datetime import datetime
 
-from bot.app.core.db import get_session
-from bot.app.domain.models import Booking, BookingStatus, Master, MasterService, Service, User
 
 
 # Structural Protocols for typed callback_data without relying on runtime CallbackData classes
@@ -87,7 +82,6 @@ class _HasHour(Protocol):
 
 from bot.app.services.admin_services import (
     AdminRepo,
-    generate_bookings_csv,
     export_month_bookings_csv,
     generate_unique_slug_from_name,
     validate_contact_phone,
@@ -102,7 +96,6 @@ from bot.app.services.shared_services import (
     get_telegram_provider_token,
     _msg as _shared_msg,
     safe_user_id,
-    get_local_tz,
     is_telegram_payments_enabled,
     is_telegram_miniapp_enabled,
     format_user_display_name,
@@ -113,7 +106,6 @@ from bot.app.telegram.client.client_keyboards import get_back_button
 from bot.app.services.admin_services import (
     ServiceRepo,
     SettingsRepo,
-    invalidate_services_cache,
 )
 from bot.app.telegram.admin.states import AdminStates
 from bot.app.services.client_services import UserRepo, BookingRepo
@@ -125,8 +117,6 @@ from bot.app.services.master_services import (
 )
 from bot.app.services.master_services import masters_cache
 import bot.app.services.master_services as master_services
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from bot.app.translations import t, tr
 from bot.app.telegram.common.ui_fail_safe import safe_edit
 from bot.app.telegram.common.roles import AdminRoleFilter
@@ -137,7 +127,6 @@ from bot.app.telegram.admin.admin_keyboards import (
     pagination_kb,
     stats_menu_kb,
     biz_menu_kb,
-    services_list_kb,
     services_prices_kb,
     edit_price_kb,
     admin_cancel_menu_kb,
@@ -157,14 +146,11 @@ from bot.app.telegram.admin.admin_keyboards import (
 from bot.app.telegram.common.navigation import (
     nav_reset,
     nav_push,
-    nav_back,
     nav_replace,
-    nav_get_lang,
     show_main_client_menu,
 )
 
 # Register centralized error handler for router-level exceptions
-from bot.app.telegram.common.errors import handle_telegram_error
 # Avoid top-level import of client handlers to prevent import cycles; lazy-import where needed.
 
 # Local text dictionary & helpers (static analyzer friendly)
@@ -1088,7 +1074,7 @@ async def admin_show_services_for_master(
             lines = [t("master_linked_to", lang).format(name=mname)]
         except Exception:
             lines = [f"{mname} привязана к:"]
-        for sid, sname in services:
+        for _sid, sname in services:
             lines.append(f" - {sname}")
         text = "\n".join(lines)
     from bot.app.telegram.client.client_keyboards import get_back_button
@@ -2238,7 +2224,6 @@ async def admin_show_bookings(callback: CallbackQuery, state: FSMContext, locale
 
 
 from bot.app.telegram.common.callbacks import AdminBookingsCB
-from bot.app.telegram.common.callbacks import NavCB
 
 
 @admin_router.callback_query(NavCB.filter(F.act.in_(["root", "back", "role_root"])))
@@ -2323,7 +2308,6 @@ async def _build_admin_bookings_view(
     from bot.app.services.admin_services import ServiceRepo
     from bot.app.services.shared_services import format_booking_list_item
     from bot.app.telegram.client.client_keyboards import build_my_bookings_keyboard
-    from aiogram.types import InlineKeyboardMarkup
 
     # If master_id not explicitly provided, check FSM state for a persisted master filter
     if master_id is None:

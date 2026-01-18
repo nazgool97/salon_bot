@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, date as _date, time as _time, timedelta
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Iterable, cast
+from typing import Any, cast
+from collections.abc import Mapping, Sequence
 import re
+import sqlalchemy as sa
 
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, case
 from sqlalchemy.exc import SQLAlchemyError
 
-from bot.app.domain.models import User  # Добавьте User
 from bot.app.core.constants import (
     DEFAULT_PAGE_SIZE,
     DEFAULT_DAY_END_HOUR,
@@ -21,9 +22,6 @@ from bot.app.core.db import get_session
 from bot.app.domain.models import (
     Booking,
     BookingStatus,
-    MasterClientNote,
-    User,
-    Service,
     TERMINAL_STATUSES,
 )
 from bot.app.services.admin_services import ServiceRepo, SettingsRepo
@@ -38,15 +36,11 @@ from bot.app.services.shared_services import (
     format_booking_list_item,
     format_booking_details_text,
     get_local_tz,
-    BookingInfo,
     format_user_display_name,
     utc_now,
 )
 from bot.app.translations import tr, t
 from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.app.telegram.common.callbacks import pack_cb, BookingActionCB, BookingsPageCB, NavCB
-from datetime import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +310,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
     Returns a localized text block ready to be prepended to the master menu.
     """
     try:
-        l = lang or await SettingsRepo.get_setting("language", default_language())
+        lang_value = lang or await SettingsRepo.get_setting("language", default_language())
 
         # Normalize provided identifier (surrogate id or telegram id) to canonical masters.id
         try:
@@ -351,13 +345,13 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                     or 0
                 )
 
-                rating_label = tr("rating_label", lang=l)
-                orders_word = tr("orders", lang=l)
+                rating_label = tr("rating_label", lang=lang_value)
+                orders_word = tr("orders", lang=lang_value)
                 rating_line = f"⭐ {rating_label}: {float(rating_avg or 0.0):.1f}/5 ({completed_orders} {orders_word})"
         except Exception:
             try:
-                rating_label = tr("rating_label", lang=l)
-                orders_word = tr("orders", lang=l)
+                rating_label = tr("rating_label", lang=lang_value)
+                orders_word = tr("orders", lang=lang_value)
                 rating_line = f"⭐ {rating_label}: 0.0/5 (0 {orders_word})"
             except Exception:
                 rating_line = ""
@@ -398,7 +392,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
         formatted_rows: list[tuple[str, int]] = []
         for r in rows:
             try:
-                txt, bid = format_booking_list_item(r, role="master", lang=l)
+                txt, bid = format_booking_list_item(r, role="master", lang=lang_value)
                 formatted_rows.append((txt, bid))
             except Exception:
                 continue
@@ -407,9 +401,6 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
         # totals caused by limiting page_size above (previous bug: totals
         # reflected only first 5 bookings).
         try:
-            from sqlalchemy import select, func, case
-            from bot.app.domain.models import Booking, BookingStatus
-
             async with get_session() as session:
                 counts_stmt = select(
                     func.count(Booking.id).label("total"),
@@ -443,23 +434,28 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 local_day_start.strftime("%d.%m.%Y") if "local_day_start" in locals() else ""
             )
             header_raw = (
-                tr("master_schedule_today_header", lang=l).format(date=date_label)
+                tr("master_schedule_today_header", lang=lang_value).format(date=date_label)
                 if date_label
-                else tr("master_schedule_today_header", lang=l)
+                else tr("master_schedule_today_header", lang=lang_value)
             )
             header = header_raw
 
             # Build vertical stats (one stat per line), using translations when available
             today_lbl = (
-                tr("dashboard_today_label", lang=l).replace("{count}", "").strip() or "Today"
+                tr("dashboard_today_label", lang=lang_value).replace("{count}", "").strip()
+                or "Today"
             )
-            done_lbl = tr("dashboard_done_label", lang=l).replace("{count}", "").strip() or "Done"
+            done_lbl = (
+                tr("dashboard_done_label", lang=lang_value).replace("{count}", "").strip()
+                or "Done"
+            )
             cancelled_lbl = (
-                tr("dashboard_cancelled_label", lang=l).replace("{count}", "").strip()
+                tr("dashboard_cancelled_label", lang=lang_value).replace("{count}", "").strip()
                 or "Cancelled"
             )
             pending_lbl = (
-                tr("dashboard_pending_label", lang=l).replace("{count}", "").strip() or "Pending"
+                tr("dashboard_pending_label", lang=lang_value).replace("{count}", "").strip()
+                or "Pending"
             )
 
             lines = [header]
@@ -473,7 +469,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 lines.append(txt)
             summary = "\n".join(lines)
         else:
-            base = [tr("master_no_bookings_today", lang=l)]
+            base = [tr("master_no_bookings_today", lang=lang_value)]
             summary = "\n".join(base)
 
         # also fetch a 7-day stats summary and append to dashboard
@@ -489,21 +485,21 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
         try:
             # Build 7-day stats as vertical lines without emojis
             total7_lbl = (
-                t("master_stats_7d_total", l).split(":")[0]
-                if t("master_stats_7d_total", l)
+                t("master_stats_7d_total", lang_value).split(":")[0]
+                if t("master_stats_7d_total", lang_value)
                 else "Total"
             )
             done7_lbl = (
-                t("master_stats_7d_done", l).split(":")[0]
-                if t("master_stats_7d_done", l)
+                t("master_stats_7d_done", lang_value).split(":")[0]
+                if t("master_stats_7d_done", lang_value)
                 else "Done"
             )
             noshow7_lbl = (
-                t("master_stats_7d_noshow", l).split(":")[0]
-                if t("master_stats_7d_noshow", l)
+                t("master_stats_7d_noshow", lang_value).split(":")[0]
+                if t("master_stats_7d_noshow", lang_value)
                 else "No-shows"
             )
-            seven_lines = ["", (t("last_7_days", l) or "Last 7 days:")]
+            seven_lines = ["", (t("last_7_days", lang_value) or "Last 7 days:")]
             seven_lines.append(f"{total7_lbl}: {stats.get('total_bookings', 0)}")
             seven_lines.append(f"{done7_lbl}: {stats.get('completed_bookings', 0)}")
             seven_lines.append(f"{noshow7_lbl}: {stats.get('no_shows', 0)}")
@@ -511,7 +507,6 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             try:
                 rev_cents = int(stats.get("revenue_cents", 0) or 0)
                 from bot.app.services.shared_services import format_money_cents, normalize_currency
-                from bot.app.services.admin_services import SettingsRepo
 
                 # Use the service-level currency when available, otherwise fall back
                 # to the global SettingsRepo currency (normalized ISO code).
@@ -524,7 +519,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 rev_txt = str(int(stats.get("revenue_cents", 0) or 0) / 100.0)
             # Revenue (localized label)
             try:
-                rev_lbl = t("revenue_title", l)
+                rev_lbl = t("revenue_title", lang_value)
                 # keep only label part if translation contains a colon
                 rev_lbl = rev_lbl.split(":")[0] if rev_lbl else "Revenue"
             except Exception:
@@ -533,21 +528,21 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
             # Avg per day (localized)
             try:
                 avgd = float(stats.get("avg_per_day", 0.0) or 0.0)
-                avg_lbl = t("avg_per_day", l) or "Avg/day"
+                avg_lbl = t("avg_per_day", lang_value) or "Avg/day"
                 seven_lines.append(f"{avg_lbl}: {avgd:.1f}")
             except Exception:
                 pass
             # No-show rate (localized)
             try:
                 nsr = float(stats.get("no_show_rate", 0.0) or 0.0)
-                nsr_lbl = t("no_show_rate", l) or "No-show rate"
+                nsr_lbl = t("no_show_rate", lang_value) or "No-show rate"
                 seven_lines.append(f"{nsr_lbl}: {nsr:.1f}%")
             except Exception:
                 pass
             # Next booking time (localized)
             try:
                 if stats.get("next_booking_time"):
-                    next_lbl = t("next_label", l) or "Next"
+                    next_lbl = t("next_label", lang_value) or "Next"
                     seven_lines.append(f"{next_lbl}: {stats.get('next_booking_time')}")
             except Exception:
                 pass
@@ -795,7 +790,6 @@ class MasterRepo:
                 )
                 return False
             async with get_session() as session:
-                from bot.app.domain.models import MasterSchedule
 
                 mid = await MasterRepo._resolve_mid(session, master_id)
                 if not mid:
@@ -864,7 +858,7 @@ class MasterRepo:
                         end = None
 
             async with get_session() as session:
-                from bot.app.domain.models import Booking, BookingStatus
+                from bot.app.domain.models import Booking
                 from sqlalchemy import select
 
                 mid = await MasterRepo._resolve_mid(session, master_id)
@@ -1005,7 +999,7 @@ class MasterRepo:
                     Service as Svc,
                     Master,
                 )
-                from sqlalchemy import func, cast, String
+                from sqlalchemy import func
 
                 # Aggregate booking item names; fall back to empty string when
                 # there are no BookingItem rows. We intentionally avoid selecting
@@ -1305,24 +1299,15 @@ class MasterRepo:
                 try:
                     for b in all_bookings:
                         if getattr(b, "status", None) in (
-                            getattr(
-                                __import__(
+                            (__import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus,
-                                "PAID",
-                            ),
-                            getattr(
-                                __import__(
+                                ).BookingStatus).PAID,
+                            (__import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus,
-                                "CONFIRMED",
-                            ),
-                            getattr(
-                                __import__(
+                                ).BookingStatus).CONFIRMED,
+                            (__import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus,
-                                "DONE",
-                            ),
+                                ).BookingStatus).DONE,
                         ):
                             total_spent_cents += int(
                                 getattr(b, "final_price_cents", None)
@@ -1489,9 +1474,9 @@ class MasterRepo:
                 # Attach metrics to master instance for downstream formatter
                 try:
                     if rating_avg is not None:
-                        setattr(master, "rating", float(rating_avg))
-                    setattr(master, "completed_orders", completed_orders)
-                    setattr(master, "ratings_count", int(ratings_count or 0))
+                        master.rating = float(rating_avg)
+                    master.completed_orders = completed_orders
+                    master.ratings_count = int(ratings_count or 0)
                 except Exception:
                     pass
 
@@ -1787,7 +1772,9 @@ class MasterRepo:
                 backup_file = None
                 if backup:
                     try:
-                        import json, os, time
+                        import json
+                        import os
+                        import time
 
                         ts = int(time.time())
                         base_dir = os.path.join(os.getcwd(), "backups")
@@ -2037,7 +2024,7 @@ class MasterRepo:
                 else:
                     try:
                         # row.duration_minutes is Optional[int]; safe to assign None
-                        setattr(row, "duration_minutes", minutes)
+                        row.duration_minutes = minutes
                     except Exception:
                         pass
                 await session.commit()
@@ -2288,9 +2275,9 @@ def format_client_history(hist: Mapping, user_id: int, lang: str | None = None) 
     keys (via tr/t) for all visible labels so the output is localized.
     """
     try:
-        l = lang or default_language()
+        lang_value = lang or default_language()
 
-        header = tr("master_client_history_header", lang=l)
+        header = tr("master_client_history_header", lang=lang_value)
         lines: list[str] = [f"{header} #{user_id}"]
 
         visits = hist.get("visits", 0)
@@ -2299,12 +2286,12 @@ def format_client_history(hist: Mapping, user_id: int, lang: str | None = None) 
         rating_txt = f"{rating}⭐" if isinstance(rating, (int, float)) else None
 
         fields = [
-            (tr("client_label", lang=l) or "Name", hist.get("name")),
-            (tr("master_total_visits", lang=l) or "Visits", visits),
-            (tr("master_total_spent", lang=l) or "Spent", format_money_cents(spent)),
-            (tr("master_last_visit", lang=l) or "Last visit", hist.get("last_visit")),
-            (tr("rating_label", lang=l) or "Rating", rating_txt),
-            (tr("master_note", lang=l) or "Note", hist.get("note")),
+            (tr("client_label", lang=lang_value) or "Name", hist.get("name")),
+            (tr("master_total_visits", lang=lang_value) or "Visits", visits),
+            (tr("master_total_spent", lang=lang_value) or "Spent", format_money_cents(spent)),
+            (tr("master_last_visit", lang=lang_value) or "Last visit", hist.get("last_visit")),
+            (tr("rating_label", lang=lang_value) or "Rating", rating_txt),
+            (tr("master_note", lang=lang_value) or "Note", hist.get("note")),
         ]
 
         lines.extend([f"{label}: {value}" for label, value in fields if value not in (None, "")])
@@ -2478,7 +2465,7 @@ async def cancel_booking(booking_id: int) -> bool:
         return False
 
 
-async def ensure_booking_owner(user_id: int, booking_id: int) -> Optional[Booking]:
+async def ensure_booking_owner(user_id: int, booking_id: int) -> Booking | None:
     """Проверяет, принадлежит ли запись пользователю (служебный метод).
 
     Возвращает объект Booking или None. Помещено в сервисный слой, чтобы
@@ -2963,7 +2950,7 @@ async def get_work_windows_for_day(
             rows = res.all()
             if rows:
                 # If any row marks the weekday as a day off, return empty
-                for st, et, is_off in rows:
+                for _st, _et, is_off in rows:
                     try:
                         if bool(is_off):
                             return []
@@ -2972,8 +2959,6 @@ async def get_work_windows_for_day(
                 windows = []
                 for st, et, _ in rows:
                     try:
-                        from bot.app.services.shared_services import format_slot_label
-
                         s = format_slot_label(st, fmt="%H:%M") if st is not None else str(st)
                         e = format_slot_label(et, fmt="%H:%M") if et is not None else str(et)
                     except Exception:

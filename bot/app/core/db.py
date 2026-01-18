@@ -10,10 +10,8 @@ Single authoritative module providing:
 import os
 from contextlib import asynccontextmanager
 import logging
-import traceback
 import asyncio
-from typing import AsyncIterator, Callable
-from sqlalchemy import select
+from collections.abc import AsyncIterator, Callable
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,

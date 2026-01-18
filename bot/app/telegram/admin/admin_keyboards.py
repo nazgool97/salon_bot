@@ -1,11 +1,10 @@
 from __future__ import annotations
 import logging
-from typing import Any, Mapping, cast
+from collections.abc import Mapping
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.app.telegram.client.client_keyboards import get_simple_kb
-from bot.app.services.admin_services import render_stats_overview
 
 # Settings/facade values are supplied by handlers; keyboards must remain UI-only.
 from bot.app.translations import t, tr
@@ -351,7 +350,7 @@ def no_masters_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
 def no_services_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Keyboard shown when there are no services: offer to add one or go back."""
-    from bot.app.telegram.common.callbacks import AdminMenuCB, NavCB
+    from bot.app.telegram.common.callbacks import AdminMenuCB
 
     kb = InlineKeyboardBuilder()
     kb.button(
@@ -800,7 +799,6 @@ def admin_reminder_menu_kb(
     from bot.app.telegram.common.callbacks import (
         AdminSetReminderCB,
         AdminSetReminderSameDayCB,
-        NavCB,
     )
 
     lead_options = [1440, 2160, 2880, 4320]

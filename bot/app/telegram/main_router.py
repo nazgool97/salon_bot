@@ -1,12 +1,13 @@
 """Telegram interfaces composition: include all feature routers here."""
 
-from aiogram import Router
-from aiogram import F
+import contextlib
+import logging
+
+from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext
 from bot.app.telegram.common.callbacks import NavCB
 from bot.app.telegram.common.navigation import nav_root, nav_pop, nav_role_root
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +66,11 @@ def build_main_router() -> Router:
             elif act == "noop":
                 # explicit no-op to acknowledge label buttons
                 pass
-            try:
+            with contextlib.suppress(Exception):
                 await cb.answer()
-            except Exception:
-                pass
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 logging.getLogger(__name__).exception("_global_nav_handler failed")
-            except Exception:
-                pass
 
     logger.info("Main router assembled")
     return router

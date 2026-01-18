@@ -1,8 +1,10 @@
 from __future__ import annotations
+
+import contextlib
 import logging
 import inspect
-from typing import Any, Callable, Optional, TypeVar
-from typing import cast
+from typing import Any, TypeVar
+from collections.abc import Callable
 from typing import cast
 from aiogram.types import Message, CallbackQuery
 
@@ -32,11 +34,8 @@ async def handle_callback_error(
         e: the exception instance.
         fallback_text: optional explicit text to show instead of the generic error key.
     """
-    try:
+    with contextlib.suppress(Exception):
         logger.exception("Handler exception: %s", e)
-    except Exception:
-        # ensure logging doesn't raise
-        pass
 
     try:
         from bot.app.translations import t
@@ -130,7 +129,7 @@ async def safe_edit(
     message: Message | CallbackQuery | Any,
     text: str,
     *,
-    fallback_text: Optional[str] = None,
+    fallback_text: str | None = None,
     **kwargs: Any,
 ) -> bool:
     """Безопасно редактирует или отправляет сообщение в Telegram.
@@ -155,10 +154,7 @@ async def safe_edit(
     # (except for the special 'message is not modified' case), we'll try to
     # send a new message as a fallback below.
     try:
-        if isinstance(norm, CallbackQuery):
-            target_msg = getattr(norm, "message", None)
-        else:
-            target_msg = norm
+        target_msg = getattr(norm, "message", None) if isinstance(norm, CallbackQuery) else norm
 
         if isinstance(target_msg, Message) and hasattr(target_msg, "edit_text"):
             await target_msg.edit_text(text, **kwargs)
@@ -217,11 +213,7 @@ async def safe_edit(
                         res = norm.answer(fallback_text, **kwargs)
                         if inspect.isawaitable(res):
                             await cast(Any, res)
-                elif isinstance(norm, Message):
-                    res = norm.answer(fallback_text, **kwargs)
-                    if inspect.isawaitable(res):
-                        await cast(Any, res)
-                elif hasattr(norm, "answer"):
+                elif isinstance(norm, Message) or hasattr(norm, "answer"):
                     res = norm.answer(fallback_text, **kwargs)
                     if inspect.isawaitable(res):
                         await cast(Any, res)
@@ -293,7 +285,7 @@ class SafeUIMiddleware:
         try:
             user = getattr(event, "from_user", None)
             if user is None and hasattr(event, "message"):
-                msg = getattr(event, "message")
+                msg = event.message
                 user = getattr(msg, "from_user", None)
             user_id = getattr(user, "id", None) if user is not None else None
         except Exception:
@@ -301,10 +293,8 @@ class SafeUIMiddleware:
 
         # If user object exists but has no id, inform and return without calling handler
         if getattr(event, "from_user", None) is not None and not user_id:
-            try:
+            with contextlib.suppress(Exception):
                 await safe_edit(target, "Error: missing user id")
-            except Exception:
-                pass
             return None
 
         # Execute handler and forward any exceptions to the centralized handler
@@ -358,12 +348,12 @@ def safe_handler(require_from_user: bool = True, fallback_text: str | None = Non
                     user_id = None
                     try:
                         if target is not None and hasattr(target, "from_user"):
-                            user = getattr(target, "from_user")
+                            user = target.from_user
                             user_id = getattr(user, "id", None)
                         if (not user_id) and hasattr(target, "message"):
-                            m = getattr(target, "message")
+                            m = target.message
                             if hasattr(m, "from_user"):
-                                user = getattr(m, "from_user")
+                                user = m.from_user
                                 user_id = getattr(user, "id", None)
                     except Exception:
                         user_id = None

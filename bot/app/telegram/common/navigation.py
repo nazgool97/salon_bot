@@ -10,7 +10,7 @@ State keys used in FSMContext:
 We serialize InlineKeyboardMarkup via model_dump/model_validate so it is safe
 to restore later for editing the same message.
 """
-from typing import Any, cast
+from typing import Any
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 
@@ -165,7 +165,6 @@ __all__ = [
 ]
 
 
-from typing import Optional, Union, Any
 from aiogram.types import Message, CallbackQuery
 from aiogram.exceptions import TelegramAPIError
 import logging
@@ -174,13 +173,12 @@ logger = logging.getLogger(__name__)
 
 
 from aiogram import Router, F
-from aiogram.fsm.context import FSMContext
 from bot.app.telegram.common.callbacks import NavCB
 
 
 async def show_main_client_menu(
-    obj: Union[Message, CallbackQuery],
-    state: Optional[FSMContext] = None,
+    obj: Message | CallbackQuery,
+    state: FSMContext | None = None,
     *,
     prefer_edit: bool = True,
 ) -> None:
@@ -262,7 +260,7 @@ async def show_main_client_menu(
         logger.exception("show_main_client_menu: unexpected error")
 
 
-async def nav_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
+async def nav_root(obj: Message | CallbackQuery, state: FSMContext | None) -> None:
     """Reset navigation stack and show the global client main menu.
 
     This is the canonical implementation for the "В МЕНЮ" button.
@@ -278,7 +276,7 @@ async def nav_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContex
         logger.exception("nav_root: unexpected error")
 
 
-async def nav_pop(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
+async def nav_pop(obj: Message | CallbackQuery, state: FSMContext | None) -> None:
     """One-step back: pop nav stack and edit the message or show root when empty.
 
     This is the canonical implementation for the "Назад" (step) button.
@@ -318,7 +316,7 @@ async def nav_pop(obj: Union[Message, CallbackQuery], state: Optional[FSMContext
         logger.exception("nav_pop: unexpected error")
 
 
-async def nav_role_root(obj: Union[Message, CallbackQuery], state: Optional[FSMContext]) -> None:
+async def nav_role_root(obj: Message | CallbackQuery, state: FSMContext | None) -> None:
     """Reset navigation and show the role-specific root menu.
 
     Priority: admin -> master -> client

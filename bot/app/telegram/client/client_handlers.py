@@ -1,37 +1,25 @@
 from __future__ import annotations
+import contextlib
 import logging
 import re
-import os
-from typing import Optional, Any, Callable, Awaitable
+from typing import Any
+from collections.abc import Callable, Awaitable
 from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
 
 from bot.app.domain.models import (
     Booking,
     BookingStatus,
-    Master,
     MasterService,
-    Service,
-    User,
     TERMINAL_STATUSES,
 )
 
 
-from aiogram import F, Router, Bot
+from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
     Message,
     CallbackQuery,
-    InlineKeyboardMarkup,
-    PreCheckoutQuery,
-    LabeledPrice,
-)
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    WebAppInfo,
     PreCheckoutQuery,
     LabeledPrice,
 )
@@ -42,10 +30,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
 from aiogram.exceptions import TelegramAPIError
 from datetime import datetime, UTC
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler
-from bot.app.telegram.common.navigation import nav_push, nav_back, nav_reset, nav_replace
+from bot.app.telegram.common.navigation import nav_push, nav_back, nav_replace
 from bot.app.telegram.common.callbacks import (
     ServiceSelectCB,
     ServiceToggleCB,
@@ -64,7 +52,6 @@ from bot.app.telegram.common.callbacks import HoursViewCB, HourCB, CancelTimeCB
 from bot.app.telegram.common.callbacks import TimeAdjustCB
 from bot.app.telegram.common.callbacks import PayCB, BookingActionCB
 from bot.app.telegram.common.callbacks import MyBookingsCB
-from bot.app.telegram.common.callbacks import MasterMenuCB
 from bot.app.telegram.common.callbacks import NavCB
 from bot.app.telegram.common.callbacks import ClientMenuCB
 from bot.app.core.constants import (
@@ -98,12 +85,8 @@ from bot.app.telegram.client.client_keyboards import (
     get_service_menu,
     get_master_keyboard,
     get_calendar_keyboard,
-    get_main_menu,
     get_payment_keyboard,
-    build_rating_keyboard,
     build_my_bookings_keyboard,
-    get_time_slots_kb,
-    get_hour_picker_kb,
     get_minute_picker_kb,
     get_compact_time_picker_kb,
 )
@@ -120,7 +103,6 @@ from bot.app.telegram.client.client_keyboards import get_back_button, get_simple
 from bot.app.translations import t
 import bot.app.translations as i18n
 from bot.app.services.client_services import (
-    calculate_price,
     record_booking_rating,
     get_services_duration_and_price,
     BookingRepo,
@@ -134,16 +116,13 @@ from bot.app.services.admin_services import ServiceRepo
 from bot.app.services.admin_services import SettingsRepo
 from bot.app.services.shared_services import (
     format_money_cents,
-    status_to_emoji,
     is_online_payments_available,
     get_telegram_provider_token,
     resolve_online_payment_discount_percent,
     apply_online_payment_discount,
-    tr,
 )
 import bot.app.services.master_services as master_services
 from bot.app.services.master_services import MasterRepo
-from bot.app.telegram.common.errors import handle_telegram_error, handle_db_error
 # Master FSM moved to master router (kept minimal here)
 
 logger = logging.getLogger(__name__)
@@ -165,7 +144,7 @@ async def _calendar_max_days_default() -> int:
     return await _int_setting(SettingsRepo.get_calendar_max_days_ahead, 365)
 
 
-def _get_cb_user_id(cb: CallbackQuery) -> Optional[int]:
+def _get_cb_user_id(cb: CallbackQuery) -> int | None:
     """Safely extract telegram user id from a CallbackQuery or return None.
 
     Some update types (inline queries, channel posts, etc.) may not include
@@ -181,7 +160,7 @@ def _get_cb_user_id(cb: CallbackQuery) -> Optional[int]:
         return None
 
 
-def _get_message_user_id(message: Message) -> Optional[int]:
+def _get_message_user_id(message: Message) -> int | None:
     """Safely extract telegram user id from a Message or return None."""
     try:
         user = getattr(message, "from_user", None)
@@ -309,7 +288,7 @@ def require_ids(
 client_router = Router(name="client")
 # Attach locale middleware used elsewhere
 from bot.app.telegram.common.locale_middleware import LocaleMiddleware
-from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler, SafeUIMiddleware
+from bot.app.telegram.common.ui_fail_safe import SafeUIMiddleware
 
 client_router.message.middleware(LocaleMiddleware())
 client_router.callback_query.middleware(LocaleMiddleware())
@@ -796,9 +775,10 @@ async def select_master(
     try:
         from bot.app.services.client_services import get_services_duration_and_price
 
-        targets = service_ids or [service_id]
+        sid = str(service_id or "")
+        targets = [s for s in sid.split("+") if s] if "+" in sid else ([sid] if sid else [])
         totals = await get_services_duration_and_price(
-            targets, online_payment=False, master_id=int(master_id)
+            targets or [service_id], online_payment=False, master_id=int(master_id)
         )
         duration = int(totals.get("total_minutes") or slot_default)
         # Persist accurate duration for multi-service flow
@@ -1912,7 +1892,7 @@ async def services_multi_entry(
         else:
             decorated[sid] = name
     _ck = importlib.import_module("bot.app.telegram.client.client_keyboards")
-    kb = await getattr(_ck, "get_service_menu_multi")(selected, decorated)
+    kb = await _ck.get_service_menu_multi(selected, decorated)
     from bot.app.telegram.common.navigation import nav_get_lang
 
     lang = (await nav_get_lang(state)) or locale
@@ -1979,7 +1959,7 @@ async def svc_toggle(
         else:
             decorated[sid] = name
     _ck = importlib.import_module("bot.app.telegram.client.client_keyboards")
-    kb = await getattr(_ck, "get_service_menu_multi")(selected, decorated)
+    kb = await _ck.get_service_menu_multi(selected, decorated)
     if cb.message:
         from bot.app.telegram.common.navigation import nav_get_lang
 
@@ -2236,7 +2216,7 @@ async def pay_cash_prepare(
                     )
                 except Exception:
                     try:
-                        start_time_str = getattr(details_obj, "starts_at").strftime("%H:%M")
+                        start_time_str = details_obj.starts_at.strftime("%H:%M")
                     except Exception:
                         start_time_str = None
         except Exception:
@@ -2487,7 +2467,6 @@ async def my_bookings(
     # Delegate rendering to the unified shared renderer so client/master/admin
     # flows share the same rendering contract. The shared renderer will call
     # BookingRepo.get_paginated_list internally and produce text + keyboard.
-    from bot.app.telegram.client import client_keyboards as _ck
 
     # Format rows for UI (services now own formatting); keyboards remain UI-only
     try:
@@ -2738,7 +2717,6 @@ async def show_master_profile(
 
     # Создаем клавиатуру с кнопкой "Записаться" и "Назад"
     from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from typing import cast, Any
 
     builder = InlineKeyboardBuilder()
     book_text = t("book", lang)
@@ -3097,8 +3075,6 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
 
     # Resolve currency and normalize for Telegram payments
     try:
-        from bot.app.services.admin_services import SettingsRepo
-
         currency = await SettingsRepo.get_currency()
     except Exception:
         from bot.app.services.shared_services import _default_currency
@@ -3464,10 +3440,8 @@ async def handle_successful_payment(message: Message, locale: str) -> None:
             logger.exception("Failed to send paid notifications for booking %s", booking_id)
 
         # Acknowledge to the client
-        try:
+        with contextlib.suppress(Exception):
             await message.answer(t("payment_success", locale))
-        except Exception:
-            pass
     except Exception:
         logger.exception("handle_successful_payment: unexpected error")
 
@@ -3492,10 +3466,8 @@ async def cancel_booking(cb: CallbackQuery, callback_data, state: FSMContext, lo
         return
     # Refresh UI list and show success toast
     await my_bookings(cb, None, state, replace_screen=True)
-    try:
+    with contextlib.suppress(Exception):
         await cb.answer(t(msg_key, lang))
-    except Exception:
-        pass
 
     # Unexpected exceptions will be handled by centralized router-level error handlers
 

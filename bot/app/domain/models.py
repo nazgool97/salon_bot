@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time as _time, date as _date
+from datetime import datetime, time as _time, date as _date
 from enum import Enum as _Enum
 
 from sqlalchemy import (
@@ -10,14 +10,12 @@ from sqlalchemy import (
     String,
     Text,
     BigInteger,
-    Column,
     Time,
     Date,
-    select,
     Index,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, column_property
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):

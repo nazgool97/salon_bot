@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
-from typing import Any, Callable, Dict
+from typing import Any
+from collections.abc import Callable
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
@@ -21,9 +22,9 @@ class LocaleMiddleware(BaseMiddleware):
 
     async def __call__(
         self,
-        handler: Callable[[TelegramObject, Dict[str, Any]], Any],
+        handler: Callable[[TelegramObject, dict[str, Any]], Any],
         event: TelegramObject,
-        data: Dict[str, Any],
+        data: dict[str, Any],
     ) -> Any:
         # aiogram provides `from_user` for user-originated events; access directly.
         try:

@@ -15,7 +15,7 @@ import urllib.parse
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
-from typing import Any, Dict, Optional
+from typing import Any, Annotated
 from enum import Enum
 
 import jwt
@@ -29,23 +29,17 @@ from fastapi.responses import FileResponse
 # Centralized business logic helpers (booking, pricing, etc.)
 from bot.app.services import client_services
 
-from bot.app.domain.models import BookingStatus, normalize_booking_status
 
 
-from bot.app.core.constants import BOT_TOKEN, TELEGRAM_PROVIDER_TOKEN
+from bot.app.core.constants import BOT_TOKEN
 from bot.app.services.shared_services import (
-    get_telegram_provider_token,
     is_online_payments_available,
     get_admin_ids,
     safe_get_locale,
-    status_to_emoji,
-    format_money_cents,
     get_contact_info,
     resolve_online_payment_discount_percent,
 )
 from bot.app.services.shared_services import (
-    format_booking_list_item,
-    default_language,
     format_slot_label,
     format_date,
 )
@@ -58,9 +52,7 @@ from bot.app.services.master_services import MasterRepo
 from bot.app.services.client_services import (
     BookingResult,
     BookingRepo,
-    can_client_reschedule,
     get_available_days_for_month,
-    format_booking_details_text,
     get_local_tz,
     get_services_duration_and_price,
     process_booking_hold,
@@ -71,7 +63,6 @@ from bot.app.services.client_services import (
     process_invoice_link,
     process_booking_details,
 )
-from bot.app.services.shared_services import get_service_duration
 from bot.app.core.notifications import send_booking_notification
 from bot.app.services.admin_services import SettingsRepo
 
@@ -100,54 +91,54 @@ class SessionRequest(BaseModel):
 
 class TelegramUser(BaseModel):
     id: int
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    username: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    username: str | None = None
 
 
 class SessionResponse(BaseModel):
     token: str
     user: TelegramUser
-    currency: Optional[str] = None
-    locale: Optional[str] = None
-    webapp_title: Optional[str] = None
-    online_payments_available: Optional[bool] = None
-    online_payment_discount_percent: Optional[int] = None
+    currency: str | None = None
+    locale: str | None = None
+    webapp_title: str | None = None
+    online_payments_available: bool | None = None
+    online_payment_discount_percent: int | None = None
     # Preferred date format for client-side inputs (e.g. "YYYY-MM-DD")
-    date_format: Optional[str] = None
-    reminder_lead_minutes: Optional[int] = None
+    date_format: str | None = None
+    reminder_lead_minutes: int | None = None
     # optional contact/address provided by admin
-    address: Optional[str] = None
-    webapp_address: Optional[str] = None
-    contact_phone: Optional[str] = None
-    contact_instagram: Optional[str] = None
-    timezone: Optional[str] = None
+    address: str | None = None
+    webapp_address: str | None = None
+    contact_phone: str | None = None
+    contact_instagram: str | None = None
+    timezone: str | None = None
 
 
 class BookingRequest(BaseModel):
     service_ids: list[str] = Field(..., min_length=1)
     slot: datetime
-    master_id: Optional[int] = None
-    payment_method: Optional[str] = None
+    master_id: int | None = None
+    payment_method: str | None = None
 
 
 class BookingResponse(BaseModel):
     ok: bool
-    booking_id: Optional[int] = None
-    status: Optional[str] = None
-    starts_at: Optional[str] = None
-    cash_hold_expires_at: Optional[str] = None
-    original_price_cents: Optional[int] = None
-    final_price_cents: Optional[int] = None
-    discount_amount_cents: Optional[int] = None
-    currency: Optional[str] = None
-    master_id: Optional[int] = None
-    master_name: Optional[str] = None
-    payment_method: Optional[str] = None
-    invoice_url: Optional[str] = None
-    duration_minutes: Optional[int] = None
-    text: Optional[str] = None
-    error: Optional[str] = None
+    booking_id: int | None = None
+    status: str | None = None
+    starts_at: str | None = None
+    cash_hold_expires_at: str | None = None
+    original_price_cents: int | None = None
+    final_price_cents: int | None = None
+    discount_amount_cents: int | None = None
+    currency: str | None = None
+    master_id: int | None = None
+    master_name: str | None = None
+    payment_method: str | None = None
+    invoice_url: str | None = None
+    duration_minutes: int | None = None
+    text: str | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -185,39 +176,39 @@ def booking_error_handler(default_error: str):
 class BookingItemOut(BaseModel):
     id: int
     status: str
-    status_label: Optional[str] = None
-    status_emoji: Optional[str] = None
-    display_text: Optional[str] = None
-    formatted_time_range: Optional[str] = None
-    formatted_date: Optional[str] = None
-    price_cents: Optional[int] = None
-    price_formatted: Optional[str] = None
-    original_price_cents: Optional[int] = None
-    final_price_cents: Optional[int] = None
-    discount_amount_cents: Optional[int] = None
-    original_price_formatted: Optional[str] = None
-    final_price_formatted: Optional[str] = None
-    discount_amount_formatted: Optional[str] = None
-    currency: Optional[str] = None
-    starts_at: Optional[str] = None
-    ends_at: Optional[str] = None
-    duration_minutes: Optional[int] = None
-    master_id: Optional[int] = None
-    master_name: Optional[str] = None
-    service_names: Optional[str] = None
-    payment_method: Optional[str] = None
+    status_label: str | None = None
+    status_emoji: str | None = None
+    display_text: str | None = None
+    formatted_time_range: str | None = None
+    formatted_date: str | None = None
+    price_cents: int | None = None
+    price_formatted: str | None = None
+    original_price_cents: int | None = None
+    final_price_cents: int | None = None
+    discount_amount_cents: int | None = None
+    original_price_formatted: str | None = None
+    final_price_formatted: str | None = None
+    discount_amount_formatted: str | None = None
+    currency: str | None = None
+    starts_at: str | None = None
+    ends_at: str | None = None
+    duration_minutes: int | None = None
+    master_id: int | None = None
+    master_name: str | None = None
+    service_names: str | None = None
+    payment_method: str | None = None
     can_cancel: bool = False
     can_reschedule: bool = False
 
 
 class SlotsResponse(BaseModel):
     slots: list[str]
-    timezone: Optional[str] = None
+    timezone: str | None = None
 
 
 class AvailableDaysResponse(BaseModel):
     days: list[int]
-    timezone: Optional[str] = None
+    timezone: str | None = None
 
 
 class PriceQuoteRequest(BaseModel):
@@ -228,23 +219,23 @@ class PriceQuoteRequest(BaseModel):
         online = "online"
 
     payment_method: PaymentMethod = PaymentMethod.cash
-    master_id: Optional[int] = None
+    master_id: int | None = None
 
 
 class PriceQuoteResponse(BaseModel):
     final_price_cents: int
-    original_price_cents: Optional[int] = None
+    original_price_cents: int | None = None
     currency: str
-    discount_amount_cents: Optional[int] = None
-    discount_percent_applied: Optional[float] = None
-    duration_minutes: Optional[int] = None
+    discount_amount_cents: int | None = None
+    discount_percent_applied: float | None = None
+    duration_minutes: int | None = None
 
 
 class ServiceOut(BaseModel):
     id: str
     name: str
-    duration_minutes: Optional[int] = None
-    price_cents: Optional[int] = None
+    duration_minutes: int | None = None
+    price_cents: int | None = None
 
 
 class MasterOut(BaseModel):
@@ -257,33 +248,33 @@ class MastersMatchRequest(BaseModel):
 
 
 class MasterProfileOut(MasterOut):
-    telegram_id: Optional[int] = None
-    bio: Optional[str] = None
-    rating: Optional[float] = None
-    ratings_count: Optional[int] = None
-    completed_orders: Optional[int] = None
-    title: Optional[str] = None
-    experience_years: Optional[int] = None
-    specialities: Optional[list[str]] = None
-    avatar_url: Optional[str] = None
-    services: Optional[list[dict[str, Any]]] = None
-    schedule_lines: Optional[list[str]] = None
+    telegram_id: int | None = None
+    bio: str | None = None
+    rating: float | None = None
+    ratings_count: int | None = None
+    completed_orders: int | None = None
+    title: str | None = None
+    experience_years: int | None = None
+    specialities: list[str] | None = None
+    avatar_url: str | None = None
+    services: list[dict[str, Any]] | None = None
+    schedule_lines: list[str] | None = None
 
 
 class MeOut(BaseModel):
     id: int
     telegram_id: int
-    username: Optional[str]
-    name: Optional[str]
-    locale: Optional[str]
+    username: str | None
+    name: str | None
+    locale: str | None
 
 
 class Principal(BaseModel):
     user_id: int
     telegram_id: int
-    username: Optional[str] = None
-    first_name: Optional[str] = None
-    language: Optional[str] = None
+    username: str | None = None
+    first_name: str | None = None
+    language: str | None = None
 
 
 class RatingRequest(BaseModel):
@@ -313,7 +304,7 @@ class InvoiceRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _parse_init_data(init_data: str) -> Dict[str, str]:
+def _parse_init_data(init_data: str) -> dict[str, str]:
     try:
         parsed = dict(
             urllib.parse.parse_qsl(init_data, keep_blank_values=True, strict_parsing=True)
@@ -327,11 +318,11 @@ def _parse_init_data(init_data: str) -> Dict[str, str]:
     return parsed
 
 
-def _calc_expected_hash(data: Dict[str, str], token: str) -> str:
+def _calc_expected_hash(data: dict[str, str], token: str) -> str:
     check_hash = data.get("hash", "")
     data_to_check = {k: v for k, v in data.items() if k != "hash"}
     data_check_string = "\n".join(f"{k}={data_to_check[k]}" for k in sorted(data_to_check))
-    secret_key = hmac.new("WebAppData".encode(), token.encode(), hashlib.sha256).digest()
+    secret_key = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     computed = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     logger.debug("initData data_check_string=%s computed_hash=%s", data_check_string, computed)
     if not hmac.compare_digest(computed, check_hash):
@@ -576,7 +567,9 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
 
 
 @app.get("/api/me", response_model=MeOut)
-async def get_me(principal: Principal = Depends(get_current_principal)) -> MeOut:
+async def get_me(
+    principal: Annotated[Principal, Depends(get_current_principal)]
+) -> MeOut:
     user = await UserRepo.get_by_id(principal.user_id)
     if not user:
         user = await UserRepo.get_or_create(
@@ -628,16 +621,16 @@ async def get_slots(
         )
     except Exception as e:
         logger.exception("Ошибка при получении слотов для WebApp: %s", e)
-        raise HTTPException(status_code=500, detail="slots_failed")
+        raise HTTPException(status_code=500, detail="slots_failed") from e
 
 
 @app.get("/api/check_slot")
 @booking_error_handler("slots_failed")
 async def check_slot(
-    master_id: int | None = Query(None),
-    slot: datetime = Query(...),
-    service_ids: list[str] = Query(..., alias="service_ids[]"),
-    principal: Principal = Depends(get_current_principal),
+    slot: Annotated[datetime, Query(...)],
+    service_ids: Annotated[list[str], Query(..., alias="service_ids[]")],
+    principal: Annotated[Principal, Depends(get_current_principal)],
+    master_id: Annotated[int | None, Query()] = None,
 ) -> dict:
     """Return whether the given slot is currently available for booking.
 
@@ -650,10 +643,9 @@ async def check_slot(
 
     # Interpret incoming `slot` using salon local timezone when naive.
     local_tz = get_local_tz() or UTC
-    if slot.tzinfo is None:
-        slot_local = slot.replace(tzinfo=local_tz)
-    else:
-        slot_local = slot.astimezone(local_tz)
+    slot_local = (
+        slot.replace(tzinfo=local_tz) if slot.tzinfo is None else slot.astimezone(local_tz)
+    )
 
     # Require explicit master selection and cast to int so the canonical
     # slot calculator receives the expected `int` type (fixes Pylance
@@ -706,8 +698,8 @@ async def available_days(
     master_id: int,
     year: int,
     month: int,
-    service_ids: list[str] = Query(..., alias="service_ids[]"),
-    principal: Principal = Depends(get_current_principal),
+    service_ids: Annotated[list[str], Query(..., alias="service_ids[]")],
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> AvailableDaysResponse:
     agg = await ServiceRepo.aggregate_services(service_ids)
     total_minutes = int(agg.get("total_minutes") or 60)
@@ -727,7 +719,7 @@ async def available_days(
 @booking_error_handler("booking_failed")
 async def create_hold(
     payload: BookingRequest,
-    principal: Principal = Depends(get_current_principal),
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     """Create a short-term reservation (hold) for the requested slot.
 
@@ -764,7 +756,9 @@ async def create_hold(
 
 
 @app.get("/api/services", response_model=list[ServiceOut])
-async def list_services(principal: Principal = Depends(get_current_principal)) -> list[ServiceOut]:
+async def list_services(
+    principal: Annotated[Principal, Depends(get_current_principal)]
+) -> list[ServiceOut]:
     try:
         async with get_session() as session:  # type: ignore  # re-use existing helper
             from sqlalchemy import select
@@ -793,15 +787,17 @@ async def list_services(principal: Principal = Depends(get_current_principal)) -
 
 
 @app.get("/api/masters", response_model=list[MasterOut])
-async def list_masters(principal: Principal = Depends(get_current_principal)) -> list[MasterOut]:
+async def list_masters(
+    principal: Annotated[Principal, Depends(get_current_principal)]
+) -> list[MasterOut]:
     masters: list[tuple[int, str]] = await MasterRepo.get_masters_page(page=1, page_size=200)
     return [MasterOut(id=m[0], name=m[1]) for m in masters]
 
 
 @app.get("/api/service_ranges")
 async def service_ranges(
-    service_ids: list[str] = Query(..., alias="service_ids[]"),
-    principal: Principal = Depends(get_current_principal),
+    service_ids: Annotated[list[str], Query(..., alias="service_ids[]")],
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> dict:
     """Return duration and price ranges for provided service ids.
 
@@ -884,7 +880,8 @@ async def service_ranges(
 
 @app.post("/api/masters_match", response_model=list[MasterOut])
 async def masters_match(
-    payload: MastersMatchRequest, principal: Principal = Depends(get_current_principal)
+    payload: MastersMatchRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> list[MasterOut]:
     # Return masters who provide ALL requested services (intersection) in a single query
     if not payload.service_ids:
@@ -915,7 +912,7 @@ async def masters_match(
 
 @app.get("/api/master_profile", response_model=MasterProfileOut)
 async def master_profile(
-    master_id: int, principal: Principal = Depends(get_current_principal)
+    master_id: int, principal: Annotated[Principal, Depends(get_current_principal)]
 ) -> MasterProfileOut:
     data = await MasterRepo.get_master_profile_data(master_id)
     if not data or not data.get("master"):
@@ -928,10 +925,10 @@ async def master_profile(
     try:
         for svc in services:
             # svc tuple: (id, name, category, price_cents, currency)
-            name_val = svc[1] if isinstance(svc, (list, tuple)) and len(svc) > 1 else None
-            sid_val = svc[0] if isinstance(svc, (list, tuple)) and len(svc) > 0 else None
-            price_val = svc[3] if isinstance(svc, (list, tuple)) and len(svc) > 3 else None
-            curr_val = svc[4] if isinstance(svc, (list, tuple)) and len(svc) > 4 else None
+            name_val = svc[1] if isinstance(svc, (list | tuple)) and len(svc) > 1 else None
+            sid_val = svc[0] if isinstance(svc, (list | tuple)) and len(svc) > 0 else None
+            price_val = svc[3] if isinstance(svc, (list | tuple)) and len(svc) > 3 else None
+            curr_val = svc[4] if isinstance(svc, (list | tuple)) and len(svc) > 4 else None
             if name_val:
                 specialities.append(str(name_val))
             # Pick duration override if present
@@ -995,7 +992,7 @@ async def master_profile(
 
 @app.get("/api/masters_for_service", response_model=list[MasterOut])
 async def masters_for_service(
-    service_id: str, principal: Principal = Depends(get_current_principal)
+    service_id: str, principal: Annotated[Principal, Depends(get_current_principal)]
 ) -> list[MasterOut]:
     masters = await MasterRepo.get_masters_for_service(service_id)
     return [
@@ -1005,7 +1002,8 @@ async def masters_for_service(
 
 @app.post("/api/price_quote", response_model=PriceQuoteResponse)
 async def price_quote(
-    payload: PriceQuoteRequest, principal: Principal = Depends(get_current_principal)
+    payload: PriceQuoteRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> PriceQuoteResponse:
     """Calculate final price on the server to keep Mini App and bot in sync."""
     try:
@@ -1047,8 +1045,8 @@ async def price_quote(
 
 @app.get("/api/bookings", response_model=list[BookingItemOut])
 async def list_bookings(
-    principal: Principal = Depends(get_current_principal),
-    mode: str = Query("upcoming", regex="^(upcoming|history)$"),
+    principal: Annotated[Principal, Depends(get_current_principal)],
+    mode: Annotated[str, Query(pattern="^(upcoming|history)$")] = "upcoming",
 ) -> list[BookingItemOut]:
     # Use repository helper that implements correct SQL-level filtering for
     # active/upcoming bookings (includes RESERVED/PENDING_PAYMENT and
@@ -1058,7 +1056,6 @@ async def list_bookings(
     else:
         bookings = await BookingRepo.list_history_by_user(int(principal.user_id), limit=100)
 
-    now_utc = datetime.now(UTC)
     result: list[BookingItemOut] = []
 
     for b in bookings:
@@ -1200,7 +1197,8 @@ async def list_bookings(
 @app.post("/api/cancel", response_model=BookingResponse)
 @booking_error_handler("cancel_failed")
 async def cancel_booking(
-    payload: CancelRequest, principal: Principal = Depends(get_current_principal)
+    payload: CancelRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     res: BookingResult = await process_booking_cancellation(
         principal.user_id, principal.telegram_id, payload.booking_id
@@ -1216,7 +1214,8 @@ async def cancel_booking(
 @app.post("/api/reschedule", response_model=BookingResponse)
 @booking_error_handler("reschedule_failed")
 async def reschedule_booking(
-    payload: RescheduleRequest, principal: Principal = Depends(get_current_principal)
+    payload: RescheduleRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     res: BookingResult = await process_booking_reschedule(
         principal.user_id,
@@ -1238,7 +1237,7 @@ async def reschedule_booking(
 @booking_error_handler("booking_failed")
 async def create_booking(
     payload: BookingRequest,
-    principal: Principal = Depends(get_current_principal),
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     payment_method = payload.payment_method or "cash"
     requested_master_id = payload.master_id
@@ -1417,7 +1416,8 @@ async def create_booking(
 @app.post("/api/finalize", response_model=BookingResponse)
 @booking_error_handler("finalize_failed")
 async def finalize_booking(
-    payload: dict, principal: Principal = Depends(get_current_principal)
+    payload: dict,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     """Finalize an existing draft booking created with a hold.
 
@@ -1449,7 +1449,8 @@ async def finalize_booking(
 @app.post("/api/create_invoice", response_model=BookingResponse)
 @booking_error_handler("invoice_failed")
 async def create_invoice(
-    payload: InvoiceRequest, principal: Principal = Depends(get_current_principal)
+    payload: InvoiceRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     """Create a Telegram invoice link for an existing booking and return it to the WebApp.
 
@@ -1468,7 +1469,8 @@ async def create_invoice(
 @app.get("/api/booking_details", response_model=BookingResponse)
 @booking_error_handler("details_failed")
 async def booking_details(
-    booking_id: int, principal: Principal = Depends(get_current_principal)
+    booking_id: int,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     res: BookingResult = await process_booking_details(principal.user_id, booking_id)
     return BookingResponse(
@@ -1482,7 +1484,8 @@ async def booking_details(
 @app.post("/api/rate", response_model=BookingResponse)
 @booking_error_handler("rating_failed")
 async def rate_booking(
-    payload: RatingRequest, principal: Principal = Depends(get_current_principal)
+    payload: RatingRequest,
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     res: BookingResult = await process_booking_rating(
         principal.user_id, payload.booking_id, payload.rating

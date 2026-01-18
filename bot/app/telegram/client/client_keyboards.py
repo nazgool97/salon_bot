@@ -1,7 +1,10 @@
 from __future__ import annotations
+
+import contextlib
 import logging
 from datetime import date, datetime, timedelta, time as dt_time
-from typing import Any, Literal, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -24,28 +27,19 @@ from bot.app.telegram.common.callbacks import (
     CancelTimeCB,
     TimeAdjustCB,
 )
-from bot.app.telegram.common.callbacks import MasterMenuCB, NavCB, ClientMenuCB, RatingCB
-from bot.app.telegram.common.callbacks import MasterServicesCB, MastersListCB
+from bot.app.telegram.common.callbacks import NavCB, ClientMenuCB, RatingCB
+from bot.app.telegram.common.callbacks import MastersListCB
 from bot.app.telegram.common.callbacks import PayCB
 from bot.app.telegram.common.roles import is_admin, is_master
-from bot.app.domain.models import Master, MasterService, Service
 from bot.app.services.shared_services import (
     safe_get_locale as _get_locale,
     default_language,
-    format_date,
-    format_money_cents,
     local_now,
     format_slot_label,
     is_online_payments_available,
 )
 
-from aiogram.types import CallbackQuery
-from aiogram.fsm.context import FSMContext
 from bot.app.translations import t, tr as _tr
-from bot.app.telegram.common.navigation import nav_push  # Добавляем импорт
-from bot.app.telegram.common.ui_fail_safe import safe_edit  # Добавляем импорт
-from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 def get_back_button() -> InlineKeyboardMarkup:
@@ -242,10 +236,7 @@ async def get_minute_picker_kb(
     normalized_booking = int(booking_id or 0)
     for m in sorted(set(int(x) for x in minutes)):
         # Display minutes as requested: '00', '5', '10', '15', ...
-        if int(m) == 0:
-            label = "00"
-        else:
-            label = str(int(m))
+        label = "00" if int(m) == 0 else str(int(m))
         compact = f"{int(hour):02d}{int(m):02d}"
         if action == "reschedule":
             cb = pack_cb(
@@ -297,7 +288,6 @@ async def get_compact_time_picker_kb(
         pack_cb,
         TimeAdjustCB,
         TimeCB,
-        CancelTimeCB,
         RescheduleCB,
     )
 
@@ -598,7 +588,6 @@ async def get_calendar_keyboard(
         )
         year, month = max_date.year, max_date.month
 
-    today = local_now().date()
     buttons: list[list[InlineKeyboardButton]] = []
 
     # Заголовок месяца с локализацией
@@ -853,7 +842,6 @@ def build_rating_keyboard(booking_id: int) -> InlineKeyboardMarkup:
     """Генерирует клавиатуру для выбора рейтинга бронирования."""
     lang = default_language()
     builder = InlineKeyboardBuilder()
-    from typing import cast, Any
 
     for i in range(1, 6):
         builder.row(
@@ -885,7 +873,9 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
 
         builder = InlineKeyboardBuilder()
         lang = await _resolve_lang(telegram_id)
-        _t = lambda key, default: _localize(key, lang, default)
+
+        def _t(key: str, default: str) -> str:
+            return _localize(key, lang, default)
 
         # Optional Telegram Mini App entry (shown only when enabled and URL is configured)
         try:
@@ -953,8 +943,7 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
     """
     try:
         from aiogram.utils.keyboard import InlineKeyboardBuilder
-        from bot.app.telegram.common.callbacks import pack_cb, NavCB, BookingsPageCB
-        from bot.app.translations import tr
+        from bot.app.telegram.common.callbacks import pack_cb, NavCB
 
         # Import role-specific booking callbacks lazily to avoid cycles
         if str(role).lower() == "client":
@@ -963,22 +952,6 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
             from bot.app.telegram.common.callbacks import MasterBookingsCB as RoleCB
         else:
             from bot.app.telegram.common.callbacks import AdminBookingsCB as RoleCB
-
-        FiltersCB = None
-        if str(role).lower() == "master":
-            try:
-                from bot.app.telegram.common.callbacks import MasterMenuCB
-
-                FiltersCB = MasterMenuCB
-            except Exception:
-                FiltersCB = None
-        elif str(role).lower() == "admin":
-            try:
-                from bot.app.telegram.common.callbacks import AdminMenuCB
-
-                FiltersCB = AdminMenuCB
-            except Exception:
-                FiltersCB = None
 
         kb = InlineKeyboardBuilder()
 
@@ -1181,7 +1154,8 @@ async def get_payment_keyboard(
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Генерирует клавиатуру выбора оплаты и текст заголовка."""
     lang = await _resolve_lang(user_id)
-    _t = lambda key, default: _localize(key, lang, default)
+    def _t(key: str, default: str) -> str:
+        return _localize(key, lang, default)
 
     try:
         from bot.app.services.client_services import build_booking_details
@@ -1283,8 +1257,6 @@ __all__ = [
 ]
 
 # ---------------- UI renderers moved from shared_services (SoC) ---------------- #
-from typing import Any, Sequence
-from datetime import datetime, UTC
 
 
 # format_master_profile_text lives in `bot.app.services.master_services` (service layer formatter)
@@ -1318,7 +1290,6 @@ async def build_my_bookings_keyboard(
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         from bot.app.telegram.common.callbacks import BookingActionCB, pack_cb
         from bot.app.telegram.common.callbacks import NavCB
-        from bot.app.services import shared_services
 
         meta = {
             "mode": filter_mode,
@@ -1369,17 +1340,13 @@ async def build_my_bookings_keyboard(
         # Build per-booking rows
         booking_rows: list[list[InlineKeyboardButton]] = []
         # Choose per-row action depending on role so master/admin get detail card
-        if str(role).lower() == "master":
-            row_act = "master_detail"
-        else:
-            # client and admin default to the client-detail handler 'details'
-            row_act = "details"
+        row_act = "master_detail" if str(role).lower() == "master" else "details"
 
         for row in formatted_rows:
             try:
                 # Expect callers to pass pre-formatted rows (text, booking_id) so
                 # this UI builder does not perform formatting or DB access.
-                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                if isinstance(row, list | tuple) and len(row) >= 2:
                     text, bid = row[0], row[1]
                 else:
                     # Backward compatibility: fall back to a safe placeholder
@@ -1481,7 +1448,7 @@ def build_booking_card_kb(
                     master_id = None
                     try:
                         raw_mid = None
-                        if hasattr(data, "raw") and isinstance(getattr(data, "raw"), dict):
+                        if hasattr(data, "raw") and isinstance(data.raw, dict):
                             raw_mid = getattr(data, "raw", {}).get("master_id")
                         elif isinstance(data, dict):
                             raw_mid = data.get("master_id")
@@ -1505,7 +1472,7 @@ def build_booking_card_kb(
                         ),
                     )
             except Exception:
-                pass
+                logger.exception("Failed to build booking action buttons", exc_info=True)
         else:
             try:
                 kb.button(
@@ -1529,7 +1496,7 @@ def build_booking_card_kb(
                 # Determine whether a client note already exists; adjust button label accordingly
                 try:
                     note = None
-                    if hasattr(data, "raw") and isinstance(getattr(data, "raw"), dict):
+                    if hasattr(data, "raw") and isinstance(data.raw, dict):
                         note = getattr(data, "raw", {}).get("note")
                     elif isinstance(data, dict):
                         note = data.get("note")
@@ -1552,15 +1519,13 @@ def build_booking_card_kb(
                         )
                 except Exception:
                     # Fallback to generic add note label
-                    try:
+                    with contextlib.suppress(Exception):
                         kb.button(
                             text=_tr("booking_add_note_button", lang=lang),
                             callback_data=pack_cb(
                                 BookingActionCB, act="add_note", booking_id=int(booking_id)
                             ),
                         )
-                    except Exception:
-                        pass
                 can_cancel = (
                     getattr(data, "can_cancel", False)
                     if hasattr(data, "can_cancel")

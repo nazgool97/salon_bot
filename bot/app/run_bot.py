@@ -155,7 +155,7 @@ async def main() -> None:
             if len(args) >= 1:
                 first = args[0]
                 if hasattr(first, "exception"):
-                    return getattr(first, "exception")
+                    return first.exception
 
             # fallback: try to find any Exception instance in args
             for a in args:

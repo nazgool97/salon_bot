@@ -27,13 +27,13 @@ class _UserServiceShim:
 user_service = _UserServiceShim()
 
 # Legacy module hooks: annotate as Optional[ModuleType] to satisfy static checkers
-payment_service: Optional[ModuleType]
+payment_service: ModuleType | None
 try:  # expose payment_service module for legacy monkeypatch target paths
     payment_service = _il.import_module("bot.app.services.client.payment_service")
 except Exception:  # pragma: no cover
     payment_service = None
 
-i18n_service: Optional[ModuleType]
+i18n_service: ModuleType | None
 try:
     i18n_service = _il.import_module("bot.app.services.shared.i18n_service")
 except Exception:  # pragma: no cover

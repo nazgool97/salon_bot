@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.app.telegram.client.client_keyboards import get_simple_kb, build_bookings_dashboard_kb
 from bot.app.telegram.common.callbacks import pack_cb, MasterMenuCB, MasterScheduleCB, NavCB
 from bot.app.translations import t, tr
-from typing import Any, cast
 import logging
 
 logger = logging.getLogger(__name__)
@@ -82,9 +83,9 @@ def get_schedule_day_preview_kb(
     builder = InlineKeyboardBuilder()
     # Show each window as a removable row
     if windows:
-        for idx, w in enumerate(windows):
+        for _idx, w in enumerate(windows):
             try:
-                if isinstance(w, (list, tuple)) and len(w) >= 2:
+                if isinstance(w, list | tuple) and len(w) >= 2:
                     label = f"{w[0]}-{w[1]}"
                     # Provide both index and value tokens so removal can be value-based (safer under concurrency)
                     start_token = str(w[0])
@@ -246,10 +247,8 @@ def get_time_end_kb(
                 # skip problematic entry
                 continue
         # Back returns to day actions
-        try:
+        with contextlib.suppress(Exception):
             builder.adjust(4)
-        except Exception:
-            pass
         try:
             back_button = InlineKeyboardButton(
                 text=f"{t('back', lang=lang)}",

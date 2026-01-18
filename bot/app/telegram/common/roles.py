@@ -5,6 +5,7 @@ from __future__ import annotations
 Usage:
     from .roles import ensure_role, ensure_admin, ensure_master
 """
+import contextlib
 import logging
 from typing import Literal
 
@@ -31,10 +32,8 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
     allowed = False
     # Temporary debug: record attempts to run role checks so we can diagnose
     # routing problems where messages from admins are not accepted.
-    try:
+    with contextlib.suppress(Exception):
         logger.debug("ensure_role: checking role=%s for uid=%s", role, uid)
-    except Exception:
-        pass
     try:
         if role == "admin":
             allowed = bool(uid) and bool(await is_admin(int(uid or 0)))
@@ -67,12 +66,9 @@ async def ensure_role(obj: Message | CallbackQuery, role: RoleType) -> bool:
             # acknowledge the callback instead of showing an alert. During
             # debugging you can re-enable alerts or call `ensure_admin` from
             # code paths that should explicitly notify non-admins.
-            try:
+            with contextlib.suppress(Exception):
                 # Silent acknowledge: no visible alert will be shown to the user.
                 await obj.answer()
-            except Exception:
-                # Best-effort: if answering fails, ignore to avoid spamming logs
-                pass
     except Exception as send_err:
         logger.warning("Failed to send access denied message: %s", send_err)
     return False
@@ -121,7 +117,7 @@ async def is_admin_db(user_id: int) -> bool:
     try:
         async with get_session() as session:
             result = await session.execute(
-                select(User).where(User.telegram_id == user_id, User.is_admin == True)
+                select(User).where(User.telegram_id == user_id, User.is_admin.is_(True))
             )
             found = result.scalar_one_or_none() is not None
             logger.debug("is_admin_db: user_id=%s found=%s", user_id, found)

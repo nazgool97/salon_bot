@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from bot.app.domain.models import BookingStatus
 from bot.app.translations import tr
@@ -52,7 +52,7 @@ async def get_status_label(status: Any, lang: str | None = None) -> str:
         return str(status)
 
 
-async def ensure_booking_owner(user_id: int, booking_id: int) -> Optional[object]:
+async def ensure_booking_owner(user_id: int, booking_id: int) -> object | None:
     """Проверяет, принадлежит ли запись пользователю.
 
     Делегирует работу в сервисный слой (`bot.app.services.master_services.ensure_booking_owner`).
