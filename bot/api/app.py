@@ -15,7 +15,8 @@ import urllib.parse
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
-from typing import Any, Annotated, Awaitable, Callable, ParamSpec, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any, Annotated, ParamSpec, TypeVar
 from enum import Enum
 
 import jwt

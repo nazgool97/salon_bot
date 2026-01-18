@@ -1189,6 +1189,13 @@ class SettingsRepo:
         return SettingsRepo._coerce_int(await SettingsRepo.get_setting("slot_duration", 60), 60)
 
     @staticmethod
+    async def get_slot_tick_minutes() -> int:
+        """Return minute tick step for time pickers (defaults to 5)."""
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("slot_tick_minutes", 5), 5
+        )
+
+    @staticmethod
     async def get_currency() -> str:
         """Return configured currency (ISO 4217) with ENV fallback.
 

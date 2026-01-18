@@ -1923,7 +1923,7 @@ async def get_available_time_slots_for_services(
             # otherwise fall back to 5 minutes which provides fine-grained
             # selection for clients.
             try:
-                slot_step_min = await SettingsRepo.get_slot_tick_minutes()  # type: ignore[attr-defined]
+                slot_step_min = await SettingsRepo.get_slot_tick_minutes()
                 slot_step_min = int(slot_step_min or 0)
             except Exception:
                 slot_step_min = 0

@@ -3,7 +3,7 @@ import contextlib
 from contextlib import suppress
 import logging
 import re
-from typing import Any
+from typing import Any, Protocol, ParamSpec, TypeVar, Literal, cast
 from collections.abc import Callable, Awaitable
 from dataclasses import replace
 from decimal import Decimal, ROUND_HALF_UP
@@ -33,8 +33,9 @@ from aiogram.exceptions import TelegramAPIError
 from datetime import datetime, UTC
 from zoneinfo import ZoneInfo
 
-from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler
+from bot.app.telegram.common.ui_fail_safe import safe_edit, safe_handler, SafeUIMiddleware
 from bot.app.telegram.common.navigation import nav_push, nav_back, nav_replace
+from bot.app.telegram.common.locale_middleware import LocaleMiddleware
 from bot.app.telegram.common.callbacks import (
     ServiceSelectCB,
     ServiceToggleCB,
@@ -59,7 +60,9 @@ from bot.app.core.constants import (
     DEFAULT_PAGE_SIZE,
     DEFAULT_SERVICE_FALLBACK_DURATION,
 )
-from typing import Protocol
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 # Structural protocols for dynamic CallbackData subclasses (improves static checking)
@@ -100,6 +103,7 @@ from bot.app.services.shared_services import (
     format_date,
     get_local_tz,
 )
+from bot.app.telegram.common.navigation import show_main_client_menu as show_main_menu
 from bot.app.telegram.client.client_keyboards import get_back_button, get_simple_kb
 from bot.app.translations import t
 import bot.app.translations as i18n
@@ -127,6 +131,26 @@ from bot.app.services.master_services import MasterRepo
 # Master FSM moved to master router (kept minimal here)
 
 logger = logging.getLogger(__name__)
+
+client_router = Router(name="client")
+# Locale middleware provides `locale: str` to handlers
+client_router.message.middleware(LocaleMiddleware())
+client_router.callback_query.middleware(LocaleMiddleware())
+# Safe UI middleware for consistent error handling
+client_router.message.middleware(SafeUIMiddleware())
+client_router.callback_query.middleware(SafeUIMiddleware())
+
+
+class BookingStates(StatesGroup):
+    """FSM states for client booking and reschedule flows."""
+
+    waiting_for_service = State()
+    waiting_for_master = State()
+    waiting_for_date = State()
+    reschedule_select_date = State()
+    reschedule_select_time = State()
+    choosing_hour = State()
+    choosing_minute = State()
 
 
 async def _int_setting(getter: Callable[[], Awaitable[Any]], default: int) -> int:
@@ -156,8 +180,9 @@ def _get_cb_user_id(cb: CallbackQuery) -> int | None:
         user = getattr(cb, "from_user", None)
         if user is None:
             return None
-        return user.id
-    except (AttributeError, TypeError):
+        uid = getattr(user, "id", None)
+        return int(uid) if isinstance(uid, (int, str)) else None
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
@@ -167,55 +192,48 @@ def _get_message_user_id(message: Message) -> int | None:
         user = getattr(message, "from_user", None)
         if user is None:
             return None
-        return user.id
-    except (AttributeError, TypeError):
+        uid = getattr(user, "id", None)
+        return int(uid) if isinstance(uid, (int, str)) else None
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
-# Decorator to centralize extraction/validation of common IDs used by handlers.
 def require_ids(
     *, require_user: bool = False, require_master: bool = False, resolve_master: bool = True
-):
+) -> Callable[[Callable[P, Awaitable[Any]]], Callable[P, Awaitable[Any]]]:
     from functools import wraps
 
-    def _decorator(fn):
+    def _decorator(fn: Callable[P, Awaitable[Any]]) -> Callable[P, Awaitable[Any]]:
         @wraps(fn)
-        async def _wrapped(*args, **kwargs):
-            # Try to find CallbackQuery in positional args or kwargs
-            cb = None
-            if args:
-                maybe = args[0]
-                from aiogram.types import CallbackQuery
+        async def _wrapped(*args: P.args, **kwargs: P.kwargs) -> Any:
+            cb: CallbackQuery | None = None
+            if args and isinstance(args[0], CallbackQuery):
+                cb = args[0]
+            cb_extra = kwargs.get("cb") or kwargs.get("callback")
+            if cb is None and isinstance(cb_extra, CallbackQuery):
+                cb = cb_extra
 
-                if isinstance(maybe, CallbackQuery):
-                    cb = maybe
-            cb = cb or kwargs.get("cb") or kwargs.get("callback")
+            callback_data: Any = args[1] if len(args) >= 2 else kwargs.get("callback_data")
 
-            # try to find callback_data
-            callback_data = args[1] if len(args) >= 2 else kwargs.get("callback_data")
-
-            # extract user id
-            user_id = None
+            user_id: int | None = None
             try:
                 if cb is not None and getattr(cb, "from_user", None) is not None:
-                    user_id = getattr(cb.from_user, "id", None)
+                    uid = getattr(cb.from_user, "id", None)
+                    user_id = int(uid) if isinstance(uid, (int, str)) else None
             except Exception:
                 user_id = None
 
             if require_user and user_id is None:
-                try:
-                    if cb is not None:
-                        await cb.answer(
-                            t("error_retry", kwargs.get("locale") or ""), show_alert=True
-                        )
-                except Exception:
-                    logger.exception("require_ids: failed to answer invalid user")
-                return
+                if cb is not None:
+                    loc = kwargs.get("locale")
+                    loc_str = str(loc) if isinstance(loc, str) else ""
+                    with suppress(Exception):
+                        await cb.answer(t("error_retry", loc_str), show_alert=True)
+                return None
 
-            # extract/resolve master id if needed
-            master_id = None
+            master_id: int | None = cast(int | None, kwargs.get("master_id"))
             if require_master:
-                raw_mid = None
+                raw_mid: Any = None
                 try:
                     if callback_data is not None:
                         raw_mid = getattr(callback_data, "master_id", None) or getattr(
@@ -225,101 +243,57 @@ def require_ids(
                         raw_mid = kwargs.get("master_id")
                     if raw_mid is None:
                         if cb is not None:
-                            await cb.answer(
-                                t("invalid_data", kwargs.get("locale") or ""), show_alert=True
-                            )
-                        return
+                            loc = kwargs.get("locale")
+                            loc_str = str(loc) if isinstance(loc, str) else ""
+                            with suppress(Exception):
+                                await cb.answer(t("invalid_data", loc_str), show_alert=True)
+                        return None
                     mid_int = int(raw_mid)
                 except Exception:
-                    try:
-                        if cb is not None:
-                            await cb.answer(
-                                t("invalid_data", kwargs.get("locale") or ""), show_alert=True
-                            )
-                    except Exception:
-                        logger.exception("require_ids: failed to answer invalid master id")
-                    return
+                    if cb is not None:
+                        loc = kwargs.get("locale")
+                        loc_str = str(loc) if isinstance(loc, str) else ""
+                        with suppress(Exception):
+                            await cb.answer(t("invalid_data", loc_str), show_alert=True)
+                    return None
 
                 if resolve_master:
                     try:
                         resolved = await MasterRepo.resolve_master_id(mid_int)
                         if not resolved:
                             if cb is not None:
-                                await cb.answer(
-                                    t("master_not_found", kwargs.get("locale") or ""),
-                                    show_alert=True,
-                                )
-                            return
+                                loc = kwargs.get("locale")
+                                loc_str = str(loc) if isinstance(loc, str) else ""
+                                with suppress(Exception):
+                                    await cb.answer(
+                                        t("master_not_found", loc_str),
+                                        show_alert=True,
+                                    )
+                            return None
                         master_id = int(resolved)
                     except Exception:
                         logger.exception("require_ids: master resolution failed for %s", mid_int)
                         if cb is not None:
-                            try:
-                                await cb.answer(
-                                    t("invalid_data", kwargs.get("locale") or ""), show_alert=True
-                                )
-                            except Exception:
-                                logger.exception("require_ids: failed to answer")
-                        return
+                            loc = kwargs.get("locale")
+                            loc_str = str(loc) if isinstance(loc, str) else ""
+                            with suppress(Exception):
+                                await cb.answer(t("invalid_data", loc_str), show_alert=True)
+                        return None
                 else:
                     master_id = mid_int
 
-            # inject args if handler expects them
-            from inspect import signature
+            kwargs.setdefault("user_id", user_id)
+            if require_master:
+                kwargs.setdefault("master_id", master_id)
 
-            sig = signature(fn)
-            call_kwargs = dict(kwargs)
-            if "user_id" in sig.parameters:
-                call_kwargs["user_id"] = user_id
-            if "master_id" in sig.parameters:
-                call_kwargs["master_id"] = master_id
+            return await fn(*args, **kwargs)
 
-            return await fn(*args, **call_kwargs)
-
-        return _wrapped
+        return cast(Callable[P, Awaitable[Any]], _wrapped)
 
     return _decorator
 
 
-# Определяем маршрутизатор один раз
-client_router = Router(name="client")
-# Attach locale middleware used elsewhere
-from bot.app.telegram.common.locale_middleware import LocaleMiddleware
-from bot.app.telegram.common.ui_fail_safe import SafeUIMiddleware
-
-client_router.message.middleware(LocaleMiddleware())
-client_router.callback_query.middleware(LocaleMiddleware())
-# Attach Safe UI middleware to centralize user checks and error handling
-client_router.message.middleware(SafeUIMiddleware())
-client_router.callback_query.middleware(SafeUIMiddleware())
-# Error handlers now registered only globally in run_bot.py to simplify debugging.
-
-
-# Use `get_local_tz()` where needed instead of importing a module-level local timezone
-
-
-class BookingStates(StatesGroup):
-    """Состояния FSM для процесса бронирования."""
-
-    waiting_for_service = State()
-    waiting_for_master = State()
-    waiting_for_date = State()
-    reschedule_select_date = State()
-    reschedule_select_time = State()
-    choosing_hour = State()
-    choosing_minute = State()
-
-
-from bot.app.telegram.common.navigation import show_main_client_menu as show_main_menu
-
-
-# Locale lookups are provided by LocaleMiddleware; handlers receive `locale: str`.
-
-
-# Legacy debug handler removed.
-
-
-def with_booking_details(func):
+def with_booking_details(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     """Decorator for callback handlers that operate on a single booking.
 
     The decorator extracts `booking_id` from `callback_data`, resolves the
@@ -332,24 +306,21 @@ def with_booking_details(func):
     from functools import wraps
 
     @wraps(func)
-    async def _wrapped(cb: CallbackQuery, callback_data: Any, *args, **kwargs):
-        booking_id_raw = getattr(callback_data, "booking_id", None)
-        if booking_id_raw is None:
-            await cb.answer()
-            return
+    async def _wrapped(cb: CallbackQuery, callback_data: Any, *args: Any, **kwargs: Any) -> Any:
         try:
+            booking_id_raw = getattr(callback_data, "booking_id", None)
+            if booking_id_raw is None:
+                await cb.answer()
+                return None
             booking_id = int(booking_id_raw)
         except (TypeError, ValueError):
             await cb.answer()
-            return
+            return None
 
         user_id = cb.from_user.id if cb.from_user else None
 
-        # Resolve locale similarly to other handlers. We accept injected
-        # `locale` either as kwarg or as the third positional argument.
         locale = kwargs.get("locale")
         if locale is None and len(args) >= 1:
-            # args[0] corresponds to the positional `locale` when present
             locale = args[0]
 
         locale_value = locale
@@ -365,18 +336,16 @@ def with_booking_details(func):
             bd = await build_booking_details(int(booking_id), user_id=user_id, lang=lang)
             if not bd or not getattr(bd, "booking_id", None):
                 await cb.answer(t("booking_not_found", lang), show_alert=True)
-                return
+                return None
         except (ImportError, AttributeError, ValueError, SQLAlchemyError):
-            # On unexpected errors from building booking details, surface a generic message and do not call handler
             await cb.answer(t("booking_not_found", lang), show_alert=True)
-            return
+            return None
 
-        # Call the original handler with booking_details and resolved lang injected
         kwargs.setdefault("booking_details", bd)
         kwargs.setdefault("lang", lang)
-        await func(cb, callback_data, *args, **kwargs)
+        return await func(cb, callback_data, *args, **kwargs)
 
-    return _wrapped
+    return cast(Callable[..., Awaitable[Any]], _wrapped)
 
 
 # Master menu callbacks are handled by the `master_router` to avoid routing
@@ -406,7 +375,9 @@ async def cmd_start_plaintext(message: Message, state: FSMContext, locale: str) 
 
 
 @client_router.callback_query(ClientMenuCB.filter(F.act == "booking_service"))
-async def start_booking(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def start_booking(
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Инициирует процесс бронирования, показывая меню услуг.
 
     Args:
@@ -492,7 +463,7 @@ async def start_booking(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "cancel_and_root"))
 async def cancel_reservation_and_root(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Delete a freshly created RESERVED booking (used by payment 'Menu') and always return to main menu.
 
@@ -532,7 +503,9 @@ async def cancel_reservation_and_root(
 
 
 @client_router.callback_query(ServiceSelectCB.filter())
-async def select_service(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def select_service(
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Обрабатывает выбор услуги и показывает список мастеров.
 
     Args:
@@ -573,7 +546,8 @@ async def select_service(cb: CallbackQuery, callback_data, state: FSMContext, lo
         from types import SimpleNamespace
 
         cb_shim = SimpleNamespace(master_id=forced_mid, service_id=service_id)
-        return await select_master(cb, cb_shim, state, locale)
+        await select_master(cb, cb_shim, state, locale)
+        return None
     # Prefetch masters list in handler (keyboards should be UI-only)
     # Use the stable module-level facade to avoid class-binding/import timing issues
     masters_list = await MasterRepo.get_masters_for_service(service_id)
@@ -604,7 +578,7 @@ async def select_service(cb: CallbackQuery, callback_data, state: FSMContext, lo
 @client_router.callback_query(ClientMenuCB.filter(F.act == "masters_list"))
 @client_router.callback_query(MastersListCB.filter())
 async def show_masters_catalog(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Показывает список всех мастеров без привязки к услуге."""
     # Resolve target page
@@ -715,7 +689,7 @@ async def show_services_for_master(
 @require_ids(require_user=True, require_master=True)
 async def select_master(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -847,7 +821,7 @@ async def select_master(
 @require_ids(require_user=True, require_master=True)
 async def navigate_calendar(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -970,7 +944,7 @@ async def navigate_calendar(
 @require_ids(require_user=True, require_master=True)
 async def select_date(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -1152,7 +1126,7 @@ async def select_date(
 @require_ids(require_user=True, require_master=True)
 async def hours_view_handler(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -1170,7 +1144,7 @@ async def hours_view_handler(
     service_id = str(getattr(callback_data, "service_id", "") or "")
 
     # Try to retrieve cached slots for the date from state; fallback to recomputing
-    slots = []
+    slots: list[Any] = []
     try:
         data = await state.get_data()
         cached = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
@@ -1287,7 +1261,7 @@ async def hours_view_handler(
 @require_ids(require_user=True, require_master=True)
 async def hour_chosen_handler(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -1311,7 +1285,7 @@ async def hour_chosen_handler(
         return
 
     # Retrieve cached slots (compact strings) or recompute
-    slots = []
+    slots: list[Any] = []
     try:
         data = await state.get_data()
         cached = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
@@ -1367,9 +1341,11 @@ async def hour_chosen_handler(
             slots = []
 
     # Filter slots for the chosen hour (supports compact strings)
-    minutes = []
+    minutes: list[int] = []
     if slots and isinstance(slots[0], str):
         for s in slots:
+            if not isinstance(s, str):
+                continue
             try:
                 hh = int(s[:2])
                 mm = int(s[2:4])
@@ -1379,7 +1355,7 @@ async def hour_chosen_handler(
                 minutes.append(mm)
         minutes = sorted(set(minutes))
     else:
-        minutes = sorted({s.minute for s in slots if s.hour == hour})
+        minutes = sorted({s.minute for s in slots if isinstance(s, datetime) and s.hour == hour})
     logger.info(
         "hour_chosen_handler: derived minutes=%s for hour=%s (count slots=%d)",
         minutes,
@@ -1407,15 +1383,17 @@ async def hour_chosen_handler(
             # Reconstruct full slots as datetimes in local tz to compute max
             # Resolve local timezone once for this computation
             local_tz = get_local_tz() or ZoneInfo("UTC")
-            base_dt = datetime.fromisoformat(selected_date).date()
+            base_date = datetime.fromisoformat(selected_date).date()
             slot_datetimes: list[datetime] = []
             if slots and isinstance(slots[0], str):
                 for s in slots:
+                    if not isinstance(s, str):
+                        continue
                     try:
                         hh = int(s[:2])
                         mm = int(s[2:4])
                         slot_datetimes.append(
-                            datetime.combine(base_dt, datetime.min.time()).replace(
+                            datetime.combine(base_date, datetime.min.time()).replace(
                                 hour=hh, minute=mm, tzinfo=local_tz
                             )
                         )
@@ -1423,9 +1401,16 @@ async def hour_chosen_handler(
                         continue
             else:
                 for s in slots:
-                    try:
-                        slot_datetimes.append(datetime.combine(base_dt, s).replace(tzinfo=local_tz))
-                    except Exception:
+                    if isinstance(s, datetime):
+                        try:
+                            slot_datetimes.append(
+                                datetime.combine(base_date, s.time()).replace(
+                                    tzinfo=s.tzinfo or local_tz
+                                )
+                            )
+                        except Exception:
+                            continue
+                    else:
                         continue
             latest_slot = max(slot_datetimes) if slot_datetimes else None
         except Exception:
@@ -1435,9 +1420,9 @@ async def hour_chosen_handler(
         filtered: list[int] = []
         for m in candidate_minutes:
             try:
-                candidate_dt = datetime.combine(
-                    datetime.fromisoformat(selected_date).date(), datetime.min.time()
-                ).replace(hour=hour, minute=int(m), tzinfo=local_tz)
+                candidate_dt = datetime.combine(base_date, datetime.min.time()).replace(
+                    hour=hour, minute=int(m), tzinfo=local_tz
+                )
                 if latest_slot is None or candidate_dt <= latest_slot:
                     filtered.append(int(m))
             except Exception:
@@ -1451,7 +1436,7 @@ async def hour_chosen_handler(
 
     # Determine action (booking vs reschedule)
     cur_state = await state.get_state()
-    action = "booking"
+    action: Literal["booking", "reschedule"] = "booking"
     booking_id = None
     if cur_state and "reschedule_select_date" in str(cur_state):
         action = "reschedule"
@@ -1490,7 +1475,7 @@ async def hour_chosen_handler(
 @require_ids(require_user=True, require_master=True)
 async def compact_time_adjust_handler(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     state: FSMContext,
     locale: str,
     user_id: int | None = None,
@@ -1710,7 +1695,7 @@ async def compact_time_adjust_handler(
 
 @client_router.callback_query(CancelTimeCB.filter())
 async def cancel_time_handler(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Cancel time picking flow: clear relevant FSM data and navigate back."""
     with suppress(Exception):
@@ -1731,7 +1716,9 @@ async def cancel_time_handler(
     await cb.answer()
 
 
-async def _fetch_services_and_totals(state: FSMContext | None, selected: set[str] | None = None):
+async def _fetch_services_and_totals(
+    state: FSMContext | None, selected: set[str] | None = None
+) -> tuple[dict[str, str], dict[str, int | str | None], dict[str, tuple[int, int]]]:
     """Helper: return (services_dict, totals_dict) for the current context.
 
     - `services_dict` is the mapping service_id->name from get_filtered_services().
@@ -1773,7 +1760,11 @@ async def _fetch_services_and_totals(state: FSMContext | None, selected: set[str
 
         global_currency = _default_currency()
 
-    totals = {"total_minutes": 0, "total_price_cents": 0, "currency": global_currency}
+    totals: dict[str, int | str | None] = {
+        "total_minutes": 0,
+        "total_price_cents": 0,
+        "currency": global_currency,
+    }
     try:
         fd = await state.get_data() if state is not None else {}
         forced_master = fd.get("forced_master_id") if isinstance(fd, dict) else None
@@ -1819,7 +1810,7 @@ async def _fetch_services_and_totals(state: FSMContext | None, selected: set[str
 
 @client_router.callback_query(ClientMenuCB.filter(F.act == "services_multi"))
 async def services_multi_entry(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Entry point for multi-service selection."""
     data = await state.get_data()
@@ -1946,7 +1937,9 @@ async def svc_toggle(
 
 
 @client_router.callback_query(ClientMenuCB.filter(F.act == "svc_done"))
-async def svc_done(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def svc_done(
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Finalize service selection: show masters that support all selected services."""
     data = await state.get_data()
     selected = list(set(data.get("multi_selected") or []))
@@ -2062,7 +2055,7 @@ async def master_multi(
 
 @client_router.callback_query(TimeCB.filter())
 async def select_time_and_create_booking(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Create booking immediately when a time is selected (single and multi-service).
 
@@ -2128,7 +2121,11 @@ async def select_time_and_create_booking(
 @client_router.callback_query(PayCB.filter(F.action == "prep_cash"))
 @with_booking_details
 async def pay_cash_prepare(
-    cb: CallbackQuery, callback_data: HasBookingId, locale: str, lang: str, booking_details=None
+    cb: CallbackQuery,
+    callback_data: HasBookingId,
+    locale: str,
+    lang: str,
+    booking_details: Any | None = None,
 ) -> None:
     """Shows a confirmation screen before confirming cash payment (booking confirmation).
 
@@ -2192,7 +2189,9 @@ async def pay_cash_prepare(
 
 
 @client_router.callback_query(RatingCB.filter())
-async def handle_rating(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def handle_rating(
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Handle booking rating selection (typed RatingCB)."""
     try:
         booking_id = int(callback_data.booking_id)
@@ -2220,7 +2219,7 @@ async def handle_rating(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
     # Hide the rating keyboard after handling the vote (regardless of outcome)
     with suppress(Exception):
-        if cb.message:
+        if isinstance(cb.message, Message):
             txt = getattr(cb.message, "html_text", None) or cb.message.text or ""
             label = t("rating_label", lang) or "Оцінка"
             rating_line = f"{label}: {rating}⭐"
@@ -2234,12 +2233,12 @@ async def handle_rating(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
 @client_router.callback_query(NavCB.filter(F.act == "skip_rating"))
 async def handle_skip_rating(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Allow the client to dismiss the rating keyboard without sending extra text."""
     with suppress(Exception):
         await cb.answer()
-        if cb.message:
+        if isinstance(cb.message, Message):
             txt = getattr(cb.message, "html_text", None) or cb.message.text or ""
             # Drop the inline rating prompt if present and trim trailing whitespace
             prompt = t("rate_prompt_title", locale)
@@ -2436,7 +2435,7 @@ async def my_bookings(
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "details"))
 async def client_booking_details(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Показывает детали записи клиента с расширенной информацией и действиями."""
     booking_id = int(callback_data.booking_id)
@@ -2471,7 +2470,7 @@ async def client_booking_details(
 
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "cancel_confirm"))
-async def cancel_booking_confirm(cb: CallbackQuery, callback_data, locale: str) -> None:
+async def cancel_booking_confirm(cb: CallbackQuery, callback_data: Any, locale: str) -> None:
     """Ask for confirmation before cancelling a booking."""
     booking_id = int(callback_data.booking_id)
     # Enforce client cancellation lock window before even showing confirm
@@ -2510,19 +2509,21 @@ async def cancel_booking_confirm(cb: CallbackQuery, callback_data, locale: str) 
         return
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-    b = InlineKeyboardBuilder()
+    builder = InlineKeyboardBuilder()
     cancel_payload = pack_cb(BookingActionCB, act="cancel", booking_id=int(booking_id))
-    b.button(text=t("confirm", lang), callback_data=cancel_payload)
-    b.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
-    b.adjust(2)
+    builder.button(text=t("confirm", lang), callback_data=cancel_payload)
+    builder.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
+    builder.adjust(2)
     if cb.message:
-        await safe_edit(cb.message, t("cancel_confirm_question", lang), reply_markup=b.as_markup())
+        await safe_edit(
+            cb.message, t("cancel_confirm_question", lang), reply_markup=builder.as_markup()
+        )
     await cb.answer()
 
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "cancel_reservation"))
 async def cancel_reservation_and_go_back(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Cancel a freshly created RESERVED booking (used by payment 'Back') and go back in nav stack.
 
@@ -2647,7 +2648,7 @@ async def show_master_profile(
 
 
 @client_router.callback_query(ClientMenuCB.filter(F.act == "contacts"))
-async def contacts(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def contacts(cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
     """Отображает контактную информацию салона из конфигурации.
     Телефон и адрес показываются текстом, Instagram — кликабельной ссылкой «📷 Instagram».
     """
@@ -2657,7 +2658,7 @@ async def contacts(cb: CallbackQuery, callback_data, state: FSMContext, locale: 
     try:
         from bot.app.translations import t
     except ImportError:
-        t = None  # type: ignore
+        t = None
 
     lang = locale
 
@@ -2713,7 +2714,7 @@ async def contacts(cb: CallbackQuery, callback_data, state: FSMContext, locale: 
 
 @client_router.callback_query(RescheduleCB.filter(F.action == "start"))
 async def client_reschedule_start(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Start client reschedule: show calendar for the booking's master/service."""
     from bot.app.telegram.common.navigation import nav_get_lang
@@ -2823,7 +2824,7 @@ async def client_reschedule_start(
 
 @client_router.callback_query(RescheduleCB.filter(F.action == "time"))
 async def client_reschedule_time(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     lang = locale
     cur = await state.get_state()
@@ -2911,7 +2912,7 @@ async def client_reschedule_confirm(
 
 
 @client_router.callback_query(PayCB.filter(F.action == "online"))
-async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
+async def pay_online(cb: CallbackQuery, callback_data: Any, locale: str) -> None:
     """Генерирует счет Telegram для онлайн-оплаты."""
     try:
         booking_id = int(callback_data.booking_id)
@@ -3054,11 +3055,11 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
         async with get_session() as session:
             b = await session.get(Booking, booking_id)
             if b:
-                b.original_price_cents = int(base_price_cents)  # type: ignore[attr-defined]
-                b.final_price_cents = int(discounted_cents)  # type: ignore[attr-defined]
-                b.discount_amount_cents = int(discount_amount_cents)  # type: ignore[attr-defined]
+                setattr(b, "original_price_cents", int(base_price_cents))
+                setattr(b, "final_price_cents", int(discounted_cents))
+                setattr(b, "discount_amount_cents", int(discount_amount_cents))
                 if currency:
-                    b.currency = currency  # type: ignore[attr-defined]
+                    setattr(b, "currency", currency)
                 await session.commit()
                 await session.refresh(b)
                 booking = b
@@ -3094,10 +3095,10 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
 @with_booking_details
 async def pay_online_prepare(
     cb: CallbackQuery,
-    callback_data,
+    callback_data: Any,
     locale: str,
     lang: str,
-    booking_details=None,
+    booking_details: Any | None = None,
 ) -> None:
     """Shows a confirmation screen before issuing the Telegram invoice."""
     booking_id = int(callback_data.booking_id)
@@ -3212,7 +3213,11 @@ async def pay_online_prepare(
 @client_router.callback_query(PayCB.filter(F.action == "back_methods"))
 @with_booking_details
 async def pay_back_methods(
-    cb: CallbackQuery, callback_data, locale: str, lang: str, booking_details=None
+    cb: CallbackQuery,
+    callback_data: Any,
+    locale: str,
+    lang: str,
+    booking_details: Any | None = None,
 ) -> None:
     """Return to the payment method selection for a booking."""
     bd = booking_details
@@ -3338,7 +3343,9 @@ async def handle_successful_payment(message: Message, locale: str) -> None:
 
 
 @client_router.callback_query(BookingActionCB.filter(F.act == "cancel"))
-async def cancel_booking(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def cancel_booking(
+    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Позволяет пользователю отменить свою будущую бронь и обновляет список."""
     user_tg_id = cb.from_user.id
     booking_id = int(callback_data.booking_id)

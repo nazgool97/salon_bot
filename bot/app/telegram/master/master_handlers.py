@@ -5,7 +5,7 @@ import logging
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InaccessibleMessage, Message
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from bot.app.telegram.common.roles import MasterRoleFilter
@@ -54,6 +54,38 @@ from bot.app.translations import t, tr
 from bot.app.services.shared_services import default_language
 from bot.app.services import master_services
 import bot.app.telegram.common.callbacks as callbacks_mod
+
+
+class MenuCallback(Protocol):
+    page: int | None
+
+
+class ClientInfoData(Protocol):
+    user_id: int | None
+
+
+class ClientNoteData(Protocol):
+    user_id: int | None
+    action: str | None
+
+
+class ScheduleData(Protocol):
+    day: int | str | None
+    time: str | None
+
+
+class ServiceDurationData(Protocol):
+    service_id: int | str | None
+    minutes: int | None
+
+
+class BookingActionData(Protocol):
+    booking_id: int | str | None
+
+
+class CancelReasonData(Protocol):
+    booking_id: int | str | None
+    code: str | None
 
 logger = logging.getLogger(__name__)
 master_router = Router(name="master")
@@ -439,7 +471,7 @@ async def handle_master_menu_entry(cb: CallbackQuery, state: FSMContext, locale:
 
 @master_router.callback_query(MasterMenuCB.filter(F.act == "my_clients"))
 async def master_my_clients(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: MenuCallback, state: FSMContext, locale: str
 ) -> None:
     """Show paginated list of clients for the master.
 
@@ -536,7 +568,7 @@ async def master_my_clients(
 
 @master_router.callback_query(ClientInfoCB.filter())
 async def master_client_info(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ClientInfoData, state: FSMContext, locale: str
 ) -> None:
     """Show client card & actions for selected client (by user_id)."""
     try:
@@ -589,7 +621,7 @@ async def master_client_info(
 
 @master_router.callback_query(MasterClientNoteCB.filter(F.action == "edit"))
 async def master_client_note_edit(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ClientNoteData, state: FSMContext, locale: str
 ) -> None:
     """Start edit-note flow for a selected client (store user_id in state and await message)."""
     try:
@@ -651,7 +683,7 @@ async def master_client_note_edit(
 
 @master_router.callback_query(MasterClientNoteCB.filter(F.action == "cancel_edit"))
 async def master_client_note_cancel(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ClientNoteData, state: FSMContext, locale: str
 ) -> None:
     """Cancel edit note and return to client card."""
     try:
@@ -694,7 +726,7 @@ async def show_schedule(cb: CallbackQuery, state: FSMContext, locale: str) -> No
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "pick_start"))
 async def schedule_pick_start(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     try:
         await pick_window_start(cb, callback_data, state, locale)
@@ -710,7 +742,9 @@ async def schedule_pick_start(
             raise
 
 
-async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def pick_window_end(
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
+) -> None:
     """Handle selection of end time after start was picked.
 
     This will read the previously stored `chosen_start` from FSM state,
@@ -791,7 +825,7 @@ async def pick_window_end(cb: CallbackQuery, callback_data, state: FSMContext, l
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "pick_end"))
 async def schedule_pick_end(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     try:
         await pick_window_end(cb, callback_data, state, locale)
@@ -806,7 +840,7 @@ async def schedule_pick_end(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "clear_day"))
 async def schedule_clear_day(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -829,7 +863,7 @@ async def schedule_clear_day(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "remove_window"))
 async def schedule_remove_window(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     # Always use value-based removal (start/end encoded into "time" token) to avoid index races.
     time_token = getattr(callback_data, "time", None)
@@ -923,7 +957,9 @@ async def schedule_remove_window(
 
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "cancel"))
-async def schedule_cancel(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def schedule_cancel(
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
+) -> None:
     try:
         await state.clear()
     except AttributeError as e:
@@ -954,7 +990,7 @@ async def schedule_cancel(cb: CallbackQuery, callback_data, state: FSMContext, l
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "make_off"))
 async def schedule_make_off(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -1085,7 +1121,7 @@ async def _check_and_confirm_day_clear(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "back_to_choose"))
 async def schedule_back_to_choose(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     # prefer middleware-provided locale when rendering UI text
     lang = locale or default_language()
@@ -1096,7 +1132,7 @@ async def schedule_back_to_choose(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "edit_day"))
 async def schedule_edit_day(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -1126,7 +1162,9 @@ async def schedule_edit_day(
 
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "noop"))
-async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def schedule_noop(
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
+) -> None:
     """No-op handler for non-clickable schedule cells (headers/empty slots)."""
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -1155,7 +1193,7 @@ async def schedule_noop(cb: CallbackQuery, callback_data, state: FSMContext, loc
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "add_time"))
 async def schedule_add_time(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -1193,7 +1231,7 @@ async def schedule_add_time(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "refresh"))
 async def schedule_refresh(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     try:
         await show_schedule(cb, state, locale)
@@ -1204,7 +1242,7 @@ async def schedule_refresh(
 
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "confirm_clear_day"))
 async def schedule_confirm_clear_day(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     master_id = cb.from_user.id
     day = getattr(callback_data, "day", None)
@@ -1299,7 +1337,7 @@ async def schedule_confirm_clear_day(
 
 @master_router.callback_query(MasterScheduleCB.filter())
 async def schedule_fallback(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     raw = getattr(cb, "data", None)
     uid = cb.from_user.id
@@ -1308,7 +1346,11 @@ async def schedule_fallback(
 
 
 async def _show_day_actions(
-    msg_obj, master_id: int, day: int, *, lang: str | None = None
+    msg_obj: Message | InaccessibleMessage | None,
+    master_id: int,
+    day: int,
+    *,
+    lang: str | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Return (text, keyboard) for a given master's weekday preview.
 
@@ -1658,7 +1700,7 @@ async def exec_clear_all_with_conflicts(cb: CallbackQuery, locale: str) -> None:
 # Step 1: user picked a start time from the inline keyboard
 @master_router.callback_query(MasterScheduleCB.filter(F.action == "pick_start"))
 async def pick_window_start(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ScheduleData, state: FSMContext, locale: str
 ) -> None:
     # Ensure caller is a master
 
@@ -1757,7 +1799,7 @@ async def master_service_durations_menu(cb: CallbackQuery, state: FSMContext, lo
 
 @master_router.callback_query(MasterSetServiceDurationCB.filter())
 async def master_set_service_duration(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: ServiceDurationData, state: FSMContext, locale: str
 ) -> None:
     lang = locale or default_language()
     service_id = getattr(callback_data, "service_id", None)
@@ -2041,7 +2083,7 @@ async def master_bookings_navigate(
 @master_router.callback_query(BookingActionCB.filter(F.act == "master_detail"))
 @safe_handler()
 async def booking_master_detail(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2076,7 +2118,7 @@ async def booking_master_detail(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "mark_done"))
 async def booking_mark_done(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2155,7 +2197,7 @@ async def booking_mark_done(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "mark_noshow"))
 async def booking_mark_noshow(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2194,7 +2236,7 @@ async def booking_mark_noshow(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "confirm_mark_done"))
 async def booking_confirm_mark_done(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     await booking_mark_done(cb, callback_data, state, locale)
     return None
@@ -2202,7 +2244,7 @@ async def booking_confirm_mark_done(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "confirm_mark_noshow"))
 async def booking_confirm_mark_noshow(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     await booking_mark_noshow(cb, callback_data, state, locale)
     return None
@@ -2210,7 +2252,7 @@ async def booking_confirm_mark_noshow(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "show_full_note"))
 async def booking_show_full_note(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2257,7 +2299,7 @@ async def booking_show_full_note(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "client_history"))
 async def booking_client_history(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2293,7 +2335,7 @@ async def booking_client_history(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "cancel_confirm"))
 async def booking_cancel_confirm(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2334,7 +2376,9 @@ async def booking_cancel_confirm(
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "cancel"))
-async def booking_cancel(cb: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def booking_cancel(
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
+) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
         await cb.answer()
@@ -2377,7 +2421,7 @@ async def booking_cancel(cb: CallbackQuery, callback_data, state: FSMContext, lo
 
 @master_router.callback_query(MasterCancelReasonCB.filter())
 async def master_cancel_reason(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: CancelReasonData, state: FSMContext, locale: str
 ) -> None:
     booking_id = getattr(callback_data, "booking_id", None)
     code = getattr(callback_data, "code", None)
@@ -2466,7 +2510,7 @@ async def master_cancel_reason_text_input(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "add_note"))
 async def booking_add_note(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:
@@ -2497,7 +2541,7 @@ async def booking_add_note(
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "cancel_note"))
 async def booking_cancel_note(
-    cb: CallbackQuery, callback_data, state: FSMContext, locale: str
+    cb: CallbackQuery, callback_data: BookingActionData, state: FSMContext, locale: str
 ) -> None:
     booking_id_raw = getattr(callback_data, "booking_id", None)
     if not booking_id_raw:

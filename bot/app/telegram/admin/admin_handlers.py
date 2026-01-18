@@ -657,7 +657,7 @@ async def admin_manage_services(callback: CallbackQuery, state: FSMContext, loca
 
 @admin_router.callback_query(AdminMasterCardCB.filter())
 async def admin_show_master_card(
-    callback: CallbackQuery, callback_data, state: FSMContext, locale: str
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
 ) -> None:
     """Show object-like master card with actions for a selected master."""
     lang = locale
@@ -1059,7 +1059,7 @@ async def admin_show_services_for_master(
         await callback.answer()
         return
     # use module alias imported at top to avoid circular import issues
-    services = await master_services.MasterRepo.get_services_for_master(master_id)  # type: ignore[attr-defined]
+    services = await master_services.MasterRepo.get_services_for_master(master_id)
     # services: list of tuples (service_id, name)
     if not services:
         text = t("no_services_for_master", lang)
@@ -1097,7 +1097,7 @@ async def admin_show_masters_for_service(
         await callback.answer()
         return
     # use module alias imported at top to avoid circular import issues
-    masters = await master_services.MasterRepo.get_masters_for_service(service_id)  # type: ignore[attr-defined]
+    masters = await master_services.MasterRepo.get_masters_for_service(service_id)
     if not masters:
         text = (
             t("service_no_masters", lang)
@@ -2026,7 +2026,7 @@ async def admin_enter_currency_callback(
     """Switch to FSM state for entering a global currency code manually."""
     lang = locale
     # push navigation state so 'back' works predictably
-    await nav_push(state, "enter_currency")
+    await nav_push(state, "enter_currency", None)
     await state.set_state(AdminStates.enter_currency)
     # Prompt with cancel/back keyboard
     kb = InlineKeyboardBuilder()
@@ -2701,7 +2701,7 @@ async def confirm_cancel_all_master(
     try:
         mid = int(callback_data.master_id)
         # Count current active bookings via AdminRepo (no session in handler)
-        bids = await admin_services.AdminRepo.get_active_future_booking_ids_for_master(mid)  # type: ignore[attr-defined]
+        bids = await admin_services.AdminRepo.get_active_future_booking_ids_for_master(mid)
         lang = locale
         kb_markup = confirm_cancel_all_master_kb(mid, linked_count=len(bids), lang=lang)
         prompt = tr("cancel_all_bookings_prompt", lang=lang).format(count=len(bids), master_id=mid)
@@ -2727,7 +2727,7 @@ async def exec_cancel_all_master(
     try:
         mid = int(callback_data.master_id)
         # Fetch all booking ids for this master (regardless of status)
-        rows = await admin_services.AdminRepo.get_booking_ids_for_master(mid)  # type: ignore[attr-defined]
+        rows = await admin_services.AdminRepo.get_booking_ids_for_master(mid)
         all_bids = [int(r[0]) for r in rows]
 
         # Cancel bookings and notify via centralized master service
@@ -2744,7 +2744,7 @@ async def exec_cancel_all_master(
         # reference the master, allow deletion.
         try:
             # Re-check active/future bookings via AdminRepo
-            remaining = await admin_services.AdminRepo.get_active_future_booking_ids_for_master(mid)  # type: ignore[attr-defined]
+            remaining = await admin_services.AdminRepo.get_active_future_booking_ids_for_master(mid)
             lang = locale
             if remaining:
                 text = tr("cancel_all_bookings_dependencies", lang=lang).format(
@@ -2757,7 +2757,7 @@ async def exec_cancel_all_master(
                 )
             else:
                 # No active/future bookings reference the master; safe to delete the master record via MasterRepo
-                deleted = await master_services.MasterRepo.delete_master(mid)  # type: ignore[attr-defined]
+                deleted = await master_services.MasterRepo.delete_master(mid)
                 if deleted:
                     text = t("master_deleted", lang)
                     logger.info(
@@ -3214,7 +3214,7 @@ async def _select_linkable_services(master_tid: int) -> list[tuple[str, str]]:
     """
 
     services_dict = await ServiceRepo.services_cache()
-    linked = await master_services.MasterRepo.get_services_for_master(master_tid)  # type: ignore[attr-defined]
+    linked = await master_services.MasterRepo.get_services_for_master(master_tid)
     linked_ids = {str(sid) for sid, _ in linked}
     return [(str(sid), name) for sid, name in services_dict.items() if str(sid) not in linked_ids]
 
@@ -3222,7 +3222,7 @@ async def _select_linkable_services(master_tid: int) -> list[tuple[str, str]]:
 async def _select_unlinkable_services(master_tid: int) -> list[tuple[str, str]]:
     """Вернуть услуги, уже привязанные к мастеру (для отвязки)."""
 
-    return await master_services.MasterRepo.get_services_for_master(master_tid)  # type: ignore[attr-defined]
+    return await master_services.MasterRepo.get_services_for_master(master_tid)
 
 
 async def _select_master_for_service_flow(
@@ -3336,7 +3336,7 @@ async def link_master_finish(
             return
         linked = await master_services.MasterRepo.link_service(
             master_telegram_id=master_tid_int, service_id=service_id
-        )  # type: ignore[attr-defined]
+        )
         if linked:
             try:
                 invalidate_masters_cache()
@@ -3433,7 +3433,7 @@ async def unlink_master_finish(
             return
         removed = await master_services.MasterRepo.unlink_service(
             master_telegram_id=master_tid_int, service_id=service_id
-        )  # type: ignore[attr-defined]
+        )
         if removed:
             try:
                 invalidate_masters_cache()

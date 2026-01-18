@@ -141,10 +141,7 @@ def admin_masters_list_kb(
     # Master buttons: one per row
     iterable: list[tuple[int, str]] = []
     try:
-        if isinstance(masters, Mapping):
-            iterable = list(masters.items())
-        else:
-            iterable = list(masters)
+        iterable = list(masters.items()) if isinstance(masters, Mapping) else list(masters)
     except Exception:
         iterable = []
 
