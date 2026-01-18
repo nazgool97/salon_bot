@@ -3258,6 +3258,24 @@ async def _start_master_service_flow(
     await callback.answer()
 
 
+async def _select_linkable_services(master_tid: int) -> list[tuple[str, str]]:
+    """Вернуть услуги, которые еще не привязаны к мастеру.
+
+    Сервисные ID приводятся к строкам, чтобы единообразно использовать их в callback_data.
+    """
+
+    services_dict = await ServiceRepo.services_cache()
+    linked = await master_services.MasterRepo.get_services_for_master(master_tid)  # type: ignore[attr-defined]
+    linked_ids = {str(sid) for sid, _ in linked}
+    return [(str(sid), name) for sid, name in services_dict.items() if str(sid) not in linked_ids]
+
+
+async def _select_unlinkable_services(master_tid: int) -> list[tuple[str, str]]:
+    """Вернуть услуги, уже привязанные к мастеру (для отвязки)."""
+
+    return await master_services.MasterRepo.get_services_for_master(master_tid)  # type: ignore[attr-defined]
+
+
 async def _select_master_for_service_flow(
     callback: CallbackQuery,
     state: FSMContext,
@@ -3279,15 +3297,12 @@ async def _select_master_for_service_flow(
 
     lang = locale or default_language()
 
-    # Получаем список услуг
-    if action == "unlink":
-        # Для отвязки: получаем услуги через MasterRepo
-        services = await master_services.MasterRepo.get_services_for_master(master_tid)  # type: ignore[attr-defined]
-    else:
-        # Для привязки: все доступные услуги
-        services_dict = await ServiceRepo.services_cache()
-        logger.debug("Services data from cache for link: %s", services_dict)
-        services = [(sid, name) for sid, name in services_dict.items()]
+    # Получаем список услуг в зависимости от действия
+    services = (
+        await _select_unlinkable_services(master_tid)
+        if action == "unlink"
+        else await _select_linkable_services(master_tid)
+    )
 
     if not services:
         if m := _shared_msg(callback):
@@ -3387,7 +3402,30 @@ async def link_master_finish(
             text = t("link_added", lang)
         else:
             text = t("already_linked", lang)
-        await safe_edit(_shared_msg(callback), text, reply_markup=admin_menu_kb(lang))
+        # Показываем список оставшихся непривязанных услуг, чтобы админ мог привязывать дальше
+        remaining_linkable = await _select_linkable_services(master_tid_int)
+        kb = InlineKeyboardBuilder()
+        for sid, name in remaining_linkable:
+            kb.button(text=name, callback_data=pack_cb(SelectLinkServiceCB, service_id=str(sid)))
+        kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
+        kb.adjust(1)
+
+        msg_obj = _shared_msg(callback)
+        if remaining_linkable:
+            await state.set_state(AdminStates.link_master_service_select_service)
+            await state.update_data(master_tid=master_tid_int, action="link")
+            await safe_edit(
+                msg_obj,
+                f"{text}\n{t('select_service', lang)}",
+                reply_markup=kb.as_markup(),
+            )
+        else:
+            await state.clear()
+            await safe_edit(
+                msg_obj,
+                f"{text}\n{t('no_services_admin', lang)}",
+                reply_markup=admin_menu_kb(lang),
+            )
     except Exception as e:
         if isinstance(e, TelegramAPIError):
             logger.error("Ошибка Telegram API в link_master_finish: %s", e)
@@ -3398,7 +3436,6 @@ async def link_master_finish(
                 await safe_edit(m, t("db_error", _lang), reply_markup=admin_menu_kb(_lang))
         else:
             logger.exception("Unexpected error in link_master_finish: %s", e)
-    await state.clear()
     await callback.answer()
 
 
@@ -3462,14 +3499,36 @@ async def unlink_master_finish(
             text = t("link_removed", lang)
         else:
             text = t("link_not_found", lang)
-        await safe_edit(_shared_msg(callback), text, reply_markup=admin_menu_kb(lang))
+        # Показываем оставшиеся привязанные услуги, чтобы админ мог отвязывать дальше
+        remaining_linked = await _select_unlinkable_services(master_tid_int)
+        kb = InlineKeyboardBuilder()
+        for sid, name in remaining_linked:
+            kb.button(text=name, callback_data=pack_cb(SelectUnlinkServiceCB, service_id=str(sid)))
+        kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
+        kb.adjust(1)
+
+        msg_obj = _shared_msg(callback)
+        if remaining_linked:
+            await state.set_state(AdminStates.link_master_service_select_service)
+            await state.update_data(master_tid=master_tid_int, action="unlink")
+            await safe_edit(
+                msg_obj,
+                f"{text}\n{t('select_service', lang)}",
+                reply_markup=kb.as_markup(),
+            )
+        else:
+            await state.clear()
+            await safe_edit(
+                msg_obj,
+                f"{text}\n{t('no_services_linked', lang)}",
+                reply_markup=admin_menu_kb(lang),
+            )
     except SQLAlchemyError as e:
         logger.error("Ошибка базы данных при отвязке: %s", e)
         if m := _shared_msg(callback):
             await safe_edit(m, t("db_error", lang), reply_markup=admin_menu_kb(lang))
     except TelegramAPIError as e:
         logger.error("Ошибка Telegram API в unlink_master_finish: %s", e)
-    await state.clear()
     await callback.answer()
 
 
