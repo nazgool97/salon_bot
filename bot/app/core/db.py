@@ -39,8 +39,6 @@ _SCHEMA_READY: bool = False
 _SCHEMA_CHECKING: bool = False
 
 
-
-
 # =====================================================
 # ⚙️ Engine / Session factory
 # =====================================================
@@ -78,7 +76,7 @@ def get_engine() -> AsyncEngine:
                     con_record,
                     repr(task),
                     task_name,
-        )
+                )
 
             def _on_checkin(dbapi_con, con_record):
                 task = asyncio.current_task()

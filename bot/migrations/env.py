@@ -14,6 +14,7 @@ if config.config_file_name is not None:
 # Import your models metadata
 # -------------------------
 from bot.app.domain.models import Base
+
 target_metadata = Base.metadata
 
 
@@ -38,6 +39,7 @@ def run_migrations_offline() -> None:
 
 # bot/migrations/env.py  ← замени полностью функцию run_migrations_online
 
+
 def run_migrations_online() -> None:
     """Run migrations with sync DB engine."""
     import os
@@ -54,7 +56,7 @@ def run_migrations_online() -> None:
 
     # If user provided an async URL (postgresql+asyncpg://...), convert it to a
     # sync URL (postgresql://...) for Alembic so migrations run synchronously.
-    sync_url = re.sub(r'^(postgresql)\+[^:]+', r'\1', database_url)
+    sync_url = re.sub(r"^(postgresql)\+[^:]+", r"\1", database_url)
 
     # Force Alembic to use the (possibly converted) sync URL
     config.set_main_option("sqlalchemy.url", sync_url)

@@ -5,6 +5,7 @@ deadline has passed and the status is still RESERVED or PENDING_PAYMENT.
 
 start_expiration_worker returns an async callable that stops the worker gracefully.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -51,9 +52,12 @@ async def _expire_once(now_utc: datetime) -> int:
             for (mid, starts), ids in groups.items():
                 try:
                     from sqlalchemy import text
+
                     k1 = int(mid) % 2147483647
-                    k2 = int(starts.timestamp()) % 2147483647 if hasattr(starts, 'timestamp') else 0
-                    await session.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
+                    k2 = int(starts.timestamp()) % 2147483647 if hasattr(starts, "timestamp") else 0
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2}
+                    )
                 except Exception:
                     # best-effort advisory lock
                     pass
@@ -71,7 +75,12 @@ async def _expire_once(now_utc: datetime) -> int:
                 res = await session.execute(stmt_upd)
                 got = res.fetchall()
                 if got:
-                    logger.debug("Expired bookings for master=%s starts_at=%s: %s", mid, starts, [r[0] for r in got])
+                    logger.debug(
+                        "Expired bookings for master=%s starts_at=%s: %s",
+                        mid,
+                        starts,
+                        [r[0] for r in got],
+                    )
                 count += len(got)
 
             stmt_no_hold = (
@@ -87,7 +96,11 @@ async def _expire_once(now_utc: datetime) -> int:
             result2 = await session.execute(stmt_no_hold)
             rows2 = result2.fetchall()
             count += len(rows2)
-            logger.debug("Expired %d bookings without cash_hold_expires_at (based on created_at): %s", len(rows2), [row[0] for row in rows2])
+            logger.debug(
+                "Expired %d bookings without cash_hold_expires_at (based on created_at): %s",
+                len(rows2),
+                [row[0] for row in rows2],
+            )
             # Дополнительно: если created_at отсутствует (NULL) и нет удержания — тоже считаем просроченным
             stmt_no_hold_null_created = (
                 update(Booking)
@@ -103,7 +116,11 @@ async def _expire_once(now_utc: datetime) -> int:
             rows3 = result3.fetchall()
             count += len(rows3)
             if rows3:
-                logger.debug("Expired %d bookings without cash_hold_expires_at and NULL created_at: %s", len(rows3), [row[0] for row in rows3])
+                logger.debug(
+                    "Expired %d bookings without cash_hold_expires_at and NULL created_at: %s",
+                    len(rows3),
+                    [row[0] for row in rows3],
+                )
             await session.commit()
             if count:
                 logger.info("Expired %d overdue reservations/payments", count)
@@ -159,12 +176,12 @@ async def start_expiration_worker() -> Callable[[], Awaitable[None]]:
     return _stop
 
 
-async def stop_expiration_worker(stop_callable: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+async def stop_expiration_worker(
+    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+) -> None:
     """Compatibility helper: call provided stop callable if any."""
     if stop_callable:
         await stop_callable()
-
-
 
 
 # Примерная логика для cleanup_worker.py
@@ -177,20 +194,27 @@ LIMBO_STATUSES = [
     BookingStatus.CONFIRMED,
     BookingStatus.PAID,
     BookingStatus.RESERVED,
-    BookingStatus.PENDING_PAYMENT
+    BookingStatus.PENDING_PAYMENT,
 ]
 
 # Как долго ждать после начала записи, прежде чем считать ее "неявкой"
 # (Например, 2 часа, чтобы дать мастеру время закончить и нажать "Готово")
-NO_SHOW_GRACE_PERIOD_HOURS = 2 
+NO_SHOW_GRACE_PERIOD_HOURS = 2
 
-async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None = None, bot: Bot | None = None) -> None:
+
+async def _cleanup_loop(
+    stop_event: asyncio.Event, interval_seconds: int | None = None, bot: Bot | None = None
+) -> None:
     """Internal cleanup loop that marks long-past LIMBO bookings as NO_SHOW.
 
     This loop checks for limbo bookings every `interval_seconds` (default 900s)
     and respects `stop_event` for graceful shutdown.
     """
-    check_interval_seconds = interval_seconds if interval_seconds is not None else _get_env_int("CLEANUP_CHECK_SECONDS", 900)
+    check_interval_seconds = (
+        interval_seconds
+        if interval_seconds is not None
+        else _get_env_int("CLEANUP_CHECK_SECONDS", 900)
+    )
 
     logger.info("Запуск воркера очистки 'лимбо' записей...")
     while not stop_event.is_set():
@@ -203,20 +227,21 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
             async with get_session() as session:
                 # 1. Находим кандидатов на авто-неявку
                 stmt = select(Booking.id).where(
-                    Booking.starts_at < cutoff_time,
-                    Booking.status.in_(LIMBO_STATUSES)
+                    Booking.starts_at < cutoff_time, Booking.status.in_(LIMBO_STATUSES)
                 )
                 result = await session.execute(stmt)
                 booking_ids_to_fail = result.scalars().all()
 
                 if booking_ids_to_fail:
-                    logger.info(f"Найдено {len(booking_ids_to_fail)} 'лимбо' записей. Обновление статуса на NO_SHOW...")
+                    logger.info(
+                        f"Найдено {len(booking_ids_to_fail)} 'лимбо' записей. Обновление статуса на NO_SHOW..."
+                    )
 
                     # 2. Обновляем их статус на NO_SHOW
-                    update_stmt = update(Booking).where(
-                        Booking.id.in_(booking_ids_to_fail)
-                    ).values(
-                        status=BookingStatus.NO_SHOW
+                    update_stmt = (
+                        update(Booking)
+                        .where(Booking.id.in_(booking_ids_to_fail))
+                        .values(status=BookingStatus.NO_SHOW)
                     )
                     await session.execute(update_stmt)
                     await session.commit()
@@ -227,6 +252,7 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
                         try:
                             from bot.app.core.notifications import send_booking_notification
                             from bot.app.services.master_services import MasterRepo
+
                             admins = get_admin_ids() or []
                             for bid in booking_ids_to_fail:
                                 try:
@@ -252,9 +278,14 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
                                     recipients = list(dict.fromkeys(recipients))
                                     if recipients:
                                         try:
-                                            await send_booking_notification(bot, int(bid), "no_show", recipients)
+                                            await send_booking_notification(
+                                                bot, int(bid), "no_show", recipients
+                                            )
                                         except Exception:
-                                            logger.exception("Failed to send no-show notification for booking %s", bid)
+                                            logger.exception(
+                                                "Failed to send no-show notification for booking %s",
+                                                bid,
+                                            )
                                 except Exception:
                                     logger.exception("Failed to prepare/notify for booking %s", bid)
                         except Exception:
@@ -271,8 +302,6 @@ async def _cleanup_loop(stop_event: asyncio.Event, interval_seconds: int | None 
             break
 
 
-
-
 __all__ = ["start_expiration_worker", "stop_expiration_worker"]
 
 
@@ -284,7 +313,9 @@ async def start_cleanup_worker(bot: Bot | None = None) -> Callable[[], Awaitable
     """
     interval_seconds = _get_env_int("CLEANUP_CHECK_SECONDS", 900)
     stop_event: asyncio.Event = asyncio.Event()
-    task = asyncio.create_task(_cleanup_loop(stop_event, interval_seconds, bot=bot), name="cleanup-worker")
+    task = asyncio.create_task(
+        _cleanup_loop(stop_event, interval_seconds, bot=bot), name="cleanup-worker"
+    )
 
     async def _stop() -> None:
         try:
@@ -300,9 +331,12 @@ async def start_cleanup_worker(bot: Bot | None = None) -> Callable[[], Awaitable
     return _stop
 
 
-async def stop_cleanup_worker(stop_callable: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+async def stop_cleanup_worker(
+    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+) -> None:
     """Compatibility helper: call provided stop callable if any."""
     if stop_callable:
         await stop_callable()
+
 
 __all__.extend(["start_cleanup_worker", "stop_cleanup_worker"])

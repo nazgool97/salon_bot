@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.app.telegram.client.client_keyboards import get_simple_kb
 from bot.app.services.admin_services import render_stats_overview
+
 # Settings/facade values are supplied by handlers; keyboards must remain UI-only.
 from bot.app.translations import t, tr
 from bot.app.telegram.common.callbacks import pack_cb, AdminMenuCB, NavCB, AdminEditSettingCB
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 MAX_ADMIN_LIST_ITEMS = 200
 MAX_ADMIN_PRICE_ITEMS = 100
 
+
 def admin_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Генерирует главное меню админ-панели.
 
@@ -35,12 +37,24 @@ def admin_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
     builder = InlineKeyboardBuilder()
     # Row 1: Bookings management and Analytics
-    builder.button(text=tr("admin_menu_bookings", lang=lang), callback_data=pack_cb(AdminMenuCB, act="show_bookings"))
+    builder.button(
+        text=tr("admin_menu_bookings", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="show_bookings"),
+    )
     # Use dedicated Analytics submenu (act="analytics") instead of legacy Stats direct entry
-    builder.button(text=t("admin_analytics_title", lang=lang), callback_data=pack_cb(AdminMenuCB, act="analytics"))
+    builder.button(
+        text=t("admin_analytics_title", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="analytics"),
+    )
     # Row 2: CRUD management (opens a submenu) and Settings
-    builder.button(text=t("admin_menu_manage_crud", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_crud"))
-    builder.button(text=tr("admin_menu_settings", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
+    builder.button(
+        text=t("admin_menu_manage_crud", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_crud"),
+    )
+    builder.button(
+        text=tr("admin_menu_settings", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="settings"),
+    )
     # Role-root Back
     # Use nav_back so admins return to the previous screen instead of jumping to root
     builder.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
@@ -59,11 +73,23 @@ def management_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
     kb = InlineKeyboardBuilder()
     # Grouped entries: each button opens a focused submenu
-    kb.button(text=t("manage_masters_label", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_masters"))
-    kb.button(text=t("manage_services_label", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_services"))
-    kb.button(text=t("manage_links_label", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_links"))
+    kb.button(
+        text=t("manage_masters_label", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_masters"),
+    )
+    kb.button(
+        text=t("manage_services_label", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_services"),
+    )
+    kb.button(
+        text=t("manage_links_label", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_links"),
+    )
     # Admins management (list and revoke admin rights)
-    kb.button(text=t("manage_admins_label", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_admins"))
+    kb.button(
+        text=t("manage_admins_label", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_admins"),
+    )
     # Price management removed from CRUD; now accessible via Business settings.
     # Back should return to the admin panel (root of admin role) to avoid
     # hopping back into recently visited CRUD submenus and causing loops.
@@ -79,9 +105,18 @@ def masters_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     from bot.app.telegram.common.callbacks import AdminMenuCB
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=t("admin_menu_add_master", lang=lang), callback_data=pack_cb(AdminMenuCB, act="add_master"))
-    kb.button(text=t("admin_menu_delete_master", lang=lang), callback_data=pack_cb(AdminMenuCB, act="delete_master"))
-    kb.button(text=t("admin_view_links_prompt", lang=lang), callback_data=pack_cb(AdminMenuCB, act="view_links_master"))
+    kb.button(
+        text=t("admin_menu_add_master", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="add_master"),
+    )
+    kb.button(
+        text=t("admin_menu_delete_master", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="delete_master"),
+    )
+    kb.button(
+        text=t("admin_view_links_prompt", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="view_links_master"),
+    )
     # Follow nav stack (back to previous screen)
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1, 1, 1)
@@ -89,8 +124,7 @@ def masters_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
 
 def admin_masters_list_kb(
-    masters: dict[int, str] | Mapping[int, str],
-    lang: str = "uk"
+    masters: dict[int, str] | Mapping[int, str], lang: str = "uk"
 ) -> InlineKeyboardMarkup:
     """Keyboard showing list of masters for admin to pick a master object to manage.
 
@@ -146,8 +180,14 @@ def services_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     from bot.app.telegram.common.callbacks import AdminMenuCB
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr("admin_menu_add_service", lang=lang), callback_data=pack_cb(AdminMenuCB, act="add_service"))
-    kb.button(text=tr("admin_menu_delete_service", lang=lang), callback_data=pack_cb(AdminMenuCB, act="delete_service"))
+    kb.button(
+        text=tr("admin_menu_add_service", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="add_service"),
+    )
+    kb.button(
+        text=tr("admin_menu_delete_service", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="delete_service"),
+    )
     # Return to CRUD submenu explicitly to avoid returning to an unrelated screen
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_crud"))
     kb.adjust(1, 1)
@@ -159,9 +199,17 @@ def links_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     from bot.app.telegram.common.callbacks import AdminMenuCB
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr("admin_menu_link_ms", lang=lang), callback_data=pack_cb(AdminMenuCB, act="link_ms"))
-    kb.button(text=tr("admin_menu_unlink_ms", lang=lang), callback_data=pack_cb(AdminMenuCB, act="unlink_ms"))
-    kb.button(text=tr("admin_menu_view_links", lang=lang), callback_data=pack_cb(AdminMenuCB, act="view_links"))
+    kb.button(
+        text=tr("admin_menu_link_ms", lang=lang), callback_data=pack_cb(AdminMenuCB, act="link_ms")
+    )
+    kb.button(
+        text=tr("admin_menu_unlink_ms", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="unlink_ms"),
+    )
+    kb.button(
+        text=tr("admin_menu_view_links", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="view_links"),
+    )
     # Use nav-back so cancelling this submenu returns to the previous screen
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1, 1, 1)
@@ -171,6 +219,7 @@ def links_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 def analytics_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Analytics submenu grouping stats and business metrics."""
     from bot.app.telegram.common.callbacks import AdminMenuCB
+
     kb = InlineKeyboardBuilder()
     # Simplified hub: clear choice between operational stats and financial business metrics.
     # Row 1: Stats (operations)
@@ -184,9 +233,12 @@ def analytics_kb(lang: str = "uk") -> InlineKeyboardMarkup:
         callback_data=pack_cb(AdminMenuCB, act="biz"),
     )
     # Row 3: Export CSV (month/current filter)
-    kb.button(text=tr("export_month_csv", lang=lang), callback_data=pack_cb(AdminMenuCB, act="export_csv"))
+    kb.button(
+        text=tr("export_month_csv", lang=lang), callback_data=pack_cb(AdminMenuCB, act="export_csv")
+    )
     # Row 4: Back to Admin Panel (explicit target per UX requirement)
     from bot.app.telegram.common.callbacks import AdminMenuCB
+
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="panel"))
     # Layout: single-column stacked choices for clarity
     kb.adjust(1, 1, 1, 1)
@@ -201,8 +253,10 @@ def services_list_kb(services: list[tuple[str, str]], lang: str = "uk") -> Inlin
         services: список кортежів (service_id, name)
     """
     from bot.app.telegram.common.callbacks import AdminEditPriceCB
+
     items: list[tuple[str, str]] = [
-        (f"{name}", pack_cb(AdminEditPriceCB, service_id=str(sid))) for sid, name in services[:MAX_ADMIN_PRICE_ITEMS]
+        (f"{name}", pack_cb(AdminEditPriceCB, service_id=str(sid)))
+        for sid, name in services[:MAX_ADMIN_PRICE_ITEMS]
     ]
     # Use nav-back so this selection returns to the previous screen
     items.append((tr("back", lang=lang), pack_cb(NavCB, act="back")))
@@ -219,22 +273,34 @@ def services_prices_kb(
     rows: list[list[InlineKeyboardButton]] = []
     for sid, name in services:
         label = str(name or sid)
-        rows.append([
-            InlineKeyboardButton(
-                text=label,
-                callback_data=pack_cb(AdminEditPriceCB, service_id=str(sid)),
-            )
-        ])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=pack_cb(AdminEditPriceCB, service_id=str(sid)),
+                )
+            ]
+        )
 
     # Navigation row: put Prev, Back and Next on the same line (back centered)
     nav_row: list[InlineKeyboardButton] = []
     if total_pages > 1 and page > 1:
-        nav_row.append(InlineKeyboardButton(text=tr("prev_page", lang=lang), callback_data=pack_cb(PricePageCB, page=page - 1)))
+        nav_row.append(
+            InlineKeyboardButton(
+                text=tr("prev_page", lang=lang), callback_data=pack_cb(PricePageCB, page=page - 1)
+            )
+        )
     # Back button should always be present and sit on the same row as Next
     # Use nav-back so Back pops the nav stack to the previous screen
-    nav_row.append(InlineKeyboardButton(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back")))
+    nav_row.append(
+        InlineKeyboardButton(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
+    )
     if total_pages > 1 and page < total_pages:
-        nav_row.append(InlineKeyboardButton(text=tr("next_page", lang=lang), callback_data=pack_cb(PricePageCB, page=page + 1)))
+        nav_row.append(
+            InlineKeyboardButton(
+                text=tr("next_page", lang=lang), callback_data=pack_cb(PricePageCB, page=page + 1)
+            )
+        )
     rows.append(nav_row)
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -247,7 +313,11 @@ def masters_list_kb(masters: list[tuple[int, str]], lang: str = "uk") -> InlineK
         masters: list of tuples (telegram_id, name)
     """
     from bot.app.telegram.common.callbacks import SelectViewMasterCB
-    items = [(str(name), pack_cb(SelectViewMasterCB, master_id=int(tid))) for tid, name in masters[:MAX_ADMIN_LIST_ITEMS]]
+
+    items = [
+        (str(name), pack_cb(SelectViewMasterCB, master_id=int(tid)))
+        for tid, name in masters[:MAX_ADMIN_LIST_ITEMS]
+    ]
     # Follow nav stack to return to previous menu
     items.append((tr("back", lang=lang), pack_cb(NavCB, act="back")))
     return get_simple_kb(items, cols=1)
@@ -256,7 +326,11 @@ def masters_list_kb(masters: list[tuple[int, str]], lang: str = "uk") -> InlineK
 def services_select_kb(services: list[tuple[str, str]], lang: str = "uk") -> InlineKeyboardMarkup:
     """Keyboard listing services for admin selection (view links by service)."""
     from bot.app.telegram.common.callbacks import SelectViewServiceCB
-    items = [(f"{name}", pack_cb(SelectViewServiceCB, service_id=str(sid))) for sid, name in services[:MAX_ADMIN_LIST_ITEMS]]
+
+    items = [
+        (f"{name}", pack_cb(SelectViewServiceCB, service_id=str(sid)))
+        for sid, name in services[:MAX_ADMIN_LIST_ITEMS]
+    ]
     items.append((tr("back", lang=lang), pack_cb(AdminMenuCB, act="manage_services")))
     return get_simple_kb(items, cols=1)
 
@@ -266,7 +340,10 @@ def no_masters_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     from bot.app.telegram.common.callbacks import AdminMenuCB, NavCB
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr("admin_menu_add_master", lang=lang), callback_data=pack_cb(AdminMenuCB, act="add_master"))
+    kb.button(
+        text=tr("admin_menu_add_master", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="add_master"),
+    )
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(2)
     return kb.as_markup()
@@ -277,7 +354,10 @@ def no_services_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     from bot.app.telegram.common.callbacks import AdminMenuCB, NavCB
 
     kb = InlineKeyboardBuilder()
-    kb.button(text=tr("admin_menu_add_service", lang=lang), callback_data=pack_cb(AdminMenuCB, act="add_service"))
+    kb.button(
+        text=tr("admin_menu_add_service", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="add_service"),
+    )
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_services"))
     kb.adjust(2)
     return kb.as_markup()
@@ -287,12 +367,22 @@ def edit_price_kb(service_id: str, lang: str = "uk") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     # Quick adjust row (-50, -20, -5)
     from bot.app.telegram.common.callbacks import AdminPriceAdjCB, AdminSetPriceCB, NavCB
+
     for d in (-50, -20, -5):
-        kb.button(text=f"{d}", callback_data=pack_cb(AdminPriceAdjCB, service_id=str(service_id), delta=int(d)))
+        kb.button(
+            text=f"{d}",
+            callback_data=pack_cb(AdminPriceAdjCB, service_id=str(service_id), delta=int(d)),
+        )
     # Quick adjust row (+5, +20, +50)
     for d in (5, 20, 50):
-        kb.button(text=f"+{d}", callback_data=pack_cb(AdminPriceAdjCB, service_id=str(service_id), delta=int(d)))
-    kb.button(text=t("set_price", lang=lang), callback_data=pack_cb(AdminSetPriceCB, service_id=str(service_id)))
+        kb.button(
+            text=f"+{d}",
+            callback_data=pack_cb(AdminPriceAdjCB, service_id=str(service_id), delta=int(d)),
+        )
+    kb.button(
+        text=t("set_price", lang=lang),
+        callback_data=pack_cb(AdminSetPriceCB, service_id=str(service_id)),
+    )
     # Back should pop to the previous screen (e.g., services CRUD)
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(3, 3, 1, 1)
@@ -302,13 +392,21 @@ def edit_price_kb(service_id: str, lang: str = "uk") -> InlineKeyboardMarkup:
 def settings_categories_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     """Top-level settings categories to reduce visual noise."""
     kb = InlineKeyboardBuilder()
-    kb.button(text=(tr("settings_category_contacts", lang=lang) or "Contacts"), callback_data=pack_cb(AdminMenuCB, act="settings_contacts"))
-    kb.button(text=(tr("settings_category_business", lang=lang) or "Business"), callback_data=pack_cb(AdminMenuCB, act="settings_business"))
+    kb.button(
+        text=(tr("settings_category_contacts", lang=lang) or "Contacts"),
+        callback_data=pack_cb(AdminMenuCB, act="settings_contacts"),
+    )
+    kb.button(
+        text=(tr("settings_category_business", lang=lang) or "Business"),
+        callback_data=pack_cb(AdminMenuCB, act="settings_business"),
+    )
     # Back should follow nav stack (settings -> categories -> ...)
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="panel"),)
+    kb.button(
+        text=tr("back", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="panel"),
+    )
     kb.adjust(1, 1, 1)
     return kb.as_markup()
-
 
 
 def contacts_settings_kb(
@@ -322,22 +420,46 @@ def contacts_settings_kb(
     """Contacts settings: phone, address, Instagram and WebApp title."""
     kb = InlineKeyboardBuilder()
     if phone:
-        kb.button(text=f"{tr('phone_label', lang=lang)}: {phone}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
+        kb.button(
+            text=f"{tr('phone_label', lang=lang)}: {phone}",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"),
+        )
     else:
-        kb.button(text=f"{tr('phone_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"))
+        kb.button(
+            text=f"{tr('phone_label', lang=lang)} ➕",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_phone"),
+        )
     if address:
-        kb.button(text=f"{tr('address_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
+        kb.button(
+            text=f"{tr('address_label', lang=lang)}",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"),
+        )
     else:
-        kb.button(text=f"{tr('address_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"))
+        kb.button(
+            text=f"{tr('address_label', lang=lang)} ➕",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_address"),
+        )
     if instagram:
-        kb.button(text=f"{tr('instagram_label', lang=lang)}", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
+        kb.button(
+            text=f"{tr('instagram_label', lang=lang)}",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"),
+        )
     else:
-        kb.button(text=f"{tr('instagram_label', lang=lang)} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"))
+        kb.button(
+            text=f"{tr('instagram_label', lang=lang)} ➕",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="contact_instagram"),
+        )
     # WebApp title (display current value or add prompt)
     if webapp_title:
-        kb.button(text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'}: {webapp_title}", callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"))
+        kb.button(
+            text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'}: {webapp_title}",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"),
+        )
     else:
-        kb.button(text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'} ➕", callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"))
+        kb.button(
+            text=f"{tr('webapp_title_label', lang=lang) or 'WebApp title'} ➕",
+            callback_data=pack_cb(AdminEditSettingCB, setting_key="webapp_title"),
+        )
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
     kb.adjust(1, 1, 1, 1, 1)
     return kb.as_markup()
@@ -366,7 +488,9 @@ def business_settings_kb(
         state_txt = tr("payments_token_missing_state", lang=lang)
     else:
         state_txt = (
-            tr("payments_enabled_state", lang=lang) if enabled else tr("payments_disabled_state", lang=lang)
+            tr("payments_enabled_state", lang=lang)
+            if enabled
+            else tr("payments_disabled_state", lang=lang)
         )
     kb.button(text=state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_payments"))
 
@@ -376,27 +500,51 @@ def business_settings_kb(
     except Exception:
         _disc = 0
     disc_label = f"{tr('online_discount_label', lang=lang) or 'Online discount'}: {_disc}%"
-    kb.button(text=disc_label, callback_data=pack_cb(AdminEditSettingCB, setting_key="online_payment_discount_percent"))
+    kb.button(
+        text=disc_label,
+        callback_data=pack_cb(AdminEditSettingCB, setting_key="online_payment_discount_percent"),
+    )
 
     # MiniApp toggle on business panel for parity with settings
     try:
         mini_enabled = bool(miniapp_enabled)
     except NameError:
         mini_enabled = False
-    mini_state_txt = tr("miniapp_enabled_state", lang=lang) if mini_enabled else tr("miniapp_disabled_state", lang=lang)
-    kb.button(text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp"))
+    mini_state_txt = (
+        tr("miniapp_enabled_state", lang=lang)
+        if mini_enabled
+        else tr("miniapp_disabled_state", lang=lang)
+    )
+    kb.button(
+        text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp")
+    )
 
     _hold = _coerce_int(hold_min, 10)
-    kb.button(text=tr("hold_label", lang=lang).format(minutes=_hold), callback_data=pack_cb(AdminMenuCB, act="hold_menu"))
+    kb.button(
+        text=tr("hold_label", lang=lang).format(minutes=_hold),
+        callback_data=pack_cb(AdminMenuCB, act="hold_menu"),
+    )
     _cancel = _coerce_int(cancel_min, 180)
-    kb.button(text=tr("cancel_lock_label", lang=lang).format(minutes=format_minutes_short(_cancel, lang)), callback_data=pack_cb(AdminMenuCB, act="cancel_menu"))
+    kb.button(
+        text=tr("cancel_lock_label", lang=lang).format(minutes=format_minutes_short(_cancel, lang)),
+        callback_data=pack_cb(AdminMenuCB, act="cancel_menu"),
+    )
 
     _reschedule = _coerce_int(reschedule_min, 180)
-    kb.button(text=tr("reschedule_lock_label", lang=lang).format(minutes=format_minutes_short(_reschedule, lang)), callback_data=pack_cb(AdminMenuCB, act="reschedule_menu"))
+    kb.button(
+        text=tr("reschedule_lock_label", lang=lang).format(
+            minutes=format_minutes_short(_reschedule, lang)
+        ),
+        callback_data=pack_cb(AdminMenuCB, act="reschedule_menu"),
+    )
 
     # Add manage prices relocated from CRUD
     from bot.app.translations import tr as _tr
-    kb.button(text=_tr("admin_menu_manage_prices", lang=lang), callback_data=pack_cb(AdminMenuCB, act="manage_prices"))
+
+    kb.button(
+        text=_tr("admin_menu_manage_prices", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="manage_prices"),
+    )
     # Reminder preview: "Нагадування: 24 год • 45 хв"
     _rem = _coerce_int(reminder_min, 60)
     _rem_same = _coerce_int(reminder_same_min, 60)
@@ -418,7 +566,10 @@ def business_settings_kb(
         exp_lbl = f"{_exp // 60} {tr('minutes_short', lang=lang) or 'min'}"
     else:
         exp_lbl = f"{_exp} s"
-    kb.button(text=f"{tr('expire_check_frequency', lang=lang)}: {exp_lbl}", callback_data=pack_cb(AdminMenuCB, act="expire_menu"))
+    kb.button(
+        text=f"{tr('expire_check_frequency', lang=lang)}: {exp_lbl}",
+        callback_data=pack_cb(AdminMenuCB, act="expire_menu"),
+    )
     # Timezone display removed from UI (configured via environment)
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
     kb.adjust(1, 1, 1, 1, 1, 1, 1, 1)
@@ -432,7 +583,11 @@ def confirm_delete_service_kb(service_id: str, lang: str = "uk") -> InlineKeyboa
     """
     kb = InlineKeyboardBuilder()
     from bot.app.telegram.common.callbacks import ExecDelServiceCB
-    kb.button(text=t("confirm_delete", lang), callback_data=pack_cb(ExecDelServiceCB, service_id=str(service_id)))
+
+    kb.button(
+        text=t("confirm_delete", lang),
+        callback_data=pack_cb(ExecDelServiceCB, service_id=str(service_id)),
+    )
     kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_service"))
     kb.adjust(1, 1)
     return kb.as_markup()
@@ -446,12 +601,23 @@ def confirm_delete_master_kb(master_id: int, lang: str = "uk") -> InlineKeyboard
     """
     kb = InlineKeyboardBuilder()
     from bot.app.telegram.common.callbacks import ExecDelMasterCB, ConfirmCancelAllMasterCB
-    kb.button(text=t("confirm_delete", lang), callback_data=pack_cb(ExecDelMasterCB, master_id=int(master_id)))
+
+    kb.button(
+        text=t("confirm_delete", lang),
+        callback_data=pack_cb(ExecDelMasterCB, master_id=int(master_id)),
+    )
     # Force delete entry: leads to a stronger confirmation dialog (destructive)
     from bot.app.telegram.common.callbacks import ConfirmForceDelMasterCB
-    kb.button(text="⚠️ " + t("force_delete_label", lang=lang), callback_data=pack_cb(ConfirmForceDelMasterCB, master_id=int(master_id)))
+
+    kb.button(
+        text="⚠️ " + t("force_delete_label", lang=lang),
+        callback_data=pack_cb(ConfirmForceDelMasterCB, master_id=int(master_id)),
+    )
     kb.button(text=t("cancel", lang), callback_data=pack_cb(NavCB, act="back"))
-    kb.button(text=t("cancel_all_bookings_button", lang), callback_data=pack_cb(ConfirmCancelAllMasterCB, master_id=int(master_id)))
+    kb.button(
+        text=t("cancel_all_bookings_button", lang),
+        callback_data=pack_cb(ConfirmCancelAllMasterCB, master_id=int(master_id)),
+    )
     kb.adjust(1, 1, 1)
     return kb.as_markup()
 
@@ -464,20 +630,30 @@ def confirm_force_delete_master_kb(master_id: int, lang: str = "uk") -> InlineKe
     """
     kb = InlineKeyboardBuilder()
     from bot.app.telegram.common.callbacks import ExecForceDelMasterCB
-    kb.button(text=t("confirm_force_delete", lang), callback_data=pack_cb(ExecForceDelMasterCB, master_id=int(master_id)))
+
+    kb.button(
+        text=t("confirm_force_delete", lang),
+        callback_data=pack_cb(ExecForceDelMasterCB, master_id=int(master_id)),
+    )
     kb.button(text=t("cancel", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1, 1)
     return kb.as_markup()
 
 
-def confirm_cancel_all_master_kb(master_id: int, linked_count: int | None = None, lang: str = "uk") -> InlineKeyboardMarkup:
+def confirm_cancel_all_master_kb(
+    master_id: int, linked_count: int | None = None, lang: str = "uk"
+) -> InlineKeyboardMarkup:
     """Keyboard to confirm cancelling all bookings for a master.
 
     Shows a Confirm and Cancel button; UI-only helper, no DB access.
     """
     kb = InlineKeyboardBuilder()
     from bot.app.telegram.common.callbacks import ExecCancelAllMasterCB
-    kb.button(text=t("confirm", lang), callback_data=pack_cb(ExecCancelAllMasterCB, master_id=int(master_id)))
+
+    kb.button(
+        text=t("confirm", lang),
+        callback_data=pack_cb(ExecCancelAllMasterCB, master_id=int(master_id)),
+    )
     kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="manage_masters"))
     kb.adjust(2)
     return kb.as_markup()
@@ -512,7 +688,9 @@ def admin_settings_kb(
         state_txt = tr("payments_token_missing_state", lang=lang)
     else:
         state_txt = (
-            tr("payments_enabled_state", lang=lang) if enabled else tr("payments_disabled_state", lang=lang)
+            tr("payments_enabled_state", lang=lang)
+            if enabled
+            else tr("payments_disabled_state", lang=lang)
         )
     kb.button(text=state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_payments"))
 
@@ -520,12 +698,23 @@ def admin_settings_kb(
 
     # Hold & Cancel lock (keep but after core business settings)
     _hold = _coerce_int(hold_min, 10)
-    kb.button(text=tr("hold_label", lang=lang).format(minutes=_hold), callback_data=pack_cb(AdminMenuCB, act="hold_menu"))
+    kb.button(
+        text=tr("hold_label", lang=lang).format(minutes=_hold),
+        callback_data=pack_cb(AdminMenuCB, act="hold_menu"),
+    )
     _cancel = _coerce_int(cancel_min, 180)
-    kb.button(text=tr("cancel_lock_label", lang=lang).format(minutes=format_minutes_short(_cancel, lang)), callback_data=pack_cb(AdminMenuCB, act="cancel_menu"))
+    kb.button(
+        text=tr("cancel_lock_label", lang=lang).format(minutes=format_minutes_short(_cancel, lang)),
+        callback_data=pack_cb(AdminMenuCB, act="cancel_menu"),
+    )
 
     _reschedule = _coerce_int(reschedule_min, 180)
-    kb.button(text=tr("reschedule_lock_label", lang=lang).format(minutes=format_minutes_short(_reschedule, lang)), callback_data=pack_cb(AdminMenuCB, act="reschedule_menu"))
+    kb.button(
+        text=tr("reschedule_lock_label", lang=lang).format(
+            minutes=format_minutes_short(_reschedule, lang)
+        ),
+        callback_data=pack_cb(AdminMenuCB, act="reschedule_menu"),
+    )
 
     # Working hours summary/edit
     if hours_summary:
@@ -537,8 +726,14 @@ def admin_settings_kb(
     _rem2 = _coerce_int(reminder_min, 60)
     # Telegram MiniApp booking toggle (UI mirrors Telegram Payments toggle)
     mini_enabled = bool(miniapp_enabled)
-    mini_state_txt = tr("miniapp_enabled_state", lang=lang) if mini_enabled else tr("miniapp_disabled_state", lang=lang)
-    kb.button(text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp"))
+    mini_state_txt = (
+        tr("miniapp_enabled_state", lang=lang)
+        if mini_enabled
+        else tr("miniapp_disabled_state", lang=lang)
+    )
+    kb.button(
+        text=mini_state_txt, callback_data=pack_cb(AdminMenuCB, act="toggle_telegram_miniapp")
+    )
     _rem_same2 = _coerce_int(reminder_same_min, 60)
     lead_display2 = format_minutes_short(_rem2, lang)
     if _rem_same2 is not None:
@@ -558,10 +753,16 @@ def admin_settings_kb(
         exp_lbl2 = f"{_exp2 // 60} {tr('minutes_short', lang=lang) or 'min'}"
     else:
         exp_lbl2 = f"{_exp2} s"
-    kb.button(text=f"{tr('expire_check_frequency', lang=lang)}: {exp_lbl2}", callback_data=pack_cb(AdminMenuCB, act="expire_menu"))
+    kb.button(
+        text=f"{tr('expire_check_frequency', lang=lang)}: {exp_lbl2}",
+        callback_data=pack_cb(AdminMenuCB, act="expire_menu"),
+    )
 
     # Expire-check frequency (background worker scan interval)
-    kb.button(text=tr("expire_check_frequency", lang=lang), callback_data=pack_cb(AdminMenuCB, act="expire_menu"))
+    kb.button(
+        text=tr("expire_check_frequency", lang=lang),
+        callback_data=pack_cb(AdminMenuCB, act="expire_menu"),
+    )
 
     kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings"))
 
@@ -578,6 +779,7 @@ def admin_hold_menu_kb(lang: str = "uk", current_min: int | None = None) -> Inli
     kb = InlineKeyboardBuilder()
     options = [1, 5, 10, 15, 20, 30, 45, 60]
     from bot.app.telegram.common.callbacks import AdminSetHoldCB, AdminMenuCB
+
     for m in options:
         suffix = tr("minutes_short", lang=lang)
         label = f"{m} {suffix}" if suffix else f"{m}"
@@ -590,10 +792,16 @@ def admin_hold_menu_kb(lang: str = "uk", current_min: int | None = None) -> Inli
     return kb.as_markup()
 
 
-def admin_reminder_menu_kb(lang: str = "uk", lead_min: int | None = None, same_day_min: int | None = None) -> InlineKeyboardMarkup:
+def admin_reminder_menu_kb(
+    lang: str = "uk", lead_min: int | None = None, same_day_min: int | None = None
+) -> InlineKeyboardMarkup:
     """Меню выбора напоминаний: основное (за N минут/часов) и в день записи."""
     kb = InlineKeyboardBuilder()
-    from bot.app.telegram.common.callbacks import AdminSetReminderCB, AdminSetReminderSameDayCB, NavCB
+    from bot.app.telegram.common.callbacks import (
+        AdminSetReminderCB,
+        AdminSetReminderSameDayCB,
+        NavCB,
+    )
 
     lead_options = [1440, 2160, 2880, 4320]
     same_day_options = [60, 120, 180, 240]
@@ -602,7 +810,7 @@ def admin_reminder_menu_kb(lang: str = "uk", lead_min: int | None = None, same_d
     for m in lead_options:
         if m % 60 == 0:
             hrs = m // 60
-            hr_label = tr('hours_short', lang=lang) or 'h'
+            hr_label = tr("hours_short", lang=lang) or "h"
             label = f"{hrs} {hr_label}"
         else:
             suffix = tr("minutes_short", lang=lang) or "min"
@@ -611,13 +819,15 @@ def admin_reminder_menu_kb(lang: str = "uk", lead_min: int | None = None, same_d
             label = f"✅ {label}"
         kb.button(text=label, callback_data=pack_cb(AdminSetReminderCB, minutes=int(m)))
 
-    kb.button(text=t("disable_reminders", lang=lang), callback_data=pack_cb(AdminSetReminderCB, minutes=0))
+    kb.button(
+        text=t("disable_reminders", lang=lang), callback_data=pack_cb(AdminSetReminderCB, minutes=0)
+    )
 
     # Напоминание в день записи
     for m in same_day_options:
         if m % 60 == 0:
             hrs = m // 60
-            hr_label = tr('hours_short', lang=lang) or 'h'
+            hr_label = tr("hours_short", lang=lang) or "h"
             label = f"{hrs} {hr_label}"
         else:
             suffix = tr("minutes_short", lang=lang) or "min"
@@ -625,7 +835,10 @@ def admin_reminder_menu_kb(lang: str = "uk", lead_min: int | None = None, same_d
         if same_day_min is not None and int(same_day_min) == m:
             label = f"✅ {label}"
         kb.button(text=label, callback_data=pack_cb(AdminSetReminderSameDayCB, minutes=int(m)))
-    kb.button(text=t("disable_same_day_reminders", lang=lang), callback_data=pack_cb(AdminSetReminderSameDayCB, minutes=0))
+    kb.button(
+        text=t("disable_same_day_reminders", lang=lang),
+        callback_data=pack_cb(AdminSetReminderSameDayCB, minutes=0),
+    )
 
     kb.button(text=t("back", lang), callback_data=pack_cb(AdminMenuCB, act="settings_business"))
     kb.adjust(4, 1, 4, 1)
@@ -633,7 +846,9 @@ def admin_reminder_menu_kb(lang: str = "uk", lead_min: int | None = None, same_d
     return kb.as_markup()
 
 
-def admin_expire_menu_kb(lang: str = "uk", current_expire: int | None = None) -> InlineKeyboardMarkup:
+def admin_expire_menu_kb(
+    lang: str = "uk", current_expire: int | None = None
+) -> InlineKeyboardMarkup:
     """Меню выбора частоты проверки просроченных броней (в секундах)."""
     kb = InlineKeyboardBuilder()
     # options in seconds: 1m,5m,15m,30m,1h,2h,6h,1d
@@ -643,14 +858,17 @@ def admin_expire_menu_kb(lang: str = "uk", current_expire: int | None = None) ->
 
     for s in options:
         if s >= 86400 and s % 86400 == 0:
-                lbl = f"{s // 86400} {t('day', lang=lang)}"
+            lbl = f"{s // 86400} {t('day', lang=lang)}"
         elif s >= 3600 and s % 3600 == 0:
             lbl = f"{s // 3600} {tr('hours_short', lang=lang) or 'h'}"
         elif s >= 60 and s % 60 == 0:
             lbl = f"{s // 60} {tr('minutes_short', lang=lang) or 'min'}"
         else:
             lbl = f"{s} s"
-        kb.button(text=(f"✅ {lbl}" if current_expire == s else lbl), callback_data=pack_cb(AdminSetExpireCB, seconds=int(s)))
+        kb.button(
+            text=(f"✅ {lbl}" if current_expire == s else lbl),
+            callback_data=pack_cb(AdminSetExpireCB, seconds=int(s)),
+        )
     # Keep navigation consistent with other per-setting menus (back to Business settings)
     kb.button(text=t("back", lang), callback_data=pack_cb(AdminMenuCB, act="settings_business"))
     kb.adjust(4, 4, 1)
@@ -663,35 +881,42 @@ def admin_cancel_menu_kb(lang: str = "uk", current_min: int | None = None) -> In
     kb = InlineKeyboardBuilder()
     options = [30, 60, 120, 180, 240, 360, 720, 1440]
     from bot.app.telegram.common.callbacks import AdminSetCancelCB, AdminMenuCB
+
     for m in options:
         label = format_minutes_short(m, lang)
         if current_min is not None and int(current_min) == m:
             label = f"✅ {label}"
         kb.button(text=label, callback_data=pack_cb(AdminSetCancelCB, minutes=int(m)))
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings_business"))
+    kb.button(
+        text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings_business")
+    )
     kb.adjust(4, 4, 1)
     logger.debug("Меню настройки окна отмены (минуты) сгенерировано")
     return kb.as_markup()
 
 
-def admin_reschedule_menu_kb(lang: str = "uk", current_min: int | None = None) -> InlineKeyboardMarkup:
+def admin_reschedule_menu_kb(
+    lang: str = "uk", current_min: int | None = None
+) -> InlineKeyboardMarkup:
     """Меню выбора окна запрета переноса (в минутах)."""
     kb = InlineKeyboardBuilder()
     options = [30, 60, 120, 180, 240, 360, 720, 1440]
     from bot.app.telegram.common.callbacks import AdminSetRescheduleCB, AdminMenuCB
+
     for m in options:
         label = format_minutes_short(m, lang)
         if current_min is not None and int(current_min) == m:
             label = f"✅ {label}"
         kb.button(text=label, callback_data=pack_cb(AdminSetRescheduleCB, minutes=int(m)))
-    kb.button(text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings_business"))
+    kb.button(
+        text=tr("back", lang=lang), callback_data=pack_cb(AdminMenuCB, act="settings_business")
+    )
     kb.adjust(4, 4, 1)
     logger.debug("Меню настройки окна переноса (минуты) сгенерировано")
     return kb.as_markup()
 
 
 # The old bookings filter keyboard has been removed: handlers now use the
-
 
 
 def get_admin_bookings_dashboard_kb(
@@ -765,7 +990,9 @@ def biz_menu_kb(lang: str = "uk") -> InlineKeyboardMarkup:
     )
 
 
-def pagination_kb(prefix: str, page: int, total_pages: int, lang: str = "uk") -> InlineKeyboardMarkup:
+def pagination_kb(
+    prefix: str, page: int, total_pages: int, lang: str = "uk"
+) -> InlineKeyboardMarkup:
     """Генерирует клавиатуру пагинации.
 
     Args:
@@ -790,9 +1017,13 @@ def pagination_kb(prefix: str, page: int, total_pages: int, lang: str = "uk") ->
         logger.warning("pagination_kb: unsupported prefix %s, paging buttons skipped", prefix)
     else:
         if page > 1:
-            builder.button(text=tr("prev_page", lang=lang), callback_data=pack_cb(CB_Class, page=page - 1))
+            builder.button(
+                text=tr("prev_page", lang=lang), callback_data=pack_cb(CB_Class, page=page - 1)
+            )
         if page < total_pages:
-            builder.button(text=tr("next_page", lang=lang), callback_data=pack_cb(CB_Class, page=page + 1))
+            builder.button(
+                text=tr("next_page", lang=lang), callback_data=pack_cb(CB_Class, page=page + 1)
+            )
     # Choose an appropriate Back target depending on prefix (delete flows go to CRUD)
     try:
         if isinstance(prefix, str) and prefix.startswith("del_master"):
@@ -805,7 +1036,12 @@ def pagination_kb(prefix: str, page: int, total_pages: int, lang: str = "uk") ->
         back_cb = pack_cb(NavCB, act="back")
     builder.button(text=tr("back", lang=lang), callback_data=back_cb)
     builder.adjust(2, 1)
-    logger.debug("Клавиатура пагинации сгенерирована: prefix=%s, page=%d, total_pages=%d", prefix, page, total_pages)
+    logger.debug(
+        "Клавиатура пагинации сгенерирована: prefix=%s, page=%d, total_pages=%d",
+        prefix,
+        page,
+        total_pages,
+    )
     return builder.as_markup()
 
 

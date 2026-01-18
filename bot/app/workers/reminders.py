@@ -3,6 +3,7 @@
 Scans upcoming bookings and sends a reminder message about 24 hours before start.
 Marks a per-booking flag to avoid duplicate notifications.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,9 +31,11 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
     """
     # Determine lead time from settings (minutes) and compute window
     from bot.app.services.client_services import UserRepo
+
     # Use ServiceRepo + SettingsRepo directly
     from bot.app.services.admin_services import ServiceRepo, SettingsRepo
     from bot.app.services.shared_services import _safe_send
+
     local_tz = get_local_tz() or ZoneInfo("UTC")
     try:
         lead_primary = int(await SettingsRepo.get_reminder_lead_minutes())
@@ -77,17 +80,25 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                 res = await session.execute(stmt)
                 bookings = res.scalars().all()
 
-            user_ids = {int(getattr(b, "user_id", 0) or 0) for b in bookings if getattr(b, "user_id", None)}
+            user_ids = {
+                int(getattr(b, "user_id", 0) or 0) for b in bookings if getattr(b, "user_id", None)
+            }
             clients_map = await UserRepo.get_by_ids(user_ids) if user_ids else {}
 
             sent_count = 0
             for booking in bookings:
                 try:
-                    uid = int(getattr(booking, "user_id", getattr(booking, "client_id", 0) or 0) or 0)
+                    uid = int(
+                        getattr(booking, "user_id", getattr(booking, "client_id", 0) or 0) or 0
+                    )
                     user = clients_map.get(uid)
                     chat_id = getattr(user, "telegram_id", None) if user else None
                     if not chat_id:
-                        logger.debug("Reminder: no chat_id resolved for booking %s (user_id=%s)", getattr(booking, "id", "?"), uid)
+                        logger.debug(
+                            "Reminder: no chat_id resolved for booking %s (user_id=%s)",
+                            getattr(booking, "id", "?"),
+                            uid,
+                        )
                         continue
 
                     lang = await safe_get_locale(int(chat_id))
@@ -104,14 +115,18 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                     try:
                         from bot.app.services.master_services import MasterRepo
 
-                        master_name = await MasterRepo.get_master_name(int(getattr(booking, "master_id", 0) or 0))
+                        master_name = await MasterRepo.get_master_name(
+                            int(getattr(booking, "master_id", 0) or 0)
+                        )
                     except Exception:
                         master_name = t("master_label", lang)
                     dt_local = None
                     date_txt = "—"
                     try:
                         starts_at = booking.starts_at
-                        dt_local = starts_at.astimezone(local_tz) if (starts_at is not None) else starts_at
+                        dt_local = (
+                            starts_at.astimezone(local_tz) if (starts_at is not None) else starts_at
+                        )
                         time_txt = f"{dt_local:%H:%M}"
                         date_txt = f"{dt_local:%d.%m}"
                     except Exception:
@@ -163,12 +178,18 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                         else:
                             body_template = t("reminder_same_day_body", lang)
 
-                    body = body_template.format(time=time_txt, service=service_name, master=master_name, date=date_txt)
+                    body = body_template.format(
+                        time=time_txt, service=service_name, master=master_name, date=date_txt
+                    )
                     text = f"<b>{title}</b>\n\n{body}"
 
                     ok = await _safe_send(bot, chat_id, text)
                     if not ok:
-                        logger.warning("Failed to send reminder to %s for booking %s", chat_id, getattr(booking, "id", "?"))
+                        logger.warning(
+                            "Failed to send reminder to %s for booking %s",
+                            chat_id,
+                            getattr(booking, "id", "?"),
+                        )
                         continue
 
                     try:
@@ -180,15 +201,24 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                                 flag_attr: True,
                             }
                             await session.execute(
-                                update(Booking).where(Booking.id == getattr(booking, "id", None)).values(**values)
+                                update(Booking)
+                                .where(Booking.id == getattr(booking, "id", None))
+                                .values(**values)
                             )
                             await session.commit()
                     except Exception:
-                        logger.exception("Failed to mark reminder metadata for booking %s", getattr(booking, "id", "?"))
+                        logger.exception(
+                            "Failed to mark reminder metadata for booking %s",
+                            getattr(booking, "id", "?"),
+                        )
 
                     sent_count += 1
                 except Exception as ie:
-                    logger.exception("Error processing reminder for booking %s: %s", getattr(booking, "id", "?"), ie)
+                    logger.exception(
+                        "Error processing reminder for booking %s: %s",
+                        getattr(booking, "id", "?"),
+                        ie,
+                    )
 
             return sent_count
 
@@ -229,7 +259,9 @@ async def start_reminders_worker(bot: Bot) -> Callable[[], Awaitable[None]]:
     if REMINDERS_CHECK_SECONDS_INVALID:
         logger.warning("Invalid REMINDERS_CHECK_SECONDS; defaulting to %s", REMINDERS_CHECK_SECONDS)
     stop_event: asyncio.Event = asyncio.Event()
-    task = asyncio.create_task(_run_loop(stop_event, bot, interval_seconds), name="reminders-worker")
+    task = asyncio.create_task(
+        _run_loop(stop_event, bot, interval_seconds), name="reminders-worker"
+    )
 
     async def _stop() -> None:
         try:
@@ -245,7 +277,9 @@ async def start_reminders_worker(bot: Bot) -> Callable[[], Awaitable[None]]:
     return _stop
 
 
-async def stop_reminders_worker(stop_callable: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+async def stop_reminders_worker(
+    stop_callable: Optional[Callable[[], Awaitable[None]]] = None,
+) -> None:
     if stop_callable:
         await stop_callable()
 

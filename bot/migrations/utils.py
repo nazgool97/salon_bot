@@ -29,43 +29,49 @@ def table_exists(table_name: str, conn: Optional[sa.engine.Connection] = None) -
         return False
 
 
-def column_exists(table_name: str, column_name: str, conn: Optional[sa.engine.Connection] = None) -> bool:
+def column_exists(
+    table_name: str, column_name: str, conn: Optional[sa.engine.Connection] = None
+) -> bool:
     insp = _inspector(conn)
     if insp is None:
         return False
     try:
-        return any(col.get('name') == column_name for col in insp.get_columns(table_name))
+        return any(col.get("name") == column_name for col in insp.get_columns(table_name))
     except Exception:
         return False
 
 
-def index_exists(table_name: str, index_name: str, conn: Optional[sa.engine.Connection] = None) -> bool:
+def index_exists(
+    table_name: str, index_name: str, conn: Optional[sa.engine.Connection] = None
+) -> bool:
     insp = _inspector(conn)
     if insp is None:
         return False
     try:
-        return any(idx.get('name') == index_name for idx in insp.get_indexes(table_name))
+        return any(idx.get("name") == index_name for idx in insp.get_indexes(table_name))
     except Exception:
         return False
 
 
-def constraint_exists(table_name: str, constraint_name: str, conn: Optional[sa.engine.Connection] = None) -> bool:
+def constraint_exists(
+    table_name: str, constraint_name: str, conn: Optional[sa.engine.Connection] = None
+) -> bool:
     insp = _inspector(conn)
     if insp is None:
         return False
     try:
         # check primary key, unique, foreign, and check constraints
         pk = insp.get_pk_constraint(table_name) or {}
-        if pk.get('name') == constraint_name:
+        if pk.get("name") == constraint_name:
             return True
         for uq in insp.get_unique_constraints(table_name):
-            if uq.get('name') == constraint_name:
+            if uq.get("name") == constraint_name:
                 return True
         for fk in insp.get_foreign_keys(table_name):
-            if fk.get('name') == constraint_name:
+            if fk.get("name") == constraint_name:
                 return True
         for chk in insp.get_check_constraints(table_name):
-            if chk.get('name') == constraint_name:
+            if chk.get("name") == constraint_name:
                 return True
         return False
     except Exception:

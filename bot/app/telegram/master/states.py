@@ -15,6 +15,8 @@ class MasterStates(StatesGroup):
     settings_edit_hours_start = State()
     settings_edit_hours_end = State()
     settings_edit_autorules = State()
+
+
 from aiogram.fsm.state import State, StatesGroup
 
 

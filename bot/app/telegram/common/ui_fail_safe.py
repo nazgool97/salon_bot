@@ -14,7 +14,13 @@ __all__ = ["safe_text", "safe_edit", "try_or_fallback"]
 __all__.append("SafeUIMiddleware")
 
 
-async def handle_callback_error(target: Message | CallbackQuery | Any, lang: str, e: Exception, *, fallback_text: str | None = None) -> None:
+async def handle_callback_error(
+    target: Message | CallbackQuery | Any,
+    lang: str,
+    e: Exception,
+    *,
+    fallback_text: str | None = None,
+) -> None:
     """Unified error handling for handlers.
 
     Logs the exception and notifies the user using the safest available channel
@@ -34,6 +40,7 @@ async def handle_callback_error(target: Message | CallbackQuery | Any, lang: str
 
     try:
         from bot.app.translations import t
+
         text = fallback_text or t("error", lang)
     except Exception:
         text = fallback_text or "Ошибка"
@@ -99,6 +106,7 @@ def normalize_msg(obj: Message | CallbackQuery | Any) -> Message | CallbackQuery
         pass
     return obj
 
+
 T = TypeVar("T")
 
 
@@ -136,7 +144,6 @@ async def safe_edit(
     Returns:
         True, если операция успешна, иначе False.
     """
-
 
     text = safe_text(text)
     fallback_text = safe_text(fallback_text) if fallback_text else None
@@ -249,12 +256,17 @@ async def try_or_fallback(
             fb_res = fallback()
             if inspect.isawaitable(fb_res):
                 fb_res = await fb_res
-            logger.debug("Резервная функция %s выполнена", getattr(fallback, "__name__", str(fallback)))
+            logger.debug(
+                "Резервная функция %s выполнена", getattr(fallback, "__name__", str(fallback))
+            )
             return fb_res
         except Exception as e:
-            logger.error("Ошибка выполнения резервной функции %s: %s", getattr(fallback, "__name__", str(fallback)), e)
+            logger.error(
+                "Ошибка выполнения резервной функции %s: %s",
+                getattr(fallback, "__name__", str(fallback)),
+                e,
+            )
             return None
-
 
 
 class SafeUIMiddleware:
@@ -310,77 +322,84 @@ class SafeUIMiddleware:
 
 
 def safe_handler(require_from_user: bool = True, fallback_text: str | None = None):
-        """Decorator to centralize handler-level UI safety and error handling.
+    """Decorator to centralize handler-level UI safety and error handling.
 
-        - Verifies `.from_user.id` presence when `require_from_user` is True; if
-          missing, it will attempt a safe notification and return early.
-        - Catches exceptions raised by the handler and forwards them to
-          `handle_callback_error` to present a consistent UI fallback.
+    - Verifies `.from_user.id` presence when `require_from_user` is True; if
+      missing, it will attempt a safe notification and return early.
+    - Catches exceptions raised by the handler and forwards them to
+      `handle_callback_error` to present a consistent UI fallback.
 
-        Usage:
-            @router.callback_query(...)
-            @safe_handler()
-            async def handler(cb: CallbackQuery, ...):
-                ...
-        """
-        import functools
-        import inspect
+    Usage:
+        @router.callback_query(...)
+        @safe_handler()
+        async def handler(cb: CallbackQuery, ...):
+            ...
+    """
+    import functools
+    import inspect
 
-        def _find_target(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-            for v in list(args) + list(kwargs.values()):
-                try:
-                    if hasattr(v, "from_user") or hasattr(v, "message"):
-                        return v
-                except Exception:
-                    continue
-            return None
+    def _find_target(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        for v in list(args) + list(kwargs.values()):
+            try:
+                if hasattr(v, "from_user") or hasattr(v, "message"):
+                    return v
+            except Exception:
+                continue
+        return None
 
-        def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-            if inspect.iscoroutinefunction(fn):
-                @functools.wraps(fn)
-                async def _wrapped(*args: Any, **kwargs: Any):
-                    target = _find_target(args, kwargs)
-                    # Check presence of from_user.id when required
-                    if require_from_user:
-                        user_id = None
-                        try:
-                            if target is not None and hasattr(target, "from_user"):
-                                user = getattr(target, "from_user")
-                                user_id = getattr(user, "id", None)
-                            if (not user_id) and hasattr(target, "message"):
-                                m = getattr(target, "message")
-                                if hasattr(m, "from_user"):
-                                    user = getattr(m, "from_user")
-                                    user_id = getattr(user, "id", None)
-                        except Exception:
-                            user_id = None
+    def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        if inspect.iscoroutinefunction(fn):
 
-                        if not user_id:
-                            try:
-                                txt = fallback_text or "Error"
-                                await safe_edit(target or "", txt)
-                            except Exception:
-                                pass
-                            return None
-
+            @functools.wraps(fn)
+            async def _wrapped(*args: Any, **kwargs: Any):
+                target = _find_target(args, kwargs)
+                # Check presence of from_user.id when required
+                if require_from_user:
+                    user_id = None
                     try:
-                        return await fn(*args, **kwargs)
-                    except Exception as e:
+                        if target is not None and hasattr(target, "from_user"):
+                            user = getattr(target, "from_user")
+                            user_id = getattr(user, "id", None)
+                        if (not user_id) and hasattr(target, "message"):
+                            m = getattr(target, "message")
+                            if hasattr(m, "from_user"):
+                                user = getattr(m, "from_user")
+                                user_id = getattr(user, "id", None)
+                    except Exception:
+                        user_id = None
+
+                    if not user_id:
                         try:
-                            # prefer using the provided handler above; fall back to a
-                            # generic target if none found
-                            lang = kwargs.get("locale") or (args[-1] if args else None) or "en"
-                            await handle_callback_error(target or (args[0] if args else None), lang, e, fallback_text=fallback_text)
-                            return None
+                            txt = fallback_text or "Error"
+                            await safe_edit(target or "", txt)
                         except Exception:
-                            raise
+                            pass
+                        return None
 
-                return _wrapped
-            else:
-                @functools.wraps(fn)
-                def _wrapped_sync(*args: Any, **kwargs: Any):
-                    return fn(*args, **kwargs)
+                try:
+                    return await fn(*args, **kwargs)
+                except Exception as e:
+                    try:
+                        # prefer using the provided handler above; fall back to a
+                        # generic target if none found
+                        lang = kwargs.get("locale") or (args[-1] if args else None) or "en"
+                        await handle_callback_error(
+                            target or (args[0] if args else None),
+                            lang,
+                            e,
+                            fallback_text=fallback_text,
+                        )
+                        return None
+                    except Exception:
+                        raise
 
-                return _wrapped_sync
+            return _wrapped
+        else:
 
-        return _decorator
+            @functools.wraps(fn)
+            def _wrapped_sync(*args: Any, **kwargs: Any):
+                return fn(*args, **kwargs)
+
+            return _wrapped_sync
+
+    return _decorator

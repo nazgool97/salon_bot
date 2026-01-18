@@ -1,4 +1,5 @@
 """Runtime entrypoint for Telegram bot."""
+
 import argparse
 import asyncio
 import logging
@@ -37,15 +38,13 @@ console_handler = RichHandler(
 # File: WARNING+ only
 file_handler = logging.FileHandler("bot.log", encoding="utf-8")
 file_handler.setLevel(logging.WARNING)
-file_handler.setFormatter(logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-))
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
 
 # Resolve root log level from environment (LOG_LEVEL), default INFO
 _level = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 
 logging.basicConfig(
-    level=_level,       # configurable via LOG_LEVEL
+    level=_level,  # configurable via LOG_LEVEL
     format="%(message)s",
     handlers=[console_handler, file_handler],
 )
@@ -67,6 +66,7 @@ logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 # BOOTSTRAP
 # ==============================================================
 
+
 async def maybe_seed() -> None:
     """Опционально заполняет данные через RUN_BOOTSTRAP."""
     if not RUN_BOOTSTRAP_ENABLED:
@@ -79,6 +79,7 @@ async def maybe_seed() -> None:
 # MAIN
 # ==============================================================
 
+
 async def main() -> None:
     token = BOT_TOKEN
     if not token:
@@ -88,6 +89,7 @@ async def main() -> None:
     # Load settings BEFORE routers
     try:
         from bot.app.services.admin_services import load_settings_from_db
+
         await load_settings_from_db()
         logger.info("Loaded runtime settings from DB")
     except Exception as e:
@@ -99,6 +101,7 @@ async def main() -> None:
     # Navigation first
     try:
         from bot.app.telegram.common.navigation import nav_router
+
         dp.include_router(nav_router)
         logger.info("Navigation router included")
     except Exception as e:
@@ -131,9 +134,7 @@ async def main() -> None:
         from aiogram.filters import ExceptionTypeFilter
         from sqlalchemy.exc import SQLAlchemyError
         from aiogram.exceptions import TelegramAPIError
-        from bot.app.telegram.common.errors import (
-            handle_db_error, handle_telegram_error
-        )
+        from bot.app.telegram.common.errors import handle_db_error, handle_telegram_error
 
         async def _extract_exception(args, kwargs):
             """Helper: find an exception object from various aiogram error handler signatures.
@@ -163,7 +164,6 @@ async def main() -> None:
 
             return None
 
-
         async def _on_db_error(*args, **kwargs):
             exc = await _extract_exception(args, kwargs)
             if exc is None:
@@ -171,13 +171,11 @@ async def main() -> None:
                 return
             await handle_db_error(exc)
 
-
         async def _on_telegram_error(*args, **kwargs):
             exc = await _extract_exception(args, kwargs)
             if exc is None:
                 return
             await handle_telegram_error(exc)
-
 
         async def _on_unhandled(*args, **kwargs):
             exc = await _extract_exception(args, kwargs)
@@ -254,6 +252,7 @@ if __name__ == "__main__":
         async def _create(tg_id, name):
             async with get_session() as session:
                 from sqlalchemy import select
+
                 res = await session.execute(select(Master).where(Master.telegram_id == tg_id))
                 if res.scalars().first():
                     print("Master already exists.")

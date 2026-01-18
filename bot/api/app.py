@@ -43,7 +43,12 @@ from bot.app.services.shared_services import (
     get_contact_info,
     resolve_online_payment_discount_percent,
 )
-from bot.app.services.shared_services import format_booking_list_item, default_language, format_slot_label, format_date
+from bot.app.services.shared_services import (
+    format_booking_list_item,
+    default_language,
+    format_slot_label,
+    format_date,
+)
 from bot.app.services.shared_services import normalize_error_code
 from bot.app.telegram.common.status import get_status_label
 from bot.app.core.db import get_session
@@ -150,7 +155,6 @@ class BookingResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-
 def booking_error_handler(default_error: str):
     """Decorator to de-duplicate try/except in booking endpoints.
 
@@ -218,6 +222,7 @@ class AvailableDaysResponse(BaseModel):
 
 class PriceQuoteRequest(BaseModel):
     service_ids: list[str] = Field(..., min_length=1)
+
     class PaymentMethod(str, Enum):
         cash = "cash"
         online = "online"
@@ -307,11 +312,16 @@ class InvoiceRequest(BaseModel):
 # Security helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_init_data(init_data: str) -> Dict[str, str]:
     try:
-        parsed = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True, strict_parsing=True))
+        parsed = dict(
+            urllib.parse.parse_qsl(init_data, keep_blank_values=True, strict_parsing=True)
+        )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_init_data_format") from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_init_data_format"
+        ) from exc
     if "hash" not in parsed:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_hash")
     return parsed
@@ -325,7 +335,9 @@ def _calc_expected_hash(data: Dict[str, str], token: str) -> str:
     computed = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
     logger.debug("initData data_check_string=%s computed_hash=%s", data_check_string, computed)
     if not hmac.compare_digest(computed, check_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_init_data_signature")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_init_data_signature"
+        )
     return computed
 
 
@@ -337,7 +349,9 @@ def validate_init_data(init_data: str) -> TelegramUser:
         user_raw = parsed.get("user")
         user_payload = json.loads(user_raw) if user_raw else None
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_user_payload") from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_user_payload"
+        ) from exc
 
     if not isinstance(user_payload, dict) or "id" not in user_payload:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing_user")
@@ -347,7 +361,9 @@ def validate_init_data(init_data: str) -> TelegramUser:
         if auth_date_raw:
             auth_ts = int(auth_date_raw)
             if auth_ts < int(datetime.now(UTC).timestamp()) - 86400:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_init_data")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_init_data"
+                )
     except HTTPException:
         raise
     except Exception:
@@ -380,9 +396,13 @@ def _decode_token(token: str) -> Principal:
     try:
         data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
     except jwt.ExpiredSignatureError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token_expired") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="token_expired"
+        ) from exc
     except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token"
+        ) from exc
 
     return Principal(
         user_id=int(data.get("sub")),
@@ -414,10 +434,14 @@ async def get_current_principal(
     lang_q: str | None = Query(default=None, alias="lang"),
 ) -> Principal:
     if not authorization:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_authorization")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="missing_authorization"
+        )
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_authorization_header")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_authorization_header"
+        )
 
     principal = _decode_token(token)
 
@@ -555,7 +579,9 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
 async def get_me(principal: Principal = Depends(get_current_principal)) -> MeOut:
     user = await UserRepo.get_by_id(principal.user_id)
     if not user:
-        user = await UserRepo.get_or_create(principal.telegram_id, name=principal.first_name, username=principal.username)
+        user = await UserRepo.get_or_create(
+            principal.telegram_id, name=principal.first_name, username=principal.username
+        )
 
     locale = None
     try:
@@ -577,29 +603,28 @@ async def get_me(principal: Principal = Depends(get_current_principal)) -> MeOut
 async def get_slots(
     master_id: int,
     date: str,  # YYYY-MM-DD
-    service_ids: str = Query(...), # Приходит как "1,2,3"
+    service_ids: str = Query(...),  # Приходит как "1,2,3"
 ):
     try:
         dt_obj = datetime.strptime(date, "%Y-%m-%d")
         ids_list = [sid.strip() for sid in service_ids.split(",") if sid.strip()]
-        
+
         # Resolve total duration via canonical helper; let it raise on error.
-        totals = await get_services_duration_and_price(ids_list, online_payment=False, master_id=master_id)
+        totals = await get_services_duration_and_price(
+            ids_list, online_payment=False, master_id=master_id
+        )
         total_minutes = int(totals.get("total_minutes") or 0)
 
         # Call the canonical slot calculation with aggregated duration.
         from bot.app.services.client_services import get_available_time_slots_for_services
 
         slots = await get_available_time_slots_for_services(
-            date=dt_obj,
-            master_id=master_id,
-            service_durations=[total_minutes]
+            date=dt_obj, master_id=master_id, service_durations=[total_minutes]
         )
 
         # Превращаем слоты (aware datetime) в строки "HH:MM"
         return SlotsResponse(
-            slots=[s.strftime("%H:%M") for s in slots],
-            timezone=str(get_local_tz())
+            slots=[s.strftime("%H:%M") for s in slots], timezone=str(get_local_tz())
         )
     except Exception as e:
         logger.exception("Ошибка при получении слотов для WebApp: %s", e)
@@ -655,8 +680,7 @@ async def check_slot(
     # Compare timezone-aware datetimes aligned to minute precision
     slot_key = slot_local.replace(second=0, microsecond=0)
     is_available = any(
-        s.astimezone(local_tz).replace(second=0, microsecond=0) == slot_key
-        for s in available_slots
+        s.astimezone(local_tz).replace(second=0, microsecond=0) == slot_key for s in available_slots
     )
 
     # When unavailable, include a conflict code computed by the canonical repo
@@ -687,7 +711,9 @@ async def available_days(
 ) -> AvailableDaysResponse:
     agg = await ServiceRepo.aggregate_services(service_ids)
     total_minutes = int(agg.get("total_minutes") or 60)
-    days = await get_available_days_for_month(master_id, year, month, service_duration_min=total_minutes)
+    days = await get_available_days_for_month(
+        master_id, year, month, service_duration_min=total_minutes
+    )
     try:
         tz = get_local_tz()
         tz_name = getattr(tz, "key", None) or str(tz)
@@ -773,7 +799,10 @@ async def list_masters(principal: Principal = Depends(get_current_principal)) ->
 
 
 @app.get("/api/service_ranges")
-async def service_ranges(service_ids: list[str] = Query(..., alias="service_ids[]"), principal: Principal = Depends(get_current_principal)) -> dict:
+async def service_ranges(
+    service_ids: list[str] = Query(..., alias="service_ids[]"),
+    principal: Principal = Depends(get_current_principal),
+) -> dict:
     """Return duration and price ranges for provided service ids.
 
     Response format: { service_id: { min_duration: int|null, max_duration: int|null, min_price_cents: int|null, max_price_cents: int|null } }
@@ -798,8 +827,16 @@ async def service_ranges(service_ids: list[str] = Query(..., alias="service_ids[
             stmt = (
                 select(
                     MasterService.service_id,
-                    func.min(func.coalesce(MasterService.duration_minutes, Service.duration_minutes, default_slot)).label("min_dur"),
-                    func.max(func.coalesce(MasterService.duration_minutes, Service.duration_minutes, default_slot)).label("max_dur"),
+                    func.min(
+                        func.coalesce(
+                            MasterService.duration_minutes, Service.duration_minutes, default_slot
+                        )
+                    ).label("min_dur"),
+                    func.max(
+                        func.coalesce(
+                            MasterService.duration_minutes, Service.duration_minutes, default_slot
+                        )
+                    ).label("max_dur"),
                     func.min(func.coalesce(Service.price_cents, 0)).label("min_price"),
                     func.max(func.coalesce(Service.price_cents, 0)).label("max_price"),
                 )
@@ -825,7 +862,9 @@ async def service_ranges(service_ids: list[str] = Query(..., alias="service_ids[
             # For services not present in master_services, fall back to Service table
             missing = [sid for sid in service_ids if sid not in found]
             if missing:
-                stmt2 = select(Service.id, Service.duration_minutes, Service.price_cents).where(Service.id.in_(missing))
+                stmt2 = select(Service.id, Service.duration_minutes, Service.price_cents).where(
+                    Service.id.in_(missing)
+                )
                 res2 = await session.execute(stmt2)
                 for sid, dur, price in res2.all():
                     d = int(dur) if dur is not None else default_slot
@@ -844,7 +883,9 @@ async def service_ranges(service_ids: list[str] = Query(..., alias="service_ids[
 
 
 @app.post("/api/masters_match", response_model=list[MasterOut])
-async def masters_match(payload: MastersMatchRequest, principal: Principal = Depends(get_current_principal)) -> list[MasterOut]:
+async def masters_match(
+    payload: MastersMatchRequest, principal: Principal = Depends(get_current_principal)
+) -> list[MasterOut]:
     # Return masters who provide ALL requested services (intersection) in a single query
     if not payload.service_ids:
         return []
@@ -858,18 +899,24 @@ async def masters_match(payload: MastersMatchRequest, principal: Principal = Dep
                 .join(MasterService, MasterService.master_id == Master.id)
                 .where(MasterService.service_id.in_(payload.service_ids))
                 .group_by(Master.id, Master.name)
-                .having(func.count(func.distinct(MasterService.service_id)) == len(payload.service_ids))
+                .having(
+                    func.count(func.distinct(MasterService.service_id)) == len(payload.service_ids)
+                )
                 .order_by(Master.name)
             )
             rows = (await session.execute(stmt)).all()
-            return [MasterOut(id=int(r[0]), name=str(r[1]) if r[1] is not None else "") for r in rows]
+            return [
+                MasterOut(id=int(r[0]), name=str(r[1]) if r[1] is not None else "") for r in rows
+            ]
     except Exception as exc:
         logger.exception("masters_match failed for %s: %s", payload.service_ids, exc)
         raise HTTPException(status_code=500, detail="masters_unavailable") from exc
 
 
 @app.get("/api/master_profile", response_model=MasterProfileOut)
-async def master_profile(master_id: int, principal: Principal = Depends(get_current_principal)) -> MasterProfileOut:
+async def master_profile(
+    master_id: int, principal: Principal = Depends(get_current_principal)
+) -> MasterProfileOut:
     data = await MasterRepo.get_master_profile_data(master_id)
     if not data or not data.get("master"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="master_not_found")
@@ -930,7 +977,9 @@ async def master_profile(master_id: int, principal: Principal = Depends(get_curr
     return MasterProfileOut(
         id=int(getattr(master_obj, "id", master_id) or master_id),
         name=str(getattr(master_obj, "name", "")),
-        telegram_id=int(getattr(master_obj, "telegram_id", 0) or 0) if getattr(master_obj, "telegram_id", None) is not None else None,
+        telegram_id=int(getattr(master_obj, "telegram_id", 0) or 0)
+        if getattr(master_obj, "telegram_id", None) is not None
+        else None,
         bio=data.get("about_text") or None,
         rating=float(rating_val) if rating_val is not None else None,
         ratings_count=int(ratings_count_val) if ratings_count_val is not None else None,
@@ -945,13 +994,19 @@ async def master_profile(master_id: int, principal: Principal = Depends(get_curr
 
 
 @app.get("/api/masters_for_service", response_model=list[MasterOut])
-async def masters_for_service(service_id: str, principal: Principal = Depends(get_current_principal)) -> list[MasterOut]:
+async def masters_for_service(
+    service_id: str, principal: Principal = Depends(get_current_principal)
+) -> list[MasterOut]:
     masters = await MasterRepo.get_masters_for_service(service_id)
-    return [MasterOut(id=int(getattr(m, "id", 0)), name=str(getattr(m, "name", ""))) for m in masters]
+    return [
+        MasterOut(id=int(getattr(m, "id", 0)), name=str(getattr(m, "name", ""))) for m in masters
+    ]
 
 
 @app.post("/api/price_quote", response_model=PriceQuoteResponse)
-async def price_quote(payload: PriceQuoteRequest, principal: Principal = Depends(get_current_principal)) -> PriceQuoteResponse:
+async def price_quote(
+    payload: PriceQuoteRequest, principal: Principal = Depends(get_current_principal)
+) -> PriceQuoteResponse:
     """Calculate final price on the server to keep Mini App and bot in sync."""
     try:
         quote = await client_services.calculate_price_quote(
@@ -963,9 +1018,13 @@ async def price_quote(payload: PriceQuoteRequest, principal: Principal = Depends
         original_price_raw = quote.get("original_price_cents")
         original_price_cents = int(original_price_raw) if original_price_raw is not None else None
         discount_amount_raw = quote.get("discount_amount_cents")
-        discount_amount_cents = int(discount_amount_raw) if discount_amount_raw is not None else None
+        discount_amount_cents = (
+            int(discount_amount_raw) if discount_amount_raw is not None else None
+        )
         discount_percent_raw = quote.get("discount_percent_applied")
-        discount_percent_applied = float(discount_percent_raw) if discount_percent_raw is not None else None
+        discount_percent_applied = (
+            float(discount_percent_raw) if discount_percent_raw is not None else None
+        )
         duration_raw = quote.get("duration_minutes")
         duration_minutes = int(duration_raw) if duration_raw is not None else None
         currency_val = quote.get("currency") or "UAH"
@@ -991,7 +1050,6 @@ async def list_bookings(
     principal: Principal = Depends(get_current_principal),
     mode: str = Query("upcoming", regex="^(upcoming|history)$"),
 ) -> list[BookingItemOut]:
-
     # Use repository helper that implements correct SQL-level filtering for
     # active/upcoming bookings (includes RESERVED/PENDING_PAYMENT and
     # performs time comparison in DB to avoid precision races).
@@ -1007,9 +1065,14 @@ async def list_bookings(
         # Delegate rendering/formatting/permissions to shared helper
         try:
             from bot.app.services.shared_services import render_booking_item_for_api
-            rendered = await render_booking_item_for_api(b, user_telegram_id=principal.telegram_id, lang=principal.language)
+
+            rendered = await render_booking_item_for_api(
+                b, user_telegram_id=principal.telegram_id, lang=principal.language
+            )
         except Exception as exc:
-            logger.exception("render_booking_item_for_api failed for booking %s: %s", getattr(b, 'id', None), exc)
+            logger.exception(
+                "render_booking_item_for_api failed for booking %s: %s", getattr(b, "id", None), exc
+            )
             rendered = {}
 
         # Normalize starts_at to aware datetime for formatting
@@ -1025,7 +1088,10 @@ async def list_bookings(
                 from bot.app.domain.models import BookingItem, Service
 
                 rows = await session.execute(
-                    select(Service.name).join(BookingItem, BookingItem.service_id == Service.id).where(BookingItem.booking_id == int(getattr(b, "id", 0))).order_by(BookingItem.position)
+                    select(Service.name)
+                    .join(BookingItem, BookingItem.service_id == Service.id)
+                    .where(BookingItem.booking_id == int(getattr(b, "id", 0)))
+                    .order_by(BookingItem.position)
                 )
                 names = [r[0] for r in rows.all() if r and r[0]]
                 if names:
@@ -1064,20 +1130,30 @@ async def list_bookings(
                 starts_obj = starts_obj.replace(tzinfo=UTC)
             if ends_obj is not None and getattr(ends_obj, "tzinfo", None) is None:
                 ends_obj = ends_obj.replace(tzinfo=UTC)
-            time_from = format_slot_label(starts_obj, fmt="%H:%M", tz=lt) if starts_obj is not None else None
-            time_to = format_slot_label(ends_obj, fmt="%H:%M", tz=lt) if ends_obj is not None else None
+            time_from = (
+                format_slot_label(starts_obj, fmt="%H:%M", tz=lt)
+                if starts_obj is not None
+                else None
+            )
+            time_to = (
+                format_slot_label(ends_obj, fmt="%H:%M", tz=lt) if ends_obj is not None else None
+            )
             if time_from and time_to:
                 formatted_time_range = f"{time_from} – {time_to}"
             else:
                 formatted_time_range = time_from or None
-            formatted_date = format_date(starts_obj, "%d %b, %a", tz=lt) if starts_obj is not None else None
+            formatted_date = (
+                format_date(starts_obj, "%d %b, %a", tz=lt) if starts_obj is not None else None
+            )
         except Exception:
             formatted_time_range = None
             formatted_date = None
 
         # Build a simple human-readable display_text from status label
         try:
-            display_text = await get_status_label(rendered.get("status") or getattr(b, "status", ""), principal.language)
+            display_text = await get_status_label(
+                rendered.get("status") or getattr(b, "status", ""), principal.language
+            )
         except Exception:
             display_text = str(rendered.get("status") or getattr(b, "status", ""))
 
@@ -1099,7 +1175,8 @@ async def list_bookings(
                 final_price_formatted=rendered.get("final_price_formatted"),
                 discount_amount_formatted=rendered.get("discount_amount_formatted"),
                 currency=rendered.get("currency") or None,
-                starts_at=rendered.get("starts_at") or (starts_at.isoformat() if starts_at else None),
+                starts_at=rendered.get("starts_at")
+                or (starts_at.isoformat() if starts_at else None),
                 ends_at=rendered.get("ends_at") or None,
                 duration_minutes=rendered.get("duration_minutes"),
                 master_id=int(master_id) if master_id is not None else None,
@@ -1120,11 +1197,14 @@ async def list_bookings(
     return result
 
 
-
 @app.post("/api/cancel", response_model=BookingResponse)
 @booking_error_handler("cancel_failed")
-async def cancel_booking(payload: CancelRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    res: BookingResult = await process_booking_cancellation(principal.user_id, principal.telegram_id, payload.booking_id)
+async def cancel_booking(
+    payload: CancelRequest, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
+    res: BookingResult = await process_booking_cancellation(
+        principal.user_id, principal.telegram_id, payload.booking_id
+    )
     return BookingResponse(
         ok=bool(res.get("ok")),
         booking_id=res.get("booking_id"),
@@ -1135,7 +1215,9 @@ async def cancel_booking(payload: CancelRequest, principal: Principal = Depends(
 
 @app.post("/api/reschedule", response_model=BookingResponse)
 @booking_error_handler("reschedule_failed")
-async def reschedule_booking(payload: RescheduleRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
+async def reschedule_booking(
+    payload: RescheduleRequest, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
     res: BookingResult = await process_booking_reschedule(
         principal.user_id,
         principal.telegram_id,
@@ -1194,7 +1276,9 @@ async def create_booking(
         logger.exception("Invalid master_id provided for booking: %s", exc)
         raise ValueError("master_required") from exc
 
-    totals = await client_services.get_services_duration_and_price(payload.service_ids, online_payment=False, master_id=master_id)
+    totals = await client_services.get_services_duration_and_price(
+        payload.service_ids, online_payment=False, master_id=master_id
+    )
     total_duration_minutes = int(totals.get("total_minutes") or 0)
     if total_duration_minutes <= 0:
         total_duration_minutes = 60 * max(1, len(payload.service_ids))
@@ -1244,7 +1328,12 @@ async def create_booking(
             try:
                 recipients.append(int(master_rec))
             except Exception as exc:
-                logger.exception("Invalid master id %s in recipients for booking %s: %s", master_rec, booking_id, exc)
+                logger.exception(
+                    "Invalid master id %s in recipients for booking %s: %s",
+                    master_rec,
+                    booking_id,
+                    exc,
+                )
         try:
             recipients.extend(get_admin_ids())
         except Exception as exc:
@@ -1262,22 +1351,39 @@ async def create_booking(
             # Best-effort: also send a confirmation message to the client to preserve chat history
             try:
                 from bot.app.services.client_services import build_booking_details
-                from bot.app.services.shared_services import format_booking_details_text, safe_get_locale
+                from bot.app.services.shared_services import (
+                    format_booking_details_text,
+                    safe_get_locale,
+                )
             except Exception as exc:
-                logger.exception("Failed to import booking detail builders for booking notification: %s", exc)
+                logger.exception(
+                    "Failed to import booking detail builders for booking notification: %s", exc
+                )
                 build_booking_details = None
 
             # For MiniApp flow: notify admins/masters always, but avoid
             # sending a separate client confirmation when payment is cash.
             if build_booking_details is not None and payment_method == "online":
                 try:
-                    lang = principal.language if getattr(principal, "language", None) else await safe_get_locale(principal.telegram_id)
-                    bd = await build_booking_details(booking, user_id=principal.telegram_id, lang=lang)
+                    lang = (
+                        principal.language
+                        if getattr(principal, "language", None)
+                        else await safe_get_locale(principal.telegram_id)
+                    )
+                    bd = await build_booking_details(
+                        booking, user_id=principal.telegram_id, lang=lang
+                    )
                     body = format_booking_details_text(bd, lang=lang)
                     try:
-                        await bot.send_message(chat_id=principal.telegram_id, text=body, parse_mode="HTML")
+                        await bot.send_message(
+                            chat_id=principal.telegram_id, text=body, parse_mode="HTML"
+                        )
                     except Exception as exc:
-                        logger.exception("Failed to send booking confirmation to client %s: %s", principal.telegram_id, exc)
+                        logger.exception(
+                            "Failed to send booking confirmation to client %s: %s",
+                            principal.telegram_id,
+                            exc,
+                        )
                 except Exception:
                     pass
 
@@ -1310,7 +1416,9 @@ async def create_booking(
 
 @app.post("/api/finalize", response_model=BookingResponse)
 @booking_error_handler("finalize_failed")
-async def finalize_booking(payload: dict, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
+async def finalize_booking(
+    payload: dict, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
     """Finalize an existing draft booking created with a hold.
 
     Expects JSON: { booking_id: int, payment_method: "cash"|"online" }
@@ -1321,7 +1429,9 @@ async def finalize_booking(payload: dict, principal: Principal = Depends(get_cur
     except Exception as exc:
         raise ValueError("invalid_payload") from exc
 
-    res: BookingResult = await process_booking_finalization(principal.user_id, principal.telegram_id, booking_id, payment_method)
+    res: BookingResult = await process_booking_finalization(
+        principal.user_id, principal.telegram_id, booking_id, payment_method
+    )
     return BookingResponse(
         ok=bool(res.get("ok")),
         booking_id=res.get("booking_id"),
@@ -1338,7 +1448,9 @@ async def finalize_booking(payload: dict, principal: Principal = Depends(get_cur
 
 @app.post("/api/create_invoice", response_model=BookingResponse)
 @booking_error_handler("invoice_failed")
-async def create_invoice(payload: InvoiceRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
+async def create_invoice(
+    payload: InvoiceRequest, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
     """Create a Telegram invoice link for an existing booking and return it to the WebApp.
 
     Frontend should call `webApp.openInvoice(invoice_url)` with the returned link.
@@ -1355,7 +1467,9 @@ async def create_invoice(payload: InvoiceRequest, principal: Principal = Depends
 
 @app.get("/api/booking_details", response_model=BookingResponse)
 @booking_error_handler("details_failed")
-async def booking_details(booking_id: int, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
+async def booking_details(
+    booking_id: int, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
     res: BookingResult = await process_booking_details(principal.user_id, booking_id)
     return BookingResponse(
         ok=bool(res.get("ok")),
@@ -1367,8 +1481,12 @@ async def booking_details(booking_id: int, principal: Principal = Depends(get_cu
 
 @app.post("/api/rate", response_model=BookingResponse)
 @booking_error_handler("rating_failed")
-async def rate_booking(payload: RatingRequest, principal: Principal = Depends(get_current_principal)) -> BookingResponse:
-    res: BookingResult = await process_booking_rating(principal.user_id, payload.booking_id, payload.rating)
+async def rate_booking(
+    payload: RatingRequest, principal: Principal = Depends(get_current_principal)
+) -> BookingResponse:
+    res: BookingResult = await process_booking_rating(
+        principal.user_id, payload.booking_id, payload.rating
+    )
     return BookingResponse(
         ok=bool(res.get("ok")),
         booking_id=res.get("booking_id"),
@@ -1385,6 +1503,7 @@ def get_app() -> FastAPI:
     """Exported factory for uvicorn or tests."""
     return app
 
+
 # ---------------------------------------------------------------------------
 # Serve WebApp (production build)
 # ---------------------------------------------------------------------------
@@ -1394,7 +1513,7 @@ WEB_DIR = os.getenv("TWA_WEB_DIR", "/app/web")
 if os.path.isdir(WEB_DIR):
     # 1. Раздаем статику (CSS, JS, картинки) по пути /assets
     app.mount("/assets", StaticFiles(directory=f"{WEB_DIR}/assets"), name="assets")
-    
+
     # 2. Любой другой запрос, который не попал в /api, возвращает index.html
     # Это нужно для SPA (Single Page Application) роутинга
     @app.get("/{full_path:path}")

@@ -83,13 +83,20 @@ async def notify_admins_bot_started(bot: Bot) -> None:
             logger.exception("notify_admins_bot_started: failed to notify admin %s", uid)
 
 
-async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, recipients: Iterable[int] | None) -> None:
+async def send_booking_notification(
+    bot: Bot, booking_id: int, event_type: str, recipients: Iterable[int] | None
+) -> None:
     """Send booking-related notification to the given recipients.
 
     This is moved here from client_services to centralize notification sending.
     Text/markup construction stays here with lazy imports to avoid cycles.
     """
-    logger.info("send_booking_notification: booking=%s event=%s recipients=%s", booking_id, event_type, recipients)
+    logger.info(
+        "send_booking_notification: booking=%s event=%s recipients=%s",
+        booking_id,
+        event_type,
+        recipients,
+    )
     try:
         # Lazy imports to avoid import-time cycles
         from bot.app.services.client_services import build_booking_details
@@ -152,9 +159,13 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                 master_id_val = getattr(booking, "master_id", None)
                 if master_id_val and int(rid_int) == int(master_id_val):
                     from bot.app.domain.models import Master
+
                     async with get_session() as session:
                         from sqlalchemy import select
-                        res = await session.execute(select(Master.telegram_id).where(Master.id == int(rid_int)))
+
+                        res = await session.execute(
+                            select(Master.telegram_id).where(Master.id == int(rid_int))
+                        )
                         tg = res.scalar_one_or_none()
                         if tg:
                             rid_int = int(tg)
@@ -191,7 +202,9 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                         final_cents = 0
 
                     try:
-                        original_cents = int(getattr(booking, "original_price_cents", None) or final_cents)
+                        original_cents = int(
+                            getattr(booking, "original_price_cents", None) or final_cents
+                        )
                     except Exception:
                         original_cents = final_cents
 
@@ -220,16 +233,30 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                             pct_hint = 0
 
                         try:
-                            pct = pct_hint if pct_hint > 0 else (round((discount_cents * 100) / original_cents) if original_cents else 0)
+                            pct = (
+                                pct_hint
+                                if pct_hint > 0
+                                else (
+                                    round((discount_cents * 100) / original_cents)
+                                    if original_cents
+                                    else 0
+                                )
+                            )
                         except Exception:
                             pct = pct_hint if pct_hint > 0 else 0
 
                         try:
-                            savings_text = format_money_cents(discount_cents, getattr(bd_for_body, "currency", None))
+                            savings_text = format_money_cents(
+                                discount_cents, getattr(bd_for_body, "currency", None)
+                            )
                         except Exception:
                             savings_text = format_money_cents(discount_cents)
 
-                        disc_label = tr("online_discount_label_plain", lang=lang) or tr("online_discount_label", lang=lang) or "Online discount"
+                        disc_label = (
+                            tr("online_discount_label_plain", lang=lang)
+                            or tr("online_discount_label", lang=lang)
+                            or "Online discount"
+                        )
                         if pct and pct > 0:
                             discount_line = f"{disc_label}: -{pct}% ({savings_text})"
                         else:
@@ -241,23 +268,37 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
                         title_tpl = tr("notif_paid_confirmed", lang=lang)
                     title = title_tpl.format(id=booking_id, service=svc_names, dt=dt_txt)
                 elif event_type == "cash_confirmed":
-                    title = tr("notif_cash_confirmed", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
+                    title = tr("notif_cash_confirmed", lang=lang).format(
+                        id=booking_id, service=svc_names, dt=dt_txt
+                    )
                 elif event_type == "cancelled":
-                    title = tr("notif_client_cancelled", lang=lang).format(id=booking_id, user=client_line)
+                    title = tr("notif_client_cancelled", lang=lang).format(
+                        id=booking_id, user=client_line
+                    )
                 elif event_type == "rescheduled_by_client":
                     if int(rid_int) == int(master_id_val or 0):
-                        title = tr("notif_master_rescheduled_client", lang=lang).format(service=svc_names, dt=dt_txt)
+                        title = tr("notif_master_rescheduled_client", lang=lang).format(
+                            service=svc_names, dt=dt_txt
+                        )
                     else:
-                        title = tr("notif_client_rescheduled", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
+                        title = tr("notif_client_rescheduled", lang=lang).format(
+                            id=booking_id, service=svc_names, dt=dt_txt
+                        )
                 elif event_type == "rescheduled_by_master":
                     if client_tg_id and int(rid_int) == int(client_tg_id):
-                        title = tr("notif_master_rescheduled_client", lang=lang).format(service=svc_names, dt=dt_txt)
+                        title = tr("notif_master_rescheduled_client", lang=lang).format(
+                            service=svc_names, dt=dt_txt
+                        )
                     else:
-                        title = tr("notif_master_rescheduled_admin", lang=lang).format(master=master_id_val or "", id=booking_id, service=svc_names, dt=dt_txt)
+                        title = tr("notif_master_rescheduled_admin", lang=lang).format(
+                            master=master_id_val or "", id=booking_id, service=svc_names, dt=dt_txt
+                        )
                 elif event_type == "done":
                     title = tr("master_checkin_success", lang=lang)
                 elif event_type == "no_show":
-                    title = tr("notif_no_show", lang=lang).format(id=booking_id, service=svc_names, dt=dt_txt)
+                    title = tr("notif_no_show", lang=lang).format(
+                        id=booking_id, service=svc_names, dt=dt_txt
+                    )
                 else:
                     title = f"#{booking_id}: {svc_names} {dt_txt}".strip()
             except Exception:
@@ -286,7 +327,10 @@ async def send_booking_notification(bot: Bot, booking_id: int, event_type: str, 
             if event_type == "done":
                 try:
                     from bot.app.telegram.client.client_keyboards import build_rating_keyboard
-                    if getattr(bd, "client_telegram_id", None) and int(getattr(bd, "client_telegram_id")) == int(rid_int):
+
+                    if getattr(bd, "client_telegram_id", None) and int(
+                        getattr(bd, "client_telegram_id")
+                    ) == int(rid_int):
                         reply_kb = build_rating_keyboard(int(booking_id))
                         # Use localized prompt for rating instead of hardcoded text
                         try:

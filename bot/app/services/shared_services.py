@@ -25,6 +25,7 @@ from bot.app.core.constants import (
 from bot.app.domain.models import User
 from bot.app.translations import tr as _tr_raw
 from aiogram import Bot
+
 try:
     from aiogram.exceptions import TelegramAPIError
 except Exception:
@@ -67,7 +68,9 @@ async def resolve_online_payment_discount_percent() -> int:
     return pct_int
 
 
-def apply_online_payment_discount(price_cents: int | Decimal | None, discount_pct: int) -> tuple[int, int]:
+def apply_online_payment_discount(
+    price_cents: int | Decimal | None, discount_pct: int
+) -> tuple[int, int]:
     """Apply an online-payment discount to a cents amount.
 
     Returns a tuple of (discounted_cents, savings_cents). Rounds half up to
@@ -84,7 +87,7 @@ def apply_online_payment_discount(price_cents: int | Decimal | None, discount_pc
     if base <= 0 or pct == 0:
         return int(base), 0
 
-    multiplier = (Decimal(100 - pct) / Decimal(100))
+    multiplier = Decimal(100 - pct) / Decimal(100)
     discounted = (base * multiplier).to_integral_value(rounding=ROUND_HALF_UP)
     discounted_int = int(discounted)
     savings = max(0, int(base) - discounted_int)
@@ -253,7 +256,9 @@ def default_language() -> str:
 
 
 # ---------------- Pagination utility ----------------
-def compute_pagination(total: int, page: int | None, page_size: int | None) -> tuple[int, int, int, int | None]:
+def compute_pagination(
+    total: int, page: int | None, page_size: int | None
+) -> tuple[int, int, int, int | None]:
     """Compute safe pagination values.
 
     Returns (page, total_pages, offset, limit).
@@ -338,7 +343,9 @@ def is_cancel_text(text: str | None, lang: str | None = None) -> bool:
         return False
 
 
-def format_user_display_name(username: str | None, first_name: str | None, last_name: str | None) -> str | None:
+def format_user_display_name(
+    username: str | None, first_name: str | None, last_name: str | None
+) -> str | None:
     """Return the best available display name for a Telegram user."""
     try:
         uname = (username or "").strip()
@@ -402,11 +409,23 @@ async def get_contact_info() -> dict[str, str]:
         phone = instagram = address = None
 
     # Resolve from env if DB value is missing or empty
-    phone_val = (str(phone).strip() if phone is not None and str(phone).strip() else None) or _env_with_fallback("CONTACT_PHONE", "BUSINESS_PHONE", "+380671234567")
-    instagram_val = (str(instagram).strip() if instagram is not None and str(instagram).strip() else None) or _env_with_fallback("CONTACT_INSTAGRAM", "BUSINESS_INSTAGRAM", "https://instagram.com/salon_name")
-    address_val = (str(address).strip() if address is not None and str(address).strip() else None) or _env_with_fallback("CONTACT_ADDRESS", "BUSINESS_ADDRESS", "м. Київ, вул. Хрещатик, 1")
+    phone_val = (
+        str(phone).strip() if phone is not None and str(phone).strip() else None
+    ) or _env_with_fallback("CONTACT_PHONE", "BUSINESS_PHONE", "+380671234567")
+    instagram_val = (
+        str(instagram).strip() if instagram is not None and str(instagram).strip() else None
+    ) or _env_with_fallback(
+        "CONTACT_INSTAGRAM", "BUSINESS_INSTAGRAM", "https://instagram.com/salon_name"
+    )
+    address_val = (
+        str(address).strip() if address is not None and str(address).strip() else None
+    ) or _env_with_fallback("CONTACT_ADDRESS", "BUSINESS_ADDRESS", "м. Київ, вул. Хрещатик, 1")
     # WebApp title: admin-configured salon title shown in contacts header
-    title_val = (str(webapp_title).strip() if ("webapp_title" in locals() and webapp_title is not None and str(webapp_title).strip()) else None) or _env_with_fallback("WEBAPP_TITLE", "BUSINESS_NAME", "Telegram Mini App • Beauty")
+    title_val = (
+        str(webapp_title).strip()
+        if ("webapp_title" in locals() and webapp_title is not None and str(webapp_title).strip())
+        else None
+    ) or _env_with_fallback("WEBAPP_TITLE", "BUSINESS_NAME", "Telegram Mini App • Beauty")
 
     return {
         "phone": phone_val,
@@ -448,7 +467,9 @@ STATUS_EMOJI: Dict[str, str] = {
 }
 
 
-async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None = None, lang: str | None = None) -> dict:
+async def render_booking_item_for_api(
+    booking: Any, user_telegram_id: int | None = None, lang: str | None = None
+) -> dict:
     """Return a dict with API-friendly booking fields.
 
     This centralizes status label/emoji, price formatting and permission
@@ -465,6 +486,7 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         # Status label (localized) and emoji
         try:
             from bot.app.telegram.common.status import get_status_label
+
             status_label = await get_status_label(getattr(booking, "status", None), lang=lang)
         except Exception:
             status_label = str(getattr(booking, "status", ""))
@@ -486,16 +508,30 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             final_price_val = None
         try:
             discount_amount_val = getattr(booking, "discount_amount_cents", None)
-            discount_amount_val = int(discount_amount_val) if discount_amount_val is not None else None
+            discount_amount_val = (
+                int(discount_amount_val) if discount_amount_val is not None else None
+            )
         except Exception:
             discount_amount_val = None
 
         # Derive missing pieces so the API always returns a full breakdown
-        if final_price_val is None and original_price_val is not None and discount_amount_val is not None:
+        if (
+            final_price_val is None
+            and original_price_val is not None
+            and discount_amount_val is not None
+        ):
             final_price_val = original_price_val - discount_amount_val
-        if original_price_val is None and final_price_val is not None and discount_amount_val is not None:
+        if (
+            original_price_val is None
+            and final_price_val is not None
+            and discount_amount_val is not None
+        ):
             original_price_val = final_price_val + discount_amount_val
-        if discount_amount_val is None and original_price_val is not None and final_price_val is not None:
+        if (
+            discount_amount_val is None
+            and original_price_val is not None
+            and final_price_val is not None
+        ):
             delta = original_price_val - final_price_val
             if delta > 0:
                 discount_amount_val = delta
@@ -507,10 +543,24 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         except Exception:
             currency_val = None
         try:
-            price_fmt = format_money_cents(price_val, currency_val) if price_val is not None else None
-            original_price_fmt = format_money_cents(original_price_val, currency_val) if original_price_val is not None else None
-            final_price_fmt = format_money_cents(final_price_val, currency_val) if final_price_val is not None else None
-            discount_amount_fmt = format_money_cents(discount_amount_val, currency_val) if discount_amount_val is not None else None
+            price_fmt = (
+                format_money_cents(price_val, currency_val) if price_val is not None else None
+            )
+            original_price_fmt = (
+                format_money_cents(original_price_val, currency_val)
+                if original_price_val is not None
+                else None
+            )
+            final_price_fmt = (
+                format_money_cents(final_price_val, currency_val)
+                if final_price_val is not None
+                else None
+            )
+            discount_amount_fmt = (
+                format_money_cents(discount_amount_val, currency_val)
+                if discount_amount_val is not None
+                else None
+            )
         except Exception:
             price_fmt = None
             original_price_fmt = None
@@ -520,7 +570,11 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         # Payment method inference
         try:
             pm = None
-            if getattr(booking, "payment_provider", None) or getattr(booking, "paid_at", None) is not None or getattr(booking, "payment_id", None):
+            if (
+                getattr(booking, "payment_provider", None)
+                or getattr(booking, "paid_at", None) is not None
+                or getattr(booking, "payment_id", None)
+            ):
                 pm = "online"
             else:
                 pm = "cash"
@@ -530,9 +584,11 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         # Permissions: delegate to client_services.calculate_booking_permissions
         try:
             from bot.app.services import client_services as _client_services
+
             # Try to read lock windows from SettingsRepo if available (best-effort)
             try:
                 from bot.app.services.admin_services import SettingsRepo
+
                 try:
                     lock_r = await SettingsRepo.get_client_reschedule_lock_minutes()
                 except Exception:
@@ -544,7 +600,10 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             except Exception:
                 lock_r = lock_c = None
 
-            can_cancel_calc, can_reschedule_calc = await _client_services.calculate_booking_permissions(
+            (
+                can_cancel_calc,
+                can_reschedule_calc,
+            ) = await _client_services.calculate_booking_permissions(
                 booking,
                 lock_r_minutes=lock_r,
                 lock_c_minutes=lock_c,
@@ -555,7 +614,9 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
             try:
                 # Authoritative reschedule check (only if we have a caller telegram id)
                 if user_telegram_id is not None:
-                    can_reschedule_primary, _ = await _client_services.can_client_reschedule(int(getattr(booking, "id", 0) or 0), int(user_telegram_id))
+                    can_reschedule_primary, _ = await _client_services.can_client_reschedule(
+                        int(getattr(booking, "id", 0) or 0), int(user_telegram_id)
+                    )
                     if can_reschedule_primary:
                         can_reschedule = True
             except Exception:
@@ -625,6 +686,7 @@ async def render_booking_item_for_api(booking: Any, user_telegram_id: int | None
         }
     return out
 
+
 # --- Payments/provider runtime cache (shared helper; used across modules) ---
 _PAYMENTS_ENABLED: bool | None = None
 _PROVIDER_TOKEN_CACHE: str | None = None
@@ -632,7 +694,6 @@ _PAYMENTS_LAST_CHECKED: datetime | None = None
 _PROVIDER_LAST_CHECKED: datetime | None = None
 _MINIAPP_ENABLED: bool | None = None
 _MINIAPP_LAST_CHECKED: datetime | None = None
-
 
 
 def _settings_cache_expired(last_checked: datetime | None) -> bool:
@@ -664,6 +725,7 @@ async def is_telegram_payments_enabled() -> bool:
     global _PAYMENTS_ENABLED, _PAYMENTS_LAST_CHECKED
     try:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+
         if _PAYMENTS_ENABLED is None or _settings_cache_expired(_PAYMENTS_LAST_CHECKED):
             try:
                 await load_settings_from_db()
@@ -694,6 +756,7 @@ async def toggle_telegram_payments() -> bool:
     try:
         new_val = not await is_telegram_payments_enabled()
         from bot.app.services.admin_services import SettingsRepo
+
         ok = await SettingsRepo.update_setting("telegram_payments_enabled", bool(new_val))
         if not ok:
             logger.warning("toggle_telegram_payments: DB persist failed; falling back to env only")
@@ -723,6 +786,7 @@ async def is_telegram_miniapp_enabled() -> bool:
     global _MINIAPP_ENABLED, _MINIAPP_LAST_CHECKED
     try:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+
         if _MINIAPP_ENABLED is None or _settings_cache_expired(_MINIAPP_LAST_CHECKED):
             try:
                 await load_settings_from_db()
@@ -748,6 +812,7 @@ async def toggle_telegram_miniapp() -> bool:
     try:
         new_val = not await is_telegram_miniapp_enabled()
         from bot.app.services.admin_services import SettingsRepo
+
         ok = await SettingsRepo.update_setting("telegram_miniapp_enabled", bool(new_val))
         if not ok:
             logger.warning("toggle_telegram_miniapp: DB persist failed; falling back to env only")
@@ -769,11 +834,16 @@ async def get_telegram_provider_token(force_reload: bool = False) -> str | None:
     """Return Telegram Payments provider token from shared settings with env fallback."""
     global _PROVIDER_TOKEN_CACHE, _PROVIDER_LAST_CHECKED
     try:
-        if not force_reload and _PROVIDER_TOKEN_CACHE and not _settings_cache_expired(_PROVIDER_LAST_CHECKED):
+        if (
+            not force_reload
+            and _PROVIDER_TOKEN_CACHE
+            and not _settings_cache_expired(_PROVIDER_LAST_CHECKED)
+        ):
             return _PROVIDER_TOKEN_CACHE
         token: str | None = None
         try:
             from bot.app.services.admin_services import SettingsRepo
+
             token = await SettingsRepo.get_setting("telegram_provider_token", None)
         except Exception:
             token = None
@@ -847,7 +917,12 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
             # Resolve a best-effort locale using Babel parsing instead of manual mappings.
             locale_str = "en_US"
             try:
-                lang = os.getenv("DEFAULT_LANGUAGE") or os.getenv("LANGUAGE") or default_language() or "en"
+                lang = (
+                    os.getenv("DEFAULT_LANGUAGE")
+                    or os.getenv("LANGUAGE")
+                    or default_language()
+                    or "en"
+                )
                 locale_hint = (lang or "en").replace("-", "_")
                 if Locale is not None:
                     locale_str = str(Locale.parse(locale_hint, sep="_"))
@@ -994,6 +1069,8 @@ def get_local_tz() -> ZoneInfo:
     return LOCAL_TZ or ZoneInfo("UTC")
     # Time helpers: prefer these helpers throughout the codebase so all
     # modules consistently produce timezone-aware datetimes.
+
+
 from datetime import timezone
 
 
@@ -1026,7 +1103,9 @@ def local_now() -> datetime:
             return datetime.utcnow().replace(tzinfo=UTC)
 
 
-def format_slot_label(slot: datetime | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None) -> str:
+def format_slot_label(
+    slot: datetime | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None
+) -> str:
     """Format a single UI time slot consistently across the app.
 
     - `slot` may be a `datetime` or `time`-like object; when `None` returns empty string.
@@ -1100,7 +1179,9 @@ def _decode_time(tok: str | None) -> str | None:
         return None
 
 
-async def get_service_duration(session, service_id: str | None, master_id: int | None = None) -> int:
+async def get_service_duration(
+    session, service_id: str | None, master_id: int | None = None
+) -> int:
     """Resolve the effective duration (minutes) for a service+master pair.
 
         Resolution order:
@@ -1176,6 +1257,7 @@ def status_to_emoji(status: object) -> str:
     except Exception:
         return "❓"
 
+
 def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -> tuple[str, int]:
     """Format a booking entry for compact list display.
 
@@ -1206,7 +1288,9 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     client_name = str(data.get("client_name") or data.get("user_name") or data.get("user_id") or "")
     client_username = data.get("client_username")
     if client_username:
-        client_name = f"{client_name} (@{client_username})" if client_name else f"@{client_username}"
+        client_name = (
+            f"{client_name} (@{client_username})" if client_name else f"@{client_username}"
+        )
     st = dt = ""
     if starts_at:
         try:
@@ -1247,6 +1331,7 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     try:
         # Import module then getattr to avoid static import symbol warnings
         import bot.app.services.admin_services as _admin_mod
+
         _admin_fmt = getattr(_admin_mod, "format_admin_booking_row", _client_fmt)
     except Exception:
         _admin_fmt = _client_fmt
@@ -1309,21 +1394,23 @@ def normalize_booking_row(row: Any) -> BookingInfo:
         if hasattr(row, "_mapping"):
             m = dict(row._mapping)  # type: ignore[attr-defined]
             return normalize_booking_row(m)
-        return booking_info_from_mapping({
-            "id": getattr(row, "id", None),
-            "master_id": getattr(row, "master_id", None),
-            "master_name": getattr(row, "master_name", None),
-            "service_id": getattr(row, "service_id", None),
-            "service_name": getattr(row, "service_name", None),
-            "status": getattr(row, "status", None),
-            "starts_at": getattr(row, "starts_at", None),
-            "original_price_cents": getattr(row, "original_price_cents", None),
-            "final_price_cents": getattr(row, "final_price_cents", None),
-            # Do not materialize currency on the DTO; renderers use global SSoT.
-            "client_name": getattr(row, "client_name", None),
-            "client_username": getattr(row, "client_username", None),
-            "client_id": getattr(row, "client_id", None) or getattr(row, "user_id", None),
-        })
+        return booking_info_from_mapping(
+            {
+                "id": getattr(row, "id", None),
+                "master_id": getattr(row, "master_id", None),
+                "master_name": getattr(row, "master_name", None),
+                "service_id": getattr(row, "service_id", None),
+                "service_name": getattr(row, "service_name", None),
+                "status": getattr(row, "status", None),
+                "starts_at": getattr(row, "starts_at", None),
+                "original_price_cents": getattr(row, "original_price_cents", None),
+                "final_price_cents": getattr(row, "final_price_cents", None),
+                # Do not materialize currency on the DTO; renderers use global SSoT.
+                "client_name": getattr(row, "client_name", None),
+                "client_username": getattr(row, "client_username", None),
+                "client_id": getattr(row, "client_id", None) or getattr(row, "user_id", None),
+            }
+        )
     except Exception:
         return BookingInfo()
 
@@ -1347,7 +1434,9 @@ def _to_str(v: Any) -> str | None:
         return None
 
 
-def format_booking_details_text(data: dict | Any, lang: str | None = None, role: str = "client") -> str:
+def format_booking_details_text(
+    data: dict | Any, lang: str | None = None, role: str = "client"
+) -> str:
     """Pure formatter that builds booking details text from pre-fetched data.
 
     Accepts a dict-like or object with attributes. Avoids DB access and side-effects.
@@ -1415,28 +1504,39 @@ def format_booking_details_text(data: dict | Any, lang: str | None = None, role:
         else:
             lines.append(f"{__("date_label")}: <b>{date_str}</b>")
         try:
-            lines.append(f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}")
+            lines.append(
+                f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}"
+            )
         except Exception:
             pass
         status_str = str(status_raw).lower() if status_raw is not None else ""
-        amount_label = __("amount_paid_label") if (paid_at or status_str == "paid") else __("amount_label")
+        amount_label = (
+            __("amount_paid_label") if (paid_at or status_str == "paid") else __("amount_label")
+        )
         lines.append(f"{amount_label}: {human_price}")
 
         if str(role).lower() == "master":
             try:
-                st_val = _get('status', None)
+                st_val = _get("status", None)
                 if st_val:
                     lines.append(f"{__("status_label")}: {st_val}")
-                client_display = _get('client_name', None)
-                client_phone = _get('client_phone', None)
-                client_tg = _get('client_telegram_id', None) or _get('client_tid', None) or _get('client_tg_id', None)
-                client_un = _get('client_username', None)
+                client_display = _get("client_name", None)
+                client_phone = _get("client_phone", None)
+                client_tg = (
+                    _get("client_telegram_id", None)
+                    or _get("client_tid", None)
+                    or _get("client_tg_id", None)
+                )
+                client_un = _get("client_username", None)
                 if client_display:
                     if client_un:
                         lines.insert(1, f"{__("client_label")}: {client_display} (@{client_un})")
                     elif client_tg:
                         try:
-                            lines.insert(1, f"{__("client_label")}: <a href='tg://user?id={int(client_tg)}'>{client_display}</a>")
+                            lines.insert(
+                                1,
+                                f"{__("client_label")}: <a href='tg://user?id={int(client_tg)}'>{client_display}</a>",
+                            )
                         except Exception:
                             lines.insert(1, f"{__("client_label")}: {client_display}")
                     else:
@@ -1465,12 +1565,15 @@ async def get_user_locale(telegram_id: int) -> str:
     """
     try:
         from bot.app.services.client_services import UserRepo as _UserRepo
+
         locale = await _UserRepo.get_locale_by_telegram_id(int(telegram_id))
         if locale:
             logger.debug("User locale for %s: %s", telegram_id, locale)
             return str(locale)
     except Exception as e:
-        logger.debug("shared_services.get_user_locale: repo lookup failed for %s: %s", telegram_id, e)
+        logger.debug(
+            "shared_services.get_user_locale: repo lookup failed for %s: %s", telegram_id, e
+        )
     return _default_language()
 
 
@@ -1493,7 +1596,6 @@ async def translate_for_user(user_id: int, key: str, **kwargs: Any) -> str:
     except Exception as e:
         logger.error("Ошибка перевода: user_id=%s, key=%s, error=%s", user_id, key, e)
         return key
-
 
 
 __all__ = [
@@ -1524,6 +1626,7 @@ __all__ = [
 # ---------------- New shared helpers (i18n, profiles, notifications) ---------------- #
 from typing import Optional, Mapping
 from aiogram.types import Message, CallbackQuery
+
 # Provide type-only imports for optional third-party libs to satisfy Pylance
 if TYPE_CHECKING:
     try:
@@ -1533,13 +1636,6 @@ if TYPE_CHECKING:
     except Exception:
         pass
 # (Repository classes are intentionally not duplicated here.)
-
-
-
-
-
-
-
 
 
 def _msg(obj: Message | CallbackQuery | Any) -> Message | None:
@@ -1562,6 +1658,7 @@ def _msg(obj: Message | CallbackQuery | Any) -> Message | None:
 # helpers (services_cache, get_service_name, invalidate_services_cache,
 # update_setting, get_setting, get_hold_minutes) from that module.
 
+
 def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
     """Return Telegram user id from Message/CallbackQuery or 0 if not available."""
     # Prefer a defensive extraction to avoid optional-member access warnings
@@ -1573,7 +1670,6 @@ def safe_user_id(obj: Message | CallbackQuery | Any) -> int:
         return int(uid or 0)
     except Exception:
         return 0
-
 
 
 def _get_id_from_callback(data: str | None, prefix: str) -> Optional[int]:
@@ -1608,6 +1704,7 @@ async def safe_get_locale(user_id: int | None, default: str | None = None) -> st
         return fallback
     try:
         from bot.app.services.client_services import UserRepo as _UserRepo
+
         loc = await _UserRepo.get_locale_by_telegram_id(int(user_id))
         return str(loc) if loc else fallback
     except Exception:
@@ -1651,10 +1748,9 @@ def format_date(dt: datetime, fmt: str = "%d.%m %H:%M", tz: ZoneInfo | str | Non
             return "N/A"
 
 
- 
-
-
-async def _safe_send(bot: Bot, chat_id: int | str, text: str, reply_markup: Any = None, **kwargs: Any) -> bool:
+async def _safe_send(
+    bot: Bot, chat_id: int | str, text: str, reply_markup: Any = None, **kwargs: Any
+) -> bool:
     """Best-effort send wrapper for bot.send_message.
 
     - Swallows and logs exceptions and returns False on failure.
@@ -1681,5 +1777,3 @@ async def _safe_send(bot: Bot, chat_id: int | str, text: str, reply_markup: Any 
         # Unexpected exception: log full traceback and re-raise so bugs are visible.
         logger.exception("_safe_send unexpected error for %s: %s", chat_id, e)
         raise
-
-

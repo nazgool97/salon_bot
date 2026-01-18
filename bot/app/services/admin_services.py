@@ -63,7 +63,9 @@ def validate_instagram_handle(value: str) -> tuple[str | None, str | None]:
         # If user pasted a URL without scheme (e.g. "www.instagram.com/..."),
         # prepend https:// so urlparse parses netloc.
         maybe = v
-        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", maybe) and (maybe.startswith("www.") or "instagram" in maybe):
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", maybe) and (
+            maybe.startswith("www.") or "instagram" in maybe
+        ):
             maybe = "https://" + maybe
         parsed = urlparse(maybe)
         netloc = (parsed.netloc or "").lower()
@@ -78,13 +80,17 @@ def validate_instagram_handle(value: str) -> tuple[str | None, str | None]:
     # If we extracted a username from a URL, validate it and return full URL
     if username:
         handle = username.lstrip("@")
-        if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (".." in handle or handle.startswith(".") or handle.endswith(".")):
+        if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (
+            ".." in handle or handle.startswith(".") or handle.endswith(".")
+        ):
             return f"https://instagram.com/{handle}", None
         return None, "invalid_instagram"
 
     # Fallback: treat input as a raw handle (possibly starting with @)
     handle = v.lstrip("@")
-    if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (".." in handle or handle.startswith(".") or handle.endswith(".")):
+    if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (
+        ".." in handle or handle.startswith(".") or handle.endswith(".")
+    ):
         return f"https://instagram.com/{handle}", None
 
     return None, "invalid_instagram"
@@ -136,7 +142,9 @@ DEFAULT_CALENDAR_MAX_DAYS_AHEAD = get_env_int("CALENDAR_MAX_DAYS_AHEAD", 365)
 # Backwards-compatible lazy accessor for stats rendering. Importing the
 # implementation at call-time avoids a circular import (shared_services
 # imports AdminRepo at module import time).
-def render_stats_overview(data: Mapping[str, Any], *, title_key: str = "stats_overview", lang: str = "uk") -> str:
+def render_stats_overview(
+    data: Mapping[str, Any], *, title_key: str = "stats_overview", lang: str = "uk"
+) -> str:
     """Render a simple stats overview with a localized title and k:v pairs.
 
     Canonical admin implementation. Moved from `shared_services`; see
@@ -163,13 +171,16 @@ async def delete_master_with_checks(master_tid: int) -> tuple[bool, int]:
     try:
         remaining = await AdminRepo.get_active_future_booking_ids_for_master(master_tid)
     except Exception as e:
-        logger.exception("delete_master_with_checks: failed to check bookings for %s: %s", master_tid, e)
+        logger.exception(
+            "delete_master_with_checks: failed to check bookings for %s: %s", master_tid, e
+        )
         return False, -1
     if remaining:
         return False, len(remaining)
     try:
         # Import here to avoid circular imports at module load time
         from bot.app.services.master_services import MasterRepo
+
         deleted = await MasterRepo.delete_master(master_tid)
         return (True, 0) if deleted else (False, 0)
     except Exception as e:
@@ -231,6 +242,7 @@ class ServiceRepo:
             try:
                 async with get_session() as session:
                     from bot.app.domain.models import Service
+
                     res = await session.execute(select(Service.id, Service.name))
                     rows = res.all()
                     if rows:
@@ -239,7 +251,9 @@ class ServiceRepo:
                 _services_cache_store = None
 
             if not _services_cache_store:
-                logger.info("ServiceRepo.services_cache: DB empty/unavailable; returning empty services mapping")
+                logger.info(
+                    "ServiceRepo.services_cache: DB empty/unavailable; returning empty services mapping"
+                )
                 _services_cache_store = {}
         except Exception:
             _services_cache_store = {}
@@ -252,7 +266,10 @@ class ServiceRepo:
             async with get_session() as session:
                 from bot.app.domain.models import Service
                 from sqlalchemy import select, func
-                return int((await session.execute(select(func.count()).select_from(Service))).scalar() or 0)
+
+                return int(
+                    (await session.execute(select(func.count()).select_from(Service))).scalar() or 0
+                )
         except Exception as e:
             logger.warning("ServiceRepo.count_services failed: %s", e)
             return 0
@@ -260,6 +277,7 @@ class ServiceRepo:
     @staticmethod
     async def get_services_page(page: int = 1, page_size: int = 10) -> list[tuple[str, str]]:
         from bot.app.services.shared_services import compute_pagination
+
         # Compute offset/limit using centralized helper; we don't know total here, so fake it
         # with a large number to keep page within sensible bounds.
         _, _, offset, limit = compute_pagination(10**9, page, page_size)
@@ -267,6 +285,7 @@ class ServiceRepo:
             async with get_session() as session:
                 from bot.app.domain.models import Service
                 from sqlalchemy import select
+
                 stmt = select(Service.id, Service.name).order_by(Service.id)
                 if limit is not None:
                     stmt = stmt.offset(offset).limit(limit)
@@ -276,9 +295,7 @@ class ServiceRepo:
             logger.warning("ServiceRepo.get_services_page failed (page=%s): %s", page, e)
             return []
 
-
     # Role-based booking formatting now uses shared `format_booking_list_item(..., role="admin")`.
-
 
     # --- Admin formatters -------------------------------------------------------
     @staticmethod
@@ -298,8 +315,6 @@ class ServiceRepo:
         parts = [p for p in parts if p]
         body = " • ".join(parts)
         return (f"{status_label} " + body).strip()
-
-
 
     @staticmethod
     async def get_admin_bookings(
@@ -333,21 +348,57 @@ class ServiceRepo:
 
             # Логика подсчета вкладок — учитываем optional `base_where` (например, master filter)
             try:
-                done_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.DONE))).scalar() or 0)
-                cancelled_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.CANCELLED))).scalar() or 0)
-                noshow_count = int((await session.execute(select(func.count()).select_from(Booking).where(*base_where, Booking.status == BookingStatus.NO_SHOW))).scalar() or 0)
-                upcoming_count = int((await session.execute(
-                    select(func.count()).select_from(Booking).where(
-                        *base_where,
-                        Booking.starts_at >= now,
-                        Booking.status.notin_([
-                            BookingStatus.CANCELLED,
-                            BookingStatus.DONE,
-                            BookingStatus.NO_SHOW,
-                            BookingStatus.EXPIRED,
-                        ]),
-                    )
-                )).scalar() or 0)
+                done_count = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Booking)
+                            .where(*base_where, Booking.status == BookingStatus.DONE)
+                        )
+                    ).scalar()
+                    or 0
+                )
+                cancelled_count = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Booking)
+                            .where(*base_where, Booking.status == BookingStatus.CANCELLED)
+                        )
+                    ).scalar()
+                    or 0
+                )
+                noshow_count = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Booking)
+                            .where(*base_where, Booking.status == BookingStatus.NO_SHOW)
+                        )
+                    ).scalar()
+                    or 0
+                )
+                upcoming_count = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(Booking)
+                            .where(
+                                *base_where,
+                                Booking.starts_at >= now,
+                                Booking.status.notin_(
+                                    [
+                                        BookingStatus.CANCELLED,
+                                        BookingStatus.DONE,
+                                        BookingStatus.NO_SHOW,
+                                        BookingStatus.EXPIRED,
+                                    ]
+                                ),
+                            )
+                        )
+                    ).scalar()
+                    or 0
+                )
             except Exception:
                 done_count = cancelled_count = noshow_count = upcoming_count = 0
 
@@ -365,12 +416,18 @@ class ServiceRepo:
                 where_clause = [*base_where, Booking.starts_at >= now]
                 order_expr = Booking.starts_at
             else:  # upcoming
-                where_clause = [*base_where, Booking.starts_at >= now, Booking.status.notin_([
-                    BookingStatus.CANCELLED,
-                    BookingStatus.DONE,
-                    BookingStatus.NO_SHOW,
-                    BookingStatus.EXPIRED,
-                ])]
+                where_clause = [
+                    *base_where,
+                    Booking.starts_at >= now,
+                    Booking.status.notin_(
+                        [
+                            BookingStatus.CANCELLED,
+                            BookingStatus.DONE,
+                            BookingStatus.NO_SHOW,
+                            BookingStatus.EXPIRED,
+                        ]
+                    ),
+                ]
                 order_expr = Booking.starts_at
 
             if start is not None:
@@ -380,12 +437,20 @@ class ServiceRepo:
 
             # Подсчет total
             try:
-                total = int((await session.execute(select(func.count()).select_from(Booking).where(*where_clause))).scalar() or 0)
+                total = int(
+                    (
+                        await session.execute(
+                            select(func.count()).select_from(Booking).where(*where_clause)
+                        )
+                    ).scalar()
+                    or 0
+                )
             except Exception:
                 total = 0
 
             # Логика пагинации (централизовано)
             from bot.app.services.shared_services import compute_pagination
+
             p, total_pages, offset, limit = compute_pagination(total, page, page_size)
 
             if not optimized:
@@ -403,7 +468,9 @@ class ServiceRepo:
                 # Use aggregated booking item names; do not rely on the removed
                 # `Booking.service_id` column. Fall back to empty string when
                 # no booking items are present.
-                service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label("service_name")
+                service_name_expr = func.coalesce(service_items_subq.c.service_name, "").label(
+                    "service_name"
+                )
                 stmt = (
                     select(
                         Booking,
@@ -423,19 +490,21 @@ class ServiceRepo:
                 raw_rows = list(result.all())
                 norm_rows: list[dict[str, Any]] = []
                 for b, client_name, master_name, service_name in raw_rows:
-                    norm_rows.append({
-                        "id": getattr(b, "id", None),
-                        "master_id": getattr(b, "master_id", None),
-                        "service_id": getattr(b, "service_id", None),
-                        "status": getattr(b, "status", None),
-                        "starts_at": getattr(b, "starts_at", None),
-                        "original_price_cents": getattr(b, "original_price_cents", None),
-                        "final_price_cents": getattr(b, "final_price_cents", None),
-                        "master_name": master_name,
-                        "client_name": client_name,
-                        "user_id": getattr(b, "user_id", None),
-                        "service_name": service_name,
-                    })
+                    norm_rows.append(
+                        {
+                            "id": getattr(b, "id", None),
+                            "master_id": getattr(b, "master_id", None),
+                            "service_id": getattr(b, "service_id", None),
+                            "status": getattr(b, "status", None),
+                            "starts_at": getattr(b, "starts_at", None),
+                            "original_price_cents": getattr(b, "original_price_cents", None),
+                            "final_price_cents": getattr(b, "final_price_cents", None),
+                            "master_name": master_name,
+                            "client_name": client_name,
+                            "user_id": getattr(b, "user_id", None),
+                            "service_name": service_name,
+                        }
+                    )
             else:
                 id_stmt = select(Booking.id).where(*where_clause).order_by(order_expr)
                 if limit is not None:
@@ -478,7 +547,12 @@ class ServiceRepo:
                     svc_stmt = (
                         select(
                             BookingItem.booking_id,
-                            func.string_agg(func.coalesce(Service.name, func.cast(BookingItem.service_id, String)), " + ").label("svc_names"),
+                            func.string_agg(
+                                func.coalesce(
+                                    Service.name, func.cast(BookingItem.service_id, String)
+                                ),
+                                " + ",
+                            ).label("svc_names"),
                         )
                         .join(Service, Service.id == BookingItem.service_id)
                         .where(BookingItem.booking_id.in_(booking_ids))
@@ -491,11 +565,21 @@ class ServiceRepo:
                                 core_map[int(bid)]["service_name"] = svc_names
                         except Exception:
                             continue
-                    missing = [bid for bid, data in core_map.items() if data.get("service_name") is None and data.get("service_id")]
+                    missing = [
+                        bid
+                        for bid, data in core_map.items()
+                        if data.get("service_name") is None and data.get("service_id")
+                    ]
                     if missing:
                         try:
-                            base_ids = [core_map[bid]["service_id"] for bid in missing if core_map[bid].get("service_id")]
-                            base_stmt = select(Service.id, Service.name).where(Service.id.in_(base_ids))
+                            base_ids = [
+                                core_map[bid]["service_id"]
+                                for bid in missing
+                                if core_map[bid].get("service_id")
+                            ]
+                            base_stmt = select(Service.id, Service.name).where(
+                                Service.id.in_(base_ids)
+                            )
                             base_rows = await session.execute(base_stmt)
                             base_map = {str(r[0]): str(r[1]) for r in base_rows.all()}
                             for bid in missing:
@@ -525,20 +609,29 @@ class ServiceRepo:
             all_services = await ServiceRepo.services_cache()
             name = all_services.get(str(service_id))
             if name:
-                logger.debug("ServiceRepo.get_service_name: cache hit for %s -> %s", service_id, name)
+                logger.debug(
+                    "ServiceRepo.get_service_name: cache hit for %s -> %s", service_id, name
+                )
                 return name
         except Exception:
             pass
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
+
                 svc = await session.get(Service, service_id)
-                if svc and getattr(svc, 'name', None):
-                    logger.info("ServiceRepo.get_service_name: db fallback for %s -> %s", service_id, svc.name)
+                if svc and getattr(svc, "name", None):
+                    logger.info(
+                        "ServiceRepo.get_service_name: db fallback for %s -> %s",
+                        service_id,
+                        svc.name,
+                    )
                     return svc.name
         except Exception:
             pass
-        logger.warning("ServiceRepo.get_service_name: service %s not found, returning id", service_id)
+        logger.warning(
+            "ServiceRepo.get_service_name: service %s not found, returning id", service_id
+        )
         return str(service_id)
 
     @staticmethod
@@ -546,6 +639,7 @@ class ServiceRepo:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
+
                 return await session.get(Service, service_id)
         except Exception:
             return None
@@ -555,6 +649,7 @@ class ServiceRepo:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
+
                 if await session.get(Service, service_id):
                     return False
                 session.add(Service(id=service_id, name=name))
@@ -577,9 +672,22 @@ class ServiceRepo:
                     return False
 
                 # Check for referencing master_services rows to avoid FK violation
-                ref_count = int((await session.execute(select(func.count()).select_from(MasterService).where(MasterService.service_id == service_id))).scalar() or 0)
+                ref_count = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(MasterService)
+                            .where(MasterService.service_id == service_id)
+                        )
+                    ).scalar()
+                    or 0
+                )
                 if ref_count > 0:
-                    logger.warning("ServiceRepo.delete_service: service %s is still referenced by %d master_services rows; refusing to delete", service_id, ref_count)
+                    logger.warning(
+                        "ServiceRepo.delete_service: service %s is still referenced by %d master_services rows; refusing to delete",
+                        service_id,
+                        ref_count,
+                    )
                     return False
 
                 await session.delete(svc)
@@ -601,7 +709,17 @@ class ServiceRepo:
             async with get_session() as session:
                 from bot.app.domain.models import MasterService
                 from sqlalchemy import select, func
-                cnt = int((await session.execute(select(func.count()).select_from(MasterService).where(MasterService.service_id == service_id))).scalar() or 0)
+
+                cnt = int(
+                    (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(MasterService)
+                            .where(MasterService.service_id == service_id)
+                        )
+                    ).scalar()
+                    or 0
+                )
                 return cnt
         except Exception as e:
             logger.warning("ServiceRepo.count_linked_masters failed for %s: %s", service_id, e)
@@ -622,7 +740,9 @@ class ServiceRepo:
 
                 # Count referencing rows first (rowcount may be unreliable on some drivers
                 # before execute), then issue delete statements inside the same transaction.
-                ref_stmt = select(MasterService.master_id).where(MasterService.service_id == service_id)
+                ref_stmt = select(MasterService.master_id).where(
+                    MasterService.service_id == service_id
+                )
                 res = await session.execute(ref_stmt)
                 refs = [r[0] for r in res.fetchall()]
                 unlinked_count = len(refs)
@@ -646,7 +766,9 @@ class ServiceRepo:
                 pass
             return True, unlinked_count
         except Exception as e:
-            logger.exception("ServiceRepo.unlink_from_all_and_delete failed for %s: %s", service_id, e)
+            logger.exception(
+                "ServiceRepo.unlink_from_all_and_delete failed for %s: %s", service_id, e
+            )
             return False, 0
 
     @staticmethod
@@ -661,14 +783,15 @@ class ServiceRepo:
                 async with get_session() as session:
                     from sqlalchemy import select
                     from bot.app.domain.models import Service
-                    res = await session.execute(select(Service.id, Service.name).where(Service.id.in_(missing)))
+
+                    res = await session.execute(
+                        select(Service.id, Service.name).where(Service.id.in_(missing))
+                    )
                     for sid, name in res.all():
                         found[int(sid)] = str(name)
             return found
         except Exception:
             return {}
-
-    
 
     @staticmethod
     async def update_price_cents(service_id: int | str, new_cents: int):
@@ -679,6 +802,7 @@ class ServiceRepo:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import Service
+
                 svc = await session.get(Service, service_id)
                 if not svc:
                     logger.debug("ServiceRepo.update_price_cents: service not found %s", service_id)
@@ -706,7 +830,10 @@ class ServiceRepo:
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import Service
-                svc_rows = await session.execute(select(Service).where(Service.id.in_(list(service_ids))))
+
+                svc_rows = await session.execute(
+                    select(Service).where(Service.id.in_(list(service_ids)))
+                )
                 services = {str(s.id): s for s in svc_rows.scalars().all()}
                 for sid in service_ids:
                     svc = services.get(str(sid))
@@ -749,6 +876,7 @@ async def generate_bookings_csv(
     Returns: (temp_file_path, file_name)
     """
     import tempfile
+
     try:
         # Prepare temp file for streaming writes
         now_local = reference or local_now()
@@ -758,7 +886,9 @@ async def generate_bookings_csv(
             text_wrapper = io.TextIOWrapper(tmp, encoding="utf-8", newline="")
             writer = csv.writer(text_wrapper)
         else:
-            tmp = tempfile.NamedTemporaryFile("w", newline="", suffix=".csv", delete=False, encoding="utf-8")
+            tmp = tempfile.NamedTemporaryFile(
+                "w", newline="", suffix=".csv", delete=False, encoding="utf-8"
+            )
             writer = csv.writer(tmp)
         try:
             writer.writerow(["ID", "Date", "Client", "Master", "Service", "Amount", "Status"])
@@ -801,7 +931,8 @@ async def generate_bookings_csv(
                 except Exception:
                     pass
             else:
-                tmp.flush(); tmp.close()
+                tmp.flush()
+                tmp.close()
         if in_memory:
             tmp.seek(0)
             raw_bytes = tmp.read()
@@ -809,6 +940,7 @@ async def generate_bookings_csv(
                 raw_bytes = raw_bytes.encode("utf-8")
             if compress:
                 import gzip
+
                 raw_bytes = gzip.compress(raw_bytes)
                 file_name = file_name + ".gz"
                 suffix = ".csv.gz"
@@ -816,7 +948,8 @@ async def generate_bookings_csv(
                 suffix = ".csv"
             final_file = tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False)
             final_file.write(raw_bytes)
-            final_file.flush(); final_file.close()
+            final_file.flush()
+            final_file.close()
             return final_file.name, file_name
         return tmp.name, file_name
     except Exception as e:
@@ -824,7 +957,9 @@ async def generate_bookings_csv(
         raise
 
 
-async def export_month_bookings_csv(mode: str, *, reference: datetime | None = None) -> tuple[str, str]:
+async def export_month_bookings_csv(
+    mode: str, *, reference: datetime | None = None
+) -> tuple[str, str]:
     """Helper to export the current calendar month for the given mode.
 
     Moves date-bound computation out of handlers to keep view layer lean.
@@ -841,7 +976,9 @@ async def export_month_bookings_csv(mode: str, *, reference: datetime | None = N
         start_utc = month_start.astimezone(ZoneInfo("UTC"))
         end_utc = month_end.astimezone(ZoneInfo("UTC"))
     except Exception:
-        logger.exception("export_month_bookings_csv: failed to compute month bounds; falling back to reference day")
+        logger.exception(
+            "export_month_bookings_csv: failed to compute month bounds; falling back to reference day"
+        )
         start_utc = ref.astimezone(ZoneInfo("UTC"))
         end_utc = start_utc + timedelta(days=30)
     return await generate_bookings_csv(
@@ -855,8 +992,72 @@ async def export_month_bookings_csv(mode: str, *, reference: datetime | None = N
 async def generate_unique_slug_from_name(name: str) -> str:
     """Generate a URL-safe unique slug for Service IDs derived from a display name."""
     trans = {
-        'а':'a','б':'b','в':'v','г':'g','ґ':'g','д':'d','е':'e','є':'ye','ж':'zh','з':'z','и':'y','і':'i','ї':'yi','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ь':'','ю':'yu','я':'ya',
-        'А':'A','Б':'B','В':'V','Г':'G','Ґ':'G','Д':'D','Е':'E','Є':'Ye','Ж':'Zh','З':'Z','И':'Y','І':'I','Ї':'Yi','Й':'Y','К':'K','Л':'L','М':'M','Н':'N','О':'O','П':'P','Р':'R','С':'S','Т':'T','У':'U','Ф':'F','Х':'Kh','Ц':'Ts','Ч':'Ch','Ш':'Sh','Щ':'Shch','Ь':'','Ю':'Yu','Я':'Ya'
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "g",
+        "ґ": "g",
+        "д": "d",
+        "е": "e",
+        "є": "ye",
+        "ж": "zh",
+        "з": "z",
+        "и": "y",
+        "і": "i",
+        "ї": "yi",
+        "й": "y",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "kh",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ь": "",
+        "ю": "yu",
+        "я": "ya",
+        "А": "A",
+        "Б": "B",
+        "В": "V",
+        "Г": "G",
+        "Ґ": "G",
+        "Д": "D",
+        "Е": "E",
+        "Є": "Ye",
+        "Ж": "Zh",
+        "З": "Z",
+        "И": "Y",
+        "І": "I",
+        "Ї": "Yi",
+        "Й": "Y",
+        "К": "K",
+        "Л": "L",
+        "М": "M",
+        "Н": "N",
+        "О": "O",
+        "П": "P",
+        "Р": "R",
+        "С": "S",
+        "Т": "T",
+        "У": "U",
+        "Ф": "F",
+        "Х": "Kh",
+        "Ц": "Ts",
+        "Ч": "Ch",
+        "Ш": "Sh",
+        "Щ": "Shch",
+        "Ь": "",
+        "Ю": "Yu",
+        "Я": "Ya",
     }
 
     def slugify(s: str) -> str:
@@ -865,11 +1066,11 @@ async def generate_unique_slug_from_name(name: str) -> str:
         out = []
         for ch in s:
             out.append(trans.get(ch, ch))
-        s2 = ''.join(out)
+        s2 = "".join(out)
         s2 = s2.lower()
-        s2 = re.sub(r'[^a-z0-9]+', '_', s2)
-        s2 = s2.strip('_')
-        return s2 or 'service'
+        s2 = re.sub(r"[^a-z0-9]+", "_", s2)
+        s2 = s2.strip("_")
+        return s2 or "service"
 
     base = slugify(name)
     candidate = base
@@ -904,7 +1105,11 @@ async def load_settings_from_db() -> None:
         _settings_last_checked = utc_now()
         logger.info(
             "Runtime settings loaded from DB: %s",
-            {k: _settings_cache.get(k) for k in ("reservation_hold_minutes", "timezone") if k in _settings_cache},
+            {
+                k: _settings_cache.get(k)
+                for k in ("reservation_hold_minutes", "timezone")
+                if k in _settings_cache
+            },
         )
     except Exception as e:
         logger.warning("SettingsRepo.load_settings_from_db failed: %s", e)
@@ -1015,7 +1220,12 @@ class SettingsRepo:
             payments_enabled = await SettingsRepo.get_setting("telegram_payments_enabled", None)
             if isinstance(payments_enabled, str):
                 try:
-                    payments_enabled = str(payments_enabled).strip().lower() in {"1", "true", "yes", "on"}
+                    payments_enabled = str(payments_enabled).strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
                 except Exception:
                     payments_enabled = False
             if bool(payments_enabled):
@@ -1028,12 +1238,16 @@ class SettingsRepo:
 
     @staticmethod
     async def get_reservation_hold_minutes() -> int:
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("reservation_hold_minutes", 1), 1)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("reservation_hold_minutes", 1), 1
+        )
 
     @staticmethod
     async def get_online_payment_discount_percent() -> int:
         """Return configured online payment discount percent (0-100)."""
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("online_payment_discount_percent", 0), 0)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("online_payment_discount_percent", 0), 0
+        )
 
     @staticmethod
     async def get_expire_check_seconds() -> int:
@@ -1042,7 +1256,9 @@ class SettingsRepo:
         Aggressive default: 30s to reduce "zombie" reservations impact.
         Setting key: reservation_expire_check_seconds.
         """
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("reservation_expire_check_seconds", 30), 30)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("reservation_expire_check_seconds", 30), 30
+        )
 
     @staticmethod
     async def get_client_reschedule_lock_minutes() -> int:
@@ -1055,7 +1271,10 @@ class SettingsRepo:
                     return int(legacy) * 60
                 except Exception:
                     pass
-        return SettingsRepo._coerce_int(val if val is not None else DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES, DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES)
+        return SettingsRepo._coerce_int(
+            val if val is not None else DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES,
+            DEFAULT_CLIENT_RESCHEDULE_LOCK_MINUTES,
+        )
 
     @staticmethod
     async def get_client_cancel_lock_minutes() -> int:
@@ -1067,11 +1286,17 @@ class SettingsRepo:
                     return int(legacy) * 60
                 except Exception:
                     pass
-        return SettingsRepo._coerce_int(val if val is not None else DEFAULT_CLIENT_CANCEL_LOCK_MINUTES, DEFAULT_CLIENT_CANCEL_LOCK_MINUTES)
+        return SettingsRepo._coerce_int(
+            val if val is not None else DEFAULT_CLIENT_CANCEL_LOCK_MINUTES,
+            DEFAULT_CLIENT_CANCEL_LOCK_MINUTES,
+        )
 
     @staticmethod
     async def get_same_day_lead_minutes() -> int:
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("same_day_lead_minutes", DEFAULT_SAME_DAY_LEAD_MINUTES), DEFAULT_SAME_DAY_LEAD_MINUTES)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("same_day_lead_minutes", DEFAULT_SAME_DAY_LEAD_MINUTES),
+            DEFAULT_SAME_DAY_LEAD_MINUTES,
+        )
 
     @staticmethod
     async def get_reminder_lead_minutes() -> int:
@@ -1079,11 +1304,19 @@ class SettingsRepo:
 
         Setting key: `reminder_lead_minutes`. Falls back to `DEFAULT_REMINDER_LEAD_MINUTES`.
         """
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("reminder_lead_minutes", DEFAULT_REMINDER_LEAD_MINUTES), DEFAULT_REMINDER_LEAD_MINUTES)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting("reminder_lead_minutes", DEFAULT_REMINDER_LEAD_MINUTES),
+            DEFAULT_REMINDER_LEAD_MINUTES,
+        )
 
     @staticmethod
     async def get_calendar_max_days_ahead() -> int:
-        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("calendar_max_days_ahead", DEFAULT_CALENDAR_MAX_DAYS_AHEAD), DEFAULT_CALENDAR_MAX_DAYS_AHEAD)
+        return SettingsRepo._coerce_int(
+            await SettingsRepo.get_setting(
+                "calendar_max_days_ahead", DEFAULT_CALENDAR_MAX_DAYS_AHEAD
+            ),
+            DEFAULT_CALENDAR_MAX_DAYS_AHEAD,
+        )
 
     @staticmethod
     async def get_work_hours_map() -> dict[int, tuple[int, int] | None]:
@@ -1118,7 +1351,9 @@ class SettingsRepo:
                 pass
         # Legacy fallback
         try:
-            s = SettingsRepo._coerce_int(await SettingsRepo.get_setting("work_hours_start", None), 9)
+            s = SettingsRepo._coerce_int(
+                await SettingsRepo.get_setting("work_hours_start", None), 9
+            )
             e = SettingsRepo._coerce_int(await SettingsRepo.get_setting("work_hours_end", None), 18)
             if s < e:
                 return {d: (s, e) for d in range(7)}
@@ -1139,16 +1374,21 @@ class SettingsRepo:
                     serial[d] = None
                 else:
                     serial[d] = [int(rng[0]), int(rng[1])]
-            return await SettingsRepo.update_setting("work_hours_json", json.dumps(serial, ensure_ascii=False))
+            return await SettingsRepo.update_setting(
+                "work_hours_json", json.dumps(serial, ensure_ascii=False)
+            )
         except Exception as e:
             logger.warning("update_work_hours_map failed: %s", e)
             return False
 
     @staticmethod
-    def format_work_hours_summary(hours_map: dict[int, tuple[int, int] | None], lang: str = "uk") -> str:
+    def format_work_hours_summary(
+        hours_map: dict[int, tuple[int, int] | None], lang: str = "uk"
+    ) -> str:
         """Compact human summary, e.g., Mon–Fri 09:00–18:00; Sat 10:00–16:00; Sun Closed"""
         try:
             from bot.app.translations import tr
+
             day_labels = tr("weekday_short", lang=lang)
             if not isinstance(day_labels, list) or len(day_labels) != 7:
                 day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -1201,8 +1441,10 @@ class SettingsRepo:
             # Persist to DB Setting table when available
             try:
                 from bot.app.domain.models import Setting
+
                 async with get_session() as session:
                     from sqlalchemy import select
+
                     s = await session.scalar(select(Setting).where(Setting.key == str(key)))
                     now_ts = utc_now()
                     if s:
@@ -1216,7 +1458,9 @@ class SettingsRepo:
 
                     await session.commit()
             except Exception as db_e:
-                logger.warning("SettingsRepo.update_setting: DB persist failed for %s: %s", key, db_e)
+                logger.warning(
+                    "SettingsRepo.update_setting: DB persist failed for %s: %s", key, db_e
+                )
                 # still consider update successful for runtime
             # Note: previously this code called an optional `_safe_call` hook
             # (on_setting_update) if provided by `bot.config`. That hook was
@@ -1244,6 +1488,7 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, User
+
                 total_bookings = await session.scalar(select(func.count(Booking.id))) or 0
                 total_users = await session.scalar(select(func.count(User.id))) or 0
                 return {"total_bookings": int(total_bookings), "total_users": int(total_users)}
@@ -1269,7 +1514,9 @@ class AdminRepo:
                 from sqlalchemy import select
                 from bot.app.domain.models import User
 
-                user = await session.scalar(select(User).where(User.telegram_id == int(telegram_id)))
+                user = await session.scalar(
+                    select(User).where(User.telegram_id == int(telegram_id))
+                )
                 display_name = format_user_display_name(username, first_name, last_name)
                 if user:
                     user.is_admin = True
@@ -1313,9 +1560,15 @@ class AdminRepo:
                 from sqlalchemy import select
                 from bot.app.domain.models import User
 
-                res = await session.execute(select(User.id, User.telegram_id, User.name).where(User.is_admin == True).order_by(User.id))
+                res = await session.execute(
+                    select(User.id, User.telegram_id, User.name)
+                    .where(User.is_admin == True)
+                    .order_by(User.id)
+                )
                 rows = res.all()
-                admins: list[tuple[int, int, str]] = [(int(r[0]), int(r[1]), str(r[2])) for r in rows]
+                admins: list[tuple[int, int, str]] = [
+                    (int(r[0]), int(r[1]), str(r[2])) for r in rows
+                ]
                 # Include primary admin from environment if not present in DB
                 env_tid: int | None = PRIMARY_ADMIN_TG_ID
                 if env_tid is not None:
@@ -1323,7 +1576,9 @@ class AdminRepo:
                     if env_tid not in present_tids:
                         # Try to fetch name from DB by telegram_id; fall back to #tid
                         try:
-                            user = await session.scalar(select(User).where(User.telegram_id == env_tid))
+                            user = await session.scalar(
+                                select(User).where(User.telegram_id == env_tid)
+                            )
                             name = getattr(user, "name", None) or f"#{env_tid}"
                         except Exception:
                             name = f"#{env_tid}"
@@ -1337,7 +1592,9 @@ class AdminRepo:
                             continue
                         # Resolve display name from DB if present; else use #tid
                         try:
-                            user = await session.scalar(select(User).where(User.telegram_id == tid_val))
+                            user = await session.scalar(
+                                select(User).where(User.telegram_id == tid_val)
+                            )
                             name = getattr(user, "name", None) or f"#{tid_val}"
                             uid = int(getattr(user, "id", 0) or 0)
                         except Exception:
@@ -1358,6 +1615,7 @@ class AdminRepo:
         try:
             async with get_session() as session:
                 from bot.app.domain.models import User
+
                 user = await session.get(User, admin_id)
                 if not user:
                     return False
@@ -1379,11 +1637,16 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select
                 from bot.app.domain.models import Booking
-                res = await session.execute(select(Booking.id, Booking.status).where(Booking.master_id == master_tid))
+
+                res = await session.execute(
+                    select(Booking.id, Booking.status).where(Booking.master_id == master_tid)
+                )
                 rows = res.all()
                 return [(int(r[0]), r[1]) for r in rows]
         except Exception as e:
-            logger.exception("AdminRepo.get_booking_ids_for_master failed for %s: %s", master_tid, e)
+            logger.exception(
+                "AdminRepo.get_booking_ids_for_master failed for %s: %s", master_tid, e
+            )
             return []
 
     @staticmethod
@@ -1396,6 +1659,7 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, or_
                 from bot.app.domain.models import Booking, BookingStatus
+
                 # Use shared utc_now() helper to obtain an aware UTC datetime
                 now_utc = utc_now()
                 terminal = [
@@ -1437,17 +1701,48 @@ class AdminRepo:
                         resolved_mid = None
                     if resolved_mid is None:
                         return {"bookings": 0, "unique_users": 0, "masters": 0, "avg_per_day": 0.0}
-                    total = await session.scalar(select(func.count(Booking.id)).where(and_(base_pred, Booking.master_id == int(resolved_mid)))) or 0
-                    unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(and_(base_pred, Booking.master_id == int(resolved_mid)))) or 0
+                    total = (
+                        await session.scalar(
+                            select(func.count(Booking.id)).where(
+                                and_(base_pred, Booking.master_id == int(resolved_mid))
+                            )
+                        )
+                        or 0
+                    )
+                    unique_users = (
+                        await session.scalar(
+                            select(func.count(func.distinct(Booking.user_id))).where(
+                                and_(base_pred, Booking.master_id == int(resolved_mid))
+                            )
+                        )
+                        or 0
+                    )
                     masters = 1
                 else:
-                    total = await session.scalar(select(func.count(Booking.id)).where(base_pred)) or 0
-                    unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(base_pred)) or 0
-                    masters = await session.scalar(select(func.count(func.distinct(Booking.master_id))).where(base_pred)) or 0
+                    total = (
+                        await session.scalar(select(func.count(Booking.id)).where(base_pred)) or 0
+                    )
+                    unique_users = (
+                        await session.scalar(
+                            select(func.count(func.distinct(Booking.user_id))).where(base_pred)
+                        )
+                        or 0
+                    )
+                    masters = (
+                        await session.scalar(
+                            select(func.count(func.distinct(Booking.master_id))).where(base_pred)
+                        )
+                        or 0
+                    )
 
                 days = max(1, (end - start).days)
                 avg_per_day = (int(total) / days) if days else 0.0
-                return {"bookings": int(total), "unique_users": int(unique_users), "masters": int(masters), "avg_per_day": avg_per_day}
+                return {
+                    "bookings": int(total),
+                    "unique_users": int(unique_users),
+                    "masters": int(masters),
+                    "avg_per_day": avg_per_day,
+                }
         except Exception as e:
             logger.exception("AdminRepo.get_range_stats failed: %s", e)
             return {"bookings": 0, "unique_users": 0, "masters": 0, "avg_per_day": 0.0}
@@ -1459,6 +1754,7 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, Master
+
                 stmt = (
                     select(Master.name, func.count(Booking.id).label("count"))
                     .join(Master, Booking.master_id == Master.id)
@@ -1480,6 +1776,7 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, BookingItem, Service
+
                 # Aggregate by services referenced from booking_items (normalized model)
                 stmt = (
                     select(Service.name.label("service"), func.count(Booking.id).label("count"))
@@ -1507,7 +1804,11 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func, and_
                 from bot.app.domain.models import Booking
-                preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
+
+                preds: list[Any] = [
+                    Booking.starts_at.between(start, end),
+                    Booking.status.in_(tuple(REVENUE_STATUSES)),
+                ]
                 if master_id is not None:
                     try:
                         from bot.app.services.master_services import MasterRepo
@@ -1532,6 +1833,7 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, Master
+
                 # Include Master.telegram_id in the aggregation to avoid collisions when names duplicate
                 stmt = (
                     select(
@@ -1541,7 +1843,10 @@ class AdminRepo:
                         func.count(Booking.id).label("bookings"),
                     )
                     .join(Master, Booking.master_id == Master.id)
-                    .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
+                    .where(
+                        Booking.starts_at.between(start, end),
+                        Booking.status.in_(tuple(REVENUE_STATUSES)),
+                    )
                     .group_by(Master.telegram_id, Master.name)
                     .order_by(func.sum(_price_expr()).desc())
                     .limit(limit)
@@ -1559,12 +1864,20 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, BookingItem, Service
+
                 # Revenue grouped by service using booking_items junction table
                 stmt = (
-                    select(Service.name.label("service"), func.sum(_price_expr()).label("revenue_cents"), func.count(Booking.id).label("bookings"))
+                    select(
+                        Service.name.label("service"),
+                        func.sum(_price_expr()).label("revenue_cents"),
+                        func.count(Booking.id).label("bookings"),
+                    )
                     .join(BookingItem, BookingItem.booking_id == Booking.id)
                     .join(Service, BookingItem.service_id == Service.id)
-                    .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
+                    .where(
+                        Booking.starts_at.between(start, end),
+                        Booking.status.in_(tuple(REVENUE_STATUSES)),
+                    )
                     .group_by(Service.name)
                     .order_by(func.sum(_price_expr()).desc())
                     .limit(limit)
@@ -1575,8 +1888,6 @@ class AdminRepo:
             logger.exception("AdminRepo.get_revenue_by_service failed: %s", e)
             return []
 
-
-
     @staticmethod
     async def get_retention(kind: str = "month") -> dict[str, Any]:
         try:
@@ -1584,14 +1895,23 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking
+
                 subquery = (
                     select(Booking.user_id, func.count(Booking.id).label("c"))
-                    .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
+                    .where(
+                        Booking.starts_at.between(start, end),
+                        Booking.status.in_(tuple(REVENUE_STATUSES)),
+                    )
                     .group_by(Booking.user_id)
                     .subquery()
                 )
                 total_users = await session.scalar(select(func.count()).select_from(subquery)) or 0
-                repeat_users = await session.scalar(select(func.count()).select_from(subquery).where(subquery.c.c > 1)) or 0
+                repeat_users = (
+                    await session.scalar(
+                        select(func.count()).select_from(subquery).where(subquery.c.c > 1)
+                    )
+                    or 0
+                )
                 rate = (repeat_users / total_users) if total_users else 0.0
                 return {"repeaters": int(repeat_users), "total": int(total_users), "rate": rate}
         except Exception as e:
@@ -1605,9 +1925,25 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, BookingStatus
-                base_query = select(Booking.id).where(Booking.starts_at.between(start, end), Booking.status.in_(_ACTIVE_FOR_NOSHOW_BASE)).subquery()
+
+                base_query = (
+                    select(Booking.id)
+                    .where(
+                        Booking.starts_at.between(start, end),
+                        Booking.status.in_(_ACTIVE_FOR_NOSHOW_BASE),
+                    )
+                    .subquery()
+                )
                 total = await session.scalar(select(func.count()).select_from(base_query)) or 0
-                no_shows = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end), Booking.status == BookingStatus.NO_SHOW)) or 0
+                no_shows = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(
+                            Booking.starts_at.between(start, end),
+                            Booking.status == BookingStatus.NO_SHOW,
+                        )
+                    )
+                    or 0
+                )
                 rate = (no_shows / total) if total else 0.0
                 return {"no_show": int(no_shows), "total": int(total), "rate": rate}
         except Exception as e:
@@ -1621,10 +1957,18 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, User
+
                 stmt = (
-                    select(User.name, func.sum(_price_expr()).label("revenue_cents"), func.count(Booking.id).label("bookings"))
+                    select(
+                        User.name,
+                        func.sum(_price_expr()).label("revenue_cents"),
+                        func.count(Booking.id).label("bookings"),
+                    )
                     .join(User, Booking.user_id == User.id)
-                    .where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))
+                    .where(
+                        Booking.starts_at.between(start, end),
+                        Booking.status.in_(tuple(REVENUE_STATUSES)),
+                    )
                     .group_by(User.name)
                     .order_by(func.sum(_price_expr()).desc())
                     .limit(limit)
@@ -1642,8 +1986,22 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, BookingStatus
-                total_created = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end))) or 0
-                converted = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end), Booking.status.in_({BookingStatus.PAID, BookingStatus.CONFIRMED}))) or 0
+
+                total_created = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(Booking.starts_at.between(start, end))
+                    )
+                    or 0
+                )
+                converted = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(
+                            Booking.starts_at.between(start, end),
+                            Booking.status.in_({BookingStatus.PAID, BookingStatus.CONFIRMED}),
+                        )
+                    )
+                    or 0
+                )
                 rate = (converted / total_created) if total_created else 0.0
                 return {"created": int(total_created), "converted": int(converted), "rate": rate}
         except Exception as e:
@@ -1657,13 +2015,28 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking, BookingStatus
-                total = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end))) or 0
-                cancelled = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end), Booking.status == BookingStatus.CANCELLED)) or 0
+
+                total = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(Booking.starts_at.between(start, end))
+                    )
+                    or 0
+                )
+                cancelled = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(
+                            Booking.starts_at.between(start, end),
+                            Booking.status == BookingStatus.CANCELLED,
+                        )
+                    )
+                    or 0
+                )
                 rate = (cancelled / total) if total else 0.0
                 return {"cancelled": int(cancelled), "total": int(total), "rate": rate}
         except Exception as e:
             logger.exception("AdminRepo.get_cancellations failed: %s", e)
             return {"cancelled": 0, "total": 0, "rate": 0.0}
+
     @staticmethod
     async def get_daily_trends(kind: str = "month") -> list[dict[str, Any]]:
         try:
@@ -1671,20 +2044,32 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking
+
                 # Use configured local timezone when truncating to day so that
                 # daily buckets align with salon local time instead of UTC.
                 tz_name = DEFAULT_LOCAL_TIMEZONE
                 # Convert booking timestamptz into local timestamp then truncate
                 # to day. SQL: date_trunc('day', timezone(tz_name, Booking.starts_at))
-                date_trunc = func.date_trunc('day', func.timezone(tz_name, Booking.starts_at))
+                date_trunc = func.date_trunc("day", func.timezone(tz_name, Booking.starts_at))
                 stmt = (
-                    select(func.date(date_trunc).label('day'), func.count(Booking.id).label('bookings'), func.sum(_price_expr()).label('revenue_cents'))
+                    select(
+                        func.date(date_trunc).label("day"),
+                        func.count(Booking.id).label("bookings"),
+                        func.sum(_price_expr()).label("revenue_cents"),
+                    )
                     .where(Booking.starts_at.between(start, end))
                     .group_by(func.date(date_trunc))
                     .order_by(func.date(date_trunc))
                 )
                 result = await session.execute(stmt)
-                return [{"day": str(row.day), "bookings": int(row.bookings or 0), "revenue_cents": int(row.revenue_cents or 0)} for row in result.fetchall()]
+                return [
+                    {
+                        "day": str(row.day),
+                        "bookings": int(row.bookings or 0),
+                        "revenue_cents": int(row.revenue_cents or 0),
+                    }
+                    for row in result.fetchall()
+                ]
         except Exception as e:
             logger.exception("AdminRepo.get_daily_trends failed: %s", e)
             return []
@@ -1696,15 +2081,34 @@ class AdminRepo:
             async with get_session() as session:
                 from sqlalchemy import select, func
                 from bot.app.domain.models import Booking
-                revenue = await session.scalar(select(func.coalesce(func.sum(_price_expr()), 0)).where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))) or 0
-                cnt = await session.scalar(select(func.count(Booking.id)).where(Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES)))) or 0
+
+                revenue = (
+                    await session.scalar(
+                        select(func.coalesce(func.sum(_price_expr()), 0)).where(
+                            Booking.starts_at.between(start, end),
+                            Booking.status.in_(tuple(REVENUE_STATUSES)),
+                        )
+                    )
+                    or 0
+                )
+                cnt = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(
+                            Booking.starts_at.between(start, end),
+                            Booking.status.in_(tuple(REVENUE_STATUSES)),
+                        )
+                    )
+                    or 0
+                )
                 return (revenue / cnt) if cnt else 0.0
         except Exception as e:
             logger.exception("AdminRepo.get_aov failed: %s", e)
             return 0.0
 
 
-async def _stats_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> dict[str, Any]:
+async def _stats_for_bounds(
+    start: datetime, end: datetime, master_id: int | None = None
+) -> dict[str, Any]:
     """Return bookings/unique_users/masters/avg_per_day for explicit bounds.
 
     This mirrors AdminRepo.get_range_stats but accepts explicit datetimes.
@@ -1716,17 +2120,46 @@ async def _stats_for_bounds(start: datetime, end: datetime, master_id: int | Non
 
             base_pred = Booking.starts_at.between(start, end)
             if master_id is not None:
-                total = await session.scalar(select(func.count(Booking.id)).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
-                unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(and_(base_pred, Booking.master_id == int(master_id)))) or 0
+                total = (
+                    await session.scalar(
+                        select(func.count(Booking.id)).where(
+                            and_(base_pred, Booking.master_id == int(master_id))
+                        )
+                    )
+                    or 0
+                )
+                unique_users = (
+                    await session.scalar(
+                        select(func.count(func.distinct(Booking.user_id))).where(
+                            and_(base_pred, Booking.master_id == int(master_id))
+                        )
+                    )
+                    or 0
+                )
                 masters = 1
             else:
                 total = await session.scalar(select(func.count(Booking.id)).where(base_pred)) or 0
-                unique_users = await session.scalar(select(func.count(func.distinct(Booking.user_id))).where(base_pred)) or 0
-                masters = await session.scalar(select(func.count(func.distinct(Booking.master_id))).where(base_pred)) or 0
+                unique_users = (
+                    await session.scalar(
+                        select(func.count(func.distinct(Booking.user_id))).where(base_pred)
+                    )
+                    or 0
+                )
+                masters = (
+                    await session.scalar(
+                        select(func.count(func.distinct(Booking.master_id))).where(base_pred)
+                    )
+                    or 0
+                )
 
             days = max(1, (end - start).days)
             avg_per_day = (int(total) / days) if days else 0.0
-            return {"bookings": int(total), "unique_users": int(unique_users), "masters": int(masters), "avg_per_day": avg_per_day}
+            return {
+                "bookings": int(total),
+                "unique_users": int(unique_users),
+                "masters": int(masters),
+                "avg_per_day": avg_per_day,
+            }
     except Exception as e:
         logger.exception("_stats_for_bounds failed: %s", e)
         return {"bookings": 0, "unique_users": 0, "masters": 0, "avg_per_day": 0.0}
@@ -1737,7 +2170,11 @@ async def _revenue_for_bounds(start: datetime, end: datetime, master_id: int | N
         async with get_session() as session:
             from sqlalchemy import select, func, and_
             from bot.app.domain.models import Booking
-            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
+
+            preds: list[Any] = [
+                Booking.starts_at.between(start, end),
+                Booking.status.in_(tuple(REVENUE_STATUSES)),
+            ]
             if master_id is not None:
                 preds = [*preds, Booking.master_id == int(master_id)]
             stmt = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds))
@@ -1748,7 +2185,9 @@ async def _revenue_for_bounds(start: datetime, end: datetime, master_id: int | N
         return 0
 
 
-async def _revenue_count_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> int:
+async def _revenue_count_for_bounds(
+    start: datetime, end: datetime, master_id: int | None = None
+) -> int:
     """Return number of bookings contributing to revenue in the given bounds.
 
     This counts bookings whose status is in `REVENUE_STATUSES`.
@@ -1757,7 +2196,11 @@ async def _revenue_count_for_bounds(start: datetime, end: datetime, master_id: i
         async with get_session() as session:
             from sqlalchemy import select, func, and_
             from bot.app.domain.models import Booking
-            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_(tuple(REVENUE_STATUSES))]
+
+            preds: list[Any] = [
+                Booking.starts_at.between(start, end),
+                Booking.status.in_(tuple(REVENUE_STATUSES)),
+            ]
             if master_id is not None:
                 preds.append(Booking.master_id == int(master_id))
             stmt = select(func.count(Booking.id)).where(and_(*preds))
@@ -1768,7 +2211,9 @@ async def _revenue_count_for_bounds(start: datetime, end: datetime, master_id: i
         return 0
 
 
-async def _revenue_split_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> dict[str, int]:
+async def _revenue_split_for_bounds(
+    start: datetime, end: datetime, master_id: int | None = None
+) -> dict[str, int]:
     """Return split revenue for explicit bounds.
 
     Returns dict with keys:
@@ -1801,8 +2246,12 @@ async def _revenue_split_for_bounds(start: datetime, end: datetime, master_id: i
             if master_id is not None:
                 preds_base = [*preds_base, Booking.master_id == int(master_id)]
 
-            stmt_in_cash = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds_base, Booking.status.in_(in_cash_statuses)))
-            stmt_expected = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds_base, Booking.status.in_(expected_statuses)))
+            stmt_in_cash = select(func.coalesce(func.sum(_price_expr()), 0)).where(
+                and_(*preds_base, Booking.status.in_(in_cash_statuses))
+            )
+            stmt_expected = select(func.coalesce(func.sum(_price_expr()), 0)).where(
+                and_(*preds_base, Booking.status.in_(expected_statuses))
+            )
 
             in_cash = int(await session.scalar(stmt_in_cash) or 0)
             expected = int(await session.scalar(stmt_expected) or 0)
@@ -1812,7 +2261,9 @@ async def _revenue_split_for_bounds(start: datetime, end: datetime, master_id: i
         return {"in_cash": 0, "expected": 0}
 
 
-async def _lost_revenue_for_bounds(start: datetime, end: datetime, master_id: int | None = None) -> int:
+async def _lost_revenue_for_bounds(
+    start: datetime, end: datetime, master_id: int | None = None
+) -> int:
     """Return revenue (cents) that was lost due to cancellations and no-shows in bounds.
 
     This sums booking prices for statuses CANCELLED and NO_SHOW.
@@ -1833,7 +2284,10 @@ async def _lost_revenue_for_bounds(start: datetime, end: datetime, master_id: in
                     return 0
                 master_id = resolved_mid
 
-            preds: list[Any] = [Booking.starts_at.between(start, end), Booking.status.in_((BookingStatus.CANCELLED, BookingStatus.NO_SHOW))]
+            preds: list[Any] = [
+                Booking.starts_at.between(start, end),
+                Booking.status.in_((BookingStatus.CANCELLED, BookingStatus.NO_SHOW)),
+            ]
             if master_id is not None:
                 preds = [*preds, Booking.master_id == int(master_id)]
             stmt = select(func.coalesce(func.sum(_price_expr()), 0)).where(and_(*preds))
@@ -1871,6 +2325,7 @@ def _format_trend_text(current: int | float, previous: int | float, *, lang: str
     except Exception:
         return ""
 
+
 async def get_admin_dashboard_summary(kind: str = "today", lang: str | None = None) -> str:
     """Compatibility wrapper: return a localized text summary for admin dashboard.
 
@@ -1880,28 +2335,38 @@ async def get_admin_dashboard_summary(kind: str = "today", lang: str | None = No
     """
     try:
         data = await get_admin_dashboard_data(kind=kind)
-        l = lang or data.get("language") or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+        l = (
+            lang
+            or data.get("language")
+            or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+        )
         # Delegate presentation to an internal helper that renders text from structured data
         return await _format_admin_dashboard_text(data, kind=kind, lang=l)
     except Exception:
         return t("admin_panel_title", lang or default_language())
 
 
-async def _format_admin_dashboard_text(data: dict[str, Any], *, kind: str = "today", lang: str | None = None) -> str:
+async def _format_admin_dashboard_text(
+    data: dict[str, Any], *, kind: str = "today", lang: str | None = None
+) -> str:
     """Render localized admin dashboard text from structured `data`.
 
     This helper centralizes presentation logic so `get_admin_dashboard_data`
     remains responsible only for producing structured metrics.
     """
     try:
-        l = lang or data.get("language") or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+        l = (
+            lang
+            or data.get("language")
+            or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+        )
         date_label = format_date(local_now(), "%d %B")
         header_raw = tr("admin_dashboard_header", lang=l)
         header = header_raw.format(date=date_label) if "{date}" in header_raw else header_raw
 
         total_count = int(data.get("stats", {}).get("bookings", 0))
         total_line = tr("admin_dashboard_total_bookings", lang=l).format(count=total_count)
-        total_line += (data.get("trends", {}) .get("bookings") or "")
+        total_line += data.get("trends", {}).get("bookings") or ""
 
         # Compute split revenue for the requested period (in-cash vs expected)
         try:
@@ -1923,17 +2388,26 @@ async def _format_admin_dashboard_text(data: dict[str, Any], *, kind: str = "tod
                 f"{tr('admin_dashboard_revenue_expected', lang=l)}: {expected_txt}{expected_trend}"
             )
         except Exception:
-            revenue_amount = (data.get("revenue_cents", 0) // 100)
+            revenue_amount = data.get("revenue_cents", 0) // 100
             revenue_line = tr("admin_dashboard_revenue", lang=l).format(amount=revenue_amount)
-            revenue_line += (data.get("trends", {}) .get("revenue") or "")
+            revenue_line += data.get("trends", {}).get("revenue") or ""
 
         new_clients_count = int(data.get("stats", {}).get("unique_users", 0))
         new_clients_line = tr("admin_dashboard_new_clients", lang=l).format(count=new_clients_count)
-        new_clients_line += (data.get("trends", {}) .get("unique_users") or "")
+        new_clients_line += data.get("trends", {}).get("unique_users") or ""
         master_load_header = tr("admin_dashboard_master_load", lang=l)
 
         masters_load_text_local = data.get("masters_text", "")
-        text_root = "\n".join([header, total_line, revenue_line, new_clients_line, master_load_header, masters_load_text_local])
+        text_root = "\n".join(
+            [
+                header,
+                total_line,
+                revenue_line,
+                new_clients_line,
+                master_load_header,
+                masters_load_text_local,
+            ]
+        )
         return text_root
     except Exception:
         return t("admin_panel_title", l)
@@ -1998,16 +2472,21 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
         zero_text = ", ".join(zero_names[:5])
         if len(zero_names) > 5:
             zero_text += ", ..."
-        masters_load_text = (masters_load_text + "\n" if masters_load_text else "") + f"(Нет записей: {zero_text})"
+        masters_load_text = (
+            masters_load_text + "\n" if masters_load_text else ""
+        ) + f"(Нет записей: {zero_text})"
 
     # Also include a simple masters list (raw) for views that want to render differently
     masters_raw = [
-        {"name": name, "telegram_id": int(tid or 0), "bookings": int(cnt or 0)} for name, tid, cnt in rows
+        {"name": name, "telegram_id": int(tid or 0), "bookings": int(cnt or 0)}
+        for name, tid, cnt in rows
     ]
 
     # Prepare localized trend suffixes for key metrics
     try:
-        bookings_trend = _format_trend_text(stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=l)
+        bookings_trend = _format_trend_text(
+            stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=l
+        )
     except Exception:
         bookings_trend = ""
     try:
@@ -2015,7 +2494,9 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
     except Exception:
         revenue_trend = ""
     try:
-        users_trend = _format_trend_text(stats.get("unique_users", 0), prev_stats.get("unique_users", 0), lang=l)
+        users_trend = _format_trend_text(
+            stats.get("unique_users", 0), prev_stats.get("unique_users", 0), lang=l
+        )
     except Exception:
         users_trend = ""
 
@@ -2025,7 +2506,11 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
         "revenue_cents": revenue_cents,
         "masters": masters_raw,
         "masters_text": masters_load_text,
-        "trends": {"bookings": bookings_trend, "revenue": revenue_trend, "unique_users": users_trend},
+        "trends": {
+            "bookings": bookings_trend,
+            "revenue": revenue_trend,
+            "unique_users": users_trend,
+        },
     }
 
 

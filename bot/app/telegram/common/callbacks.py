@@ -13,7 +13,7 @@ __all__ = [
     "MasterClientNoteCB",
     "ServiceSelectCB",
     "MasterSelectCB",
-    "MasterProfileCB",  
+    "MasterProfileCB",
     "MasterServicesCB",
     "MastersListCB",
     "GenericConfirmCB",
@@ -34,6 +34,7 @@ __all__ = [
     "MasterScheduleCB",
     "PricePageCB",
 ]
+
 
 def create_callback_data(prefix: str, **fields: Any) -> type[CallbackData]:
     """
@@ -56,7 +57,7 @@ def create_callback_data(prefix: str, **fields: Any) -> type[CallbackData]:
         if args and type(None) in args:
             allows_none = True
         # In some Python versions unions are represented using types.UnionType
-        if getattr(ftype, "__args__", None) and type(None) in getattr(ftype, "__args__", ()): 
+        if getattr(ftype, "__args__", None) and type(None) in getattr(ftype, "__args__", ()):
             allows_none = True
         if allows_none:
             namespace[fname] = None
@@ -86,14 +87,19 @@ def pack_cb(cb_cls: type[CallbackData], **kwargs: Any) -> str:
     # but static analyzers treat it as Any; cast to str for clarity.
     return cast(str, cast(Any, cb_cls)(**kwargs).pack())
 
+
 # --- Определения callback'ов через фабрику ---
 
 MasterMenuCB = create_callback_data("mm", act=str, page=int | None)
 ClientInfoCB = create_callback_data("cinfo", user_id=int)
 ServiceSelectCB = create_callback_data("svc", service_id=str)
 MasterSelectCB = create_callback_data("ms", service_id=str, master_id=int)
-MasterProfileCB = create_callback_data("mp", service_id=str, master_id=int)  # Новый callback для профиля
-MasterServicesCB = create_callback_data("msvc", master_id=int)  # Список услуг мастера для клиентского флоу
+MasterProfileCB = create_callback_data(
+    "mp", service_id=str, master_id=int
+)  # Новый callback для профиля
+MasterServicesCB = create_callback_data(
+    "msvc", master_id=int
+)  # Список услуг мастера для клиентского флоу
 MastersListCB = create_callback_data("mlist", page=int)
 ServiceToggleCB = create_callback_data("svc_toggle", service_id=str)
 MasterMultiCB = create_callback_data("master_multi", master_id=int)
@@ -109,7 +115,9 @@ MastersAltTomorrowCB = create_callback_data("mat", service_id=str)
 # Новые callback'и
 BookingActionCB = create_callback_data("ba", act=str, booking_id=int)
 BookingCB = create_callback_data("booking", action=str, booking_id=int)
-RescheduleCB = create_callback_data("reschedule", action=str, booking_id=int, master_id=int | None, date=str | None, time=str | None)
+RescheduleCB = create_callback_data(
+    "reschedule", action=str, booking_id=int, master_id=int | None, date=str | None, time=str | None
+)
 # Quick reschedule shortcuts (used by master UI quick-actions)
 QuickRescheduleCB = create_callback_data("rq", offset_days=int, booking_id=int)
 PayCB = create_callback_data("pay", action=str, booking_id=int)
@@ -120,7 +128,9 @@ RatingCB = create_callback_data("rate", booking_id=int, rating=int)
 BackCB = create_callback_data("back", action=str, target=str | None, booking_id=int | None)
 
 # Master schedule editing callback (masters edit their weekly windows)
-MasterScheduleCB = create_callback_data("msch", action=str, day=int | None, time=str | None, idx=int | None)
+MasterScheduleCB = create_callback_data(
+    "msch", action=str, day=int | None, time=str | None, idx=int | None
+)
 
 # Unified navigation callback for three canonical back actions:
 # - act="root"       -> return to global root (client main menu)
@@ -214,7 +224,9 @@ HourCB = create_callback_data("hour", service_id=str, master_id=int, date=str, h
 CancelTimeCB = create_callback_data("cancel_time")
 
 # Compact time picker adjustments: increment/decrement hours/minutes and submit
-TimeAdjustCB = create_callback_data("tadj", op=str, hour=int, minute=int, service_id=str, master_id=int, date=str)
+TimeAdjustCB = create_callback_data(
+    "tadj", op=str, hour=int, minute=int, service_id=str, master_id=int, date=str
+)
 
 # Алиас для обратной совместимости
 PaymentCB = PayCB

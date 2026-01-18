@@ -42,7 +42,13 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
 from aiogram.filters.state import StateFilter
-from aiogram.types import CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
+from aiogram.types import (
+    CallbackQuery,
+    Message,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    FSInputFile,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
@@ -52,25 +58,33 @@ from datetime import datetime
 from bot.app.core.db import get_session
 from bot.app.domain.models import Booking, BookingStatus, Master, MasterService, Service, User
 
+
 # Structural Protocols for typed callback_data without relying on runtime CallbackData classes
 class _HasAdminId(Protocol):
     admin_id: int
 
+
 class _HasServiceId(Protocol):
     service_id: str
+
 
 class _HasServiceDelta(Protocol):
     service_id: str
     delta: int
 
+
 class _HasCode(Protocol):
     code: str
+
 
 class _HasMinutes(Protocol):
     minutes: int
 
+
 class _HasHour(Protocol):
     hour: int
+
+
 from bot.app.services.admin_services import (
     AdminRepo,
     generate_bookings_csv,
@@ -117,13 +131,26 @@ from bot.app.translations import t, tr
 from bot.app.telegram.common.ui_fail_safe import safe_edit
 from bot.app.telegram.common.roles import AdminRoleFilter
 from bot.app.telegram.admin.admin_keyboards import (
-    admin_menu_kb, admin_settings_kb, admin_hold_menu_kb, pagination_kb,
-    stats_menu_kb, biz_menu_kb,
-    services_list_kb, services_prices_kb, edit_price_kb,
-    admin_cancel_menu_kb, admin_reschedule_menu_kb, no_masters_kb, no_services_kb,
-    masters_list_kb, services_select_kb, contacts_settings_kb,
+    admin_menu_kb,
+    admin_settings_kb,
+    admin_hold_menu_kb,
+    pagination_kb,
+    stats_menu_kb,
+    biz_menu_kb,
+    services_list_kb,
+    services_prices_kb,
+    edit_price_kb,
+    admin_cancel_menu_kb,
+    admin_reschedule_menu_kb,
+    no_masters_kb,
+    no_services_kb,
+    masters_list_kb,
+    services_select_kb,
+    contacts_settings_kb,
     confirm_delete_service_kb,
-    confirm_delete_master_kb, confirm_cancel_all_master_kb, confirm_force_delete_master_kb,
+    confirm_delete_master_kb,
+    confirm_cancel_all_master_kb,
+    confirm_force_delete_master_kb,
     admin_reminder_menu_kb,
     admin_expire_menu_kb,
 )
@@ -135,6 +162,7 @@ from bot.app.telegram.common.navigation import (
     nav_get_lang,
     show_main_client_menu,
 )
+
 # Register centralized error handler for router-level exceptions
 from bot.app.telegram.common.errors import handle_telegram_error
 # Avoid top-level import of client handlers to prevent import cycles; lazy-import where needed.
@@ -145,9 +173,11 @@ logger = logging.getLogger(__name__)
 admin_router = Router(name="admin")
 # Attach locale middleware so handlers receive `locale` via data injection
 from bot.app.telegram.common.locale_middleware import LocaleMiddleware
+
 admin_router.message.middleware(LocaleMiddleware())
 admin_router.callback_query.middleware(LocaleMiddleware())
 from bot.app.telegram.common.ui_fail_safe import SafeUIMiddleware
+
 # Attach Safe UI middleware to centralize user checks and error handling
 admin_router.message.middleware(SafeUIMiddleware())
 admin_router.callback_query.middleware(SafeUIMiddleware())
@@ -179,10 +209,10 @@ async def admin_cmd_start(message: Message, state: FSMContext, locale: str) -> N
     # Use safe_edit which already has internal fallbacks
     await safe_edit(message, text=t("admin_panel_title", lang), reply_markup=kb)
 
-
-
     # Ensure we leave any pending input/edit modes when navigating
     await state.clear()
+
+
 async def admin_cmd_start_plaintext(message: Message, state: FSMContext, locale: str) -> None:
     await admin_cmd_start(message, state, locale)
 
@@ -219,6 +249,7 @@ async def admin_forwarded_user_lookup(message: Message, state: FSMContext, local
     display_name = " ".join(name_parts) or ("@" + username if username else str(target_tid))
     try:
         from bot.app.telegram.common.roles import is_admin
+
         # Use UserRepo for user lookup
         try:
             user_row = await UserRepo.get_by_telegram_id(target_tid)
@@ -247,18 +278,32 @@ async def admin_forwarded_user_lookup(message: Message, state: FSMContext, local
         status_key = "role_client"
     status = tr(status_key, lang=lang)
     # Localized title with formatting
-    text = t("forwarded_user_actions_title", lang).format(name=display_name, id=target_tid, status=status)
+    text = t("forwarded_user_actions_title", lang).format(
+        name=display_name, id=target_tid, status=status
+    )
 
     # Build keyboard with quick actions using structured AdminLookupUserCB.
     # Backward compatibility: if packing fails for any reason, fall back to legacy "__fast__" string.
     kb = InlineKeyboardBuilder()
-    kb.button(text=t("make_admin_label", lang), callback_data=pack_cb(AdminLookupUserCB, action="make_admin", user_id=target_tid))
+    kb.button(
+        text=t("make_admin_label", lang),
+        callback_data=pack_cb(AdminLookupUserCB, action="make_admin", user_id=target_tid),
+    )
     if not is_master_target:
-        kb.button(text=t("make_master_label", lang), callback_data=pack_cb(AdminLookupUserCB, action="make_master", user_id=target_tid))
+        kb.button(
+            text=t("make_master_label", lang),
+            callback_data=pack_cb(AdminLookupUserCB, action="make_master", user_id=target_tid),
+        )
     else:
-        kb.button(text=t("view_master_bookings_label", lang), callback_data=pack_cb(AdminLookupUserCB, action="view_master", user_id=target_tid))
+        kb.button(
+            text=t("view_master_bookings_label", lang),
+            callback_data=pack_cb(AdminLookupUserCB, action="view_master", user_id=target_tid),
+        )
     if user_row:
-        kb.button(text=t("view_client_bookings_label", lang), callback_data=pack_cb(AdminLookupUserCB, action="view_client", user_id=target_tid))
+        kb.button(
+            text=t("view_client_bookings_label", lang),
+            callback_data=pack_cb(AdminLookupUserCB, action="view_client", user_id=target_tid),
+        )
     # Sequential back instead of jump to root
     kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(2, 2)
@@ -285,7 +330,9 @@ async def admin_forwarded_privacy_notice(message: Message, state: FSMContext, lo
         cur_state = await state.get_state()
         if cur_state:
             return
-        sender_display = getattr(message, "forward_sender_name", None) or tr("unknown_user", lang=locale)
+        sender_display = getattr(message, "forward_sender_name", None) or tr(
+            "unknown_user", lang=locale
+        )
         lang = await _lang_with_state(state, locale)
         # Localized explanation (fallback English/Ukrainian inline text if key missing)
         try:
@@ -310,7 +357,10 @@ async def admin_forwarded_privacy_notice(message: Message, state: FSMContext, lo
         except Exception:
             bot_username = None
         if bot_username:
-            kb.button(text=t("request_user_start_label", lang), url=f"https://t.me/{bot_username}?start=register")
+            kb.button(
+                text=t("request_user_start_label", lang),
+                url=f"https://t.me/{bot_username}?start=register",
+            )
         # Follow nav stack instead of root
         kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
         kb.adjust(1)
@@ -325,6 +375,7 @@ async def admin_forwarded_privacy_notice(message: Message, state: FSMContext, lo
 # Legacy wrapper `_get_msg_obj` removed; use shared `_msg` helper imported
 # as `_shared_msg` from `bot.app.services.shared_services` directly.
 
+
 # Cached metadata about recently forwarded users so callbacks can persist names.
 @dataclass(frozen=True)
 class ForwardedUserInfo:
@@ -332,11 +383,14 @@ class ForwardedUserInfo:
     first_name: str | None
     last_name: str | None
 
+
 FORWARDED_USER_CACHE_LIMIT = get_env_int("FORWARDED_USER_CACHE_LIMIT", 512)
 _forwarded_user_info: OrderedDict[int, ForwardedUserInfo] = OrderedDict()
 
 
-def _remember_forwarded_user_info(tid: int, username: str | None, first_name: str | None, last_name: str | None) -> None:
+def _remember_forwarded_user_info(
+    tid: int, username: str | None, first_name: str | None, last_name: str | None
+) -> None:
     if not tid:
         return
     info = ForwardedUserInfo(username=username, first_name=first_name, last_name=last_name)
@@ -349,6 +403,7 @@ def _remember_forwarded_user_info(tid: int, username: str | None, first_name: st
 def _get_forwarded_user_info(tid: int) -> ForwardedUserInfo | None:
     return _forwarded_user_info.get(tid)
 
+
 # Use `_shared_msg(obj)` (legacy alias `_msg` removed).
 
 
@@ -359,11 +414,13 @@ async def _language_default(locale: str | None = None) -> str:
             return locale
         # Try settings first (may be user-set), fallback to shared env-based default
         from bot.app.services.shared_services import default_language
+
         lang_setting = await SettingsRepo.get_setting("language", None)
         return str(lang_setting or default_language())
     except Exception:
         try:
             from bot.app.services.shared_services import default_language
+
             return default_language()
         except Exception:
             return "uk"
@@ -411,7 +468,12 @@ async def _show_paginated(
     paginated = page_items or []
     kb = pagination_kb(prefix, page, total_pages, lang)
     # Map common delete types to typed confirm CallbackData classes
-    from bot.app.telegram.common.callbacks import ConfirmDelMasterCB, ConfirmDelServiceCB, GenericConfirmCB
+    from bot.app.telegram.common.callbacks import (
+        ConfirmDelMasterCB,
+        ConfirmDelServiceCB,
+        GenericConfirmCB,
+    )
+
     for key, name in paginated:
         cb_payload: str | None = None
         try:
@@ -422,11 +484,19 @@ async def _show_paginated(
             else:
                 cb_payload = pack_cb(GenericConfirmCB, model_type=str(typ), model_id=str(key))
         except Exception:
-            logger.exception("_show_paginated: failed to build typed confirm callback for %s/%s", typ, key)
+            logger.exception(
+                "_show_paginated: failed to build typed confirm callback for %s/%s", typ, key
+            )
             cb_payload = None  # Skip unsafe legacy fallback
         if cb_payload:
-            kb.inline_keyboard.insert(0, [InlineKeyboardButton(text=name, callback_data=cb_payload)])
-    await safe_edit(_shared_msg(callback), f"{title} ({t('page_short', lang)} {page}/{total_pages}):", reply_markup=kb)
+            kb.inline_keyboard.insert(
+                0, [InlineKeyboardButton(text=name, callback_data=cb_payload)]
+            )
+    await safe_edit(
+        _shared_msg(callback),
+        f"{title} ({t('page_short', lang)} {page}/{total_pages}):",
+        reply_markup=kb,
+    )
     await callback.answer()
 
 
@@ -443,6 +513,7 @@ async def admin_manage_admins(callback: CallbackQuery, state: FSMContext, locale
     if not rows:
         if m := _shared_msg(callback):
             from bot.app.telegram.client.client_keyboards import get_back_button
+
             await safe_edit(m, t("no_admins", lang), reply_markup=get_back_button())
         await callback.answer()
         return
@@ -450,6 +521,7 @@ async def admin_manage_admins(callback: CallbackQuery, state: FSMContext, locale
     kb = InlineKeyboardBuilder()
     current_tid = callback.from_user.id if callback.from_user else None
     import os
+
     primary_admin_tid_raw = os.getenv("PRIMARY_ADMIN_TG_ID", "")
     try:
         primary_admin_tid = int(primary_admin_tid_raw) if primary_admin_tid_raw else None
@@ -483,7 +555,9 @@ async def admin_manage_admins(callback: CallbackQuery, state: FSMContext, locale
 
 
 @admin_router.callback_query(ConfirmDelAdminCB.filter())
-async def admin_confirm_del_admin(callback: CallbackQuery, callback_data: _HasAdminId, state: FSMContext, locale: str) -> None:
+async def admin_confirm_del_admin(
+    callback: CallbackQuery, callback_data: _HasAdminId, state: FSMContext, locale: str
+) -> None:
     """Show confirmation to revoke admin rights from a user id (DB id)."""
     lang = locale
     admin_id = int(callback_data.admin_id)
@@ -505,7 +579,9 @@ async def admin_confirm_del_admin(callback: CallbackQuery, callback_data: _HasAd
 
 
 @admin_router.callback_query(ExecDelAdminCB.filter())
-async def admin_exec_del_admin(callback: CallbackQuery, callback_data: _HasAdminId, state: FSMContext, locale: str) -> None:
+async def admin_exec_del_admin(
+    callback: CallbackQuery, callback_data: _HasAdminId, state: FSMContext, locale: str
+) -> None:
     """Revoke admin rights for selected DB user id."""
     lang = locale
     admin_id = int(callback_data.admin_id)
@@ -515,7 +591,7 @@ async def admin_exec_del_admin(callback: CallbackQuery, callback_data: _HasAdmin
     if not user:
         await callback.answer(t("not_found", locale), show_alert=True)
         return
-    if int(getattr(user, 'telegram_id', 0) or 0) == int(current_tid or 0):
+    if int(getattr(user, "telegram_id", 0) or 0) == int(current_tid or 0):
         await callback.answer(t("cannot_revoke_self", locale), show_alert=True)
         return
     ok = await AdminRepo.revoke_admin_by_id(admin_id)
@@ -534,6 +610,7 @@ async def admin_analytics_menu(callback: CallbackQuery, state: FSMContext, local
     lang = locale
     services: list[tuple[str, str]] = []
     from bot.app.telegram.admin.admin_keyboards import analytics_kb
+
     text = t("admin_analytics_title", lang)
     if not text or text == "admin_analytics_title":
         text = tr("admin_analytics_title", lang=default_language())
@@ -555,6 +632,7 @@ async def admin_manage_crud(callback: CallbackQuery, state: FSMContext, locale: 
     lang = locale
     masters: list[Any] = []
     from bot.app.telegram.admin.admin_keyboards import management_crud_kb
+
     text = t("admin_menu_manage_crud", lang)
     if not text or text == "admin_menu_manage_crud":
         text = tr("admin_menu_manage_crud", lang=default_language())
@@ -565,11 +643,11 @@ async def admin_manage_crud(callback: CallbackQuery, state: FSMContext, locale: 
     await callback.answer()
 
 
-
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "manage_masters"))
 async def admin_manage_masters(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Open masters management submenu (Add/Delete/View links)."""
     from bot.app.telegram.admin.admin_keyboards import admin_masters_list_kb
+
     lang = locale
     # Fetch cached masters mapping {telegram_id: name}
     masters = await master_services.masters_cache()
@@ -584,6 +662,7 @@ async def admin_manage_masters(callback: CallbackQuery, state: FSMContext, local
 async def admin_manage_services(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Open services management submenu (Add/Delete)."""
     from bot.app.telegram.admin.admin_keyboards import services_crud_kb
+
     lang = locale
     kb = services_crud_kb(lang)
     if m := _shared_msg(callback):
@@ -592,9 +671,10 @@ async def admin_manage_services(callback: CallbackQuery, state: FSMContext, loca
     await callback.answer()
 
 
-
 @admin_router.callback_query(AdminMasterCardCB.filter())
-async def admin_show_master_card(callback: CallbackQuery, callback_data, state: FSMContext, locale: str) -> None:
+async def admin_show_master_card(
+    callback: CallbackQuery, callback_data, state: FSMContext, locale: str
+) -> None:
     """Show object-like master card with actions for a selected master."""
     lang = locale
     if not callback_data:
@@ -656,14 +736,25 @@ async def admin_show_master_card(callback: CallbackQuery, callback_data, state: 
     # Build master-specific action keyboard
     kb = InlineKeyboardBuilder()
     # Show bookings specifically for this master (quick view)
-    kb.button(text=t("admin_master_bookings_button", lang), callback_data=pack_cb(AdminLookupUserCB, action="view_master", user_id=int(master_id)))
+    kb.button(
+        text=t("admin_master_bookings_button", lang),
+        callback_data=pack_cb(AdminLookupUserCB, action="view_master", user_id=int(master_id)),
+    )
     # View/manage services linked to this master — reuse SelectViewMasterCB which accepts master_id
     from bot.app.telegram.common.callbacks import SelectViewMasterCB
-    kb.button(text=t("admin_master_services_button", lang), callback_data=pack_cb(SelectViewMasterCB, master_id=int(master_id)))
+
+    kb.button(
+        text=t("admin_master_services_button", lang),
+        callback_data=pack_cb(SelectViewMasterCB, master_id=int(master_id)),
+    )
     # Delete master confirmation
-    kb.button(text=t("admin_menu_delete_master", lang), callback_data=pack_cb(ConfirmDelMasterCB, master_id=int(master_id)))
+    kb.button(
+        text=t("admin_menu_delete_master", lang),
+        callback_data=pack_cb(ConfirmDelMasterCB, master_id=int(master_id)),
+    )
     # Back from a master card should return to the CRUD management hub
     from bot.app.telegram.common.callbacks import AdminMenuCB
+
     kb.button(text=t("back", lang), callback_data=pack_cb(AdminMenuCB, act="manage_crud"))
     kb.adjust(1)
 
@@ -677,6 +768,7 @@ async def admin_show_master_card(callback: CallbackQuery, callback_data, state: 
 async def admin_manage_links(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Open links management submenu (Link/Unlink/View)."""
     from bot.app.telegram.admin.admin_keyboards import links_crud_kb
+
     lang = locale
     kb = links_crud_kb(lang)
     if m := _shared_msg(callback):
@@ -690,8 +782,12 @@ async def admin_view_links_choice(callback: CallbackQuery, state: FSMContext, lo
     """Ask admin whether to view links by Master or by Service."""
     lang = locale
     kb = InlineKeyboardBuilder()
-    kb.button(text=t("by_master", lang), callback_data=pack_cb(AdminMenuCB, act="view_links_master"))
-    kb.button(text=t("by_service", lang), callback_data=pack_cb(AdminMenuCB, act="view_links_service"))
+    kb.button(
+        text=t("by_master", lang), callback_data=pack_cb(AdminMenuCB, act="view_links_master")
+    )
+    kb.button(
+        text=t("by_service", lang), callback_data=pack_cb(AdminMenuCB, act="view_links_service")
+    )
     kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(2, 1)
     m = _shared_msg(callback)
@@ -703,7 +799,9 @@ async def admin_view_links_choice(callback: CallbackQuery, state: FSMContext, lo
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "view_links_master"))
-async def admin_view_links_by_master(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_view_links_by_master(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Show list of masters for admin to pick one to view linked services."""
     lang = locale
     # Use cached masters mapping (fast, avoids direct DB access in handlers)
@@ -714,7 +812,9 @@ async def admin_view_links_by_master(callback: CallbackQuery, state: FSMContext,
         masters = []
 
     if not masters:
-        await safe_edit(_shared_msg(callback), t("no_masters", lang), reply_markup=no_masters_kb(lang))
+        await safe_edit(
+            _shared_msg(callback), t("no_masters", lang), reply_markup=no_masters_kb(lang)
+        )
         await callback.answer()
         return
     kb = masters_list_kb(masters, lang=lang)
@@ -727,7 +827,9 @@ async def admin_view_links_by_master(callback: CallbackQuery, state: FSMContext,
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "view_links_service"))
-async def admin_view_links_by_service(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_view_links_by_service(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Show list of services for admin to pick one to view linked masters."""
     lang = locale
     try:
@@ -736,7 +838,9 @@ async def admin_view_links_by_service(callback: CallbackQuery, state: FSMContext
     except Exception:
         services = []
     if not services:
-        await safe_edit(_shared_msg(callback), t("no_services", lang), reply_markup=no_services_kb(lang))
+        await safe_edit(
+            _shared_msg(callback), t("no_services", lang), reply_markup=no_services_kb(lang)
+        )
         await callback.answer()
         return
     kb = services_select_kb(services, lang=lang)
@@ -772,7 +876,9 @@ async def admin_fast_user_callback(callback: CallbackQuery, state: FSMContext, l
 
     lang = await _lang_with_state(state, locale)
     forwarded_info = _get_forwarded_user_info(target_tid)
-    await _process_admin_lookup_action(action, target_tid, callback, lang, state, forwarded_user=forwarded_info)
+    await _process_admin_lookup_action(
+        action, target_tid, callback, lang, state, forwarded_user=forwarded_info
+    )
 
 
 async def _process_admin_lookup_action(
@@ -799,7 +905,11 @@ async def _process_admin_lookup_action(
                 last_name=fwd_last_name,
             )
             if ok:
-                await safe_edit(msg_obj, t("make_admin_label", lang) + f" — OK (ID {target_tid})", reply_markup=admin_menu_kb(lang))
+                await safe_edit(
+                    msg_obj,
+                    t("make_admin_label", lang) + f" — OK (ID {target_tid})",
+                    reply_markup=admin_menu_kb(lang),
+                )
         except Exception:
             logger.exception("Failed to create master: %s", target_tid)
             await callback.answer(t("error", lang), show_alert=True)
@@ -814,9 +924,17 @@ async def _process_admin_lookup_action(
                 last_name=fwd_last_name,
             )
             if added:
-                await safe_edit(msg_obj, t("make_master_label", lang) + f" — OK (ID {target_tid})", reply_markup=admin_menu_kb(lang))
+                await safe_edit(
+                    msg_obj,
+                    t("make_master_label", lang) + f" — OK (ID {target_tid})",
+                    reply_markup=admin_menu_kb(lang),
+                )
             else:
-                await safe_edit(msg_obj, t("make_master_label", lang) + " — already", reply_markup=admin_menu_kb(lang))
+                await safe_edit(
+                    msg_obj,
+                    t("make_master_label", lang) + " — already",
+                    reply_markup=admin_menu_kb(lang),
+                )
         except Exception:
             logger.exception("Failed to create master: %s", target_tid)
             await callback.answer(t("error", lang), show_alert=True)
@@ -825,13 +943,22 @@ async def _process_admin_lookup_action(
         try:
             user = await UserRepo.get_by_telegram_id(target_tid)
             if not user:
-                await safe_edit(msg_obj, t("view_client_bookings_label", lang) + f" — {t('not_found', lang)}", reply_markup=admin_menu_kb(lang))
+                await safe_edit(
+                    msg_obj,
+                    t("view_client_bookings_label", lang) + f" — {t('not_found', lang)}",
+                    reply_markup=admin_menu_kb(lang),
+                )
             else:
                 rows = await BookingRepo.recent_by_user(user.id, limit=10)
                 if not rows:
-                    await safe_edit(msg_obj, t("view_client_bookings_label", lang) + f" — {t('no_bookings', lang)}", reply_markup=admin_menu_kb(lang))
+                    await safe_edit(
+                        msg_obj,
+                        t("view_client_bookings_label", lang) + f" — {t('no_bookings', lang)}",
+                        reply_markup=admin_menu_kb(lang),
+                    )
                 else:
                     from bot.app.services.shared_services import format_booking_list_item
+
                     lines: list[str] = []
                     for b in rows:
                         try:
@@ -854,21 +981,34 @@ async def _process_admin_lookup_action(
                 resolved_mid = None
 
             if not resolved_mid:
-                await safe_edit(msg_obj, t("view_master_bookings_label", lang) + f" — {t('no_bookings', lang)}", reply_markup=admin_menu_kb(lang))
+                await safe_edit(
+                    msg_obj,
+                    t("view_master_bookings_label", lang) + f" — {t('no_bookings', lang)}",
+                    reply_markup=admin_menu_kb(lang),
+                )
                 return
 
             # Persist master filter and default mode/page in state so pagination works
             try:
-                await state.update_data(bookings_mode="upcoming", bookings_page=1, bookings_master_id=int(resolved_mid), preferred_role="admin")
+                await state.update_data(
+                    bookings_mode="upcoming",
+                    bookings_page=1,
+                    bookings_master_id=int(resolved_mid),
+                    preferred_role="admin",
+                )
             except Exception:
                 # best-effort: at minimum set mode and page
                 try:
-                    await state.update_data(bookings_mode="upcoming", bookings_page=1, preferred_role="admin")
+                    await state.update_data(
+                        bookings_mode="upcoming", bookings_page=1, preferred_role="admin"
+                    )
                 except Exception:
                     pass
 
             # Build and render the dashboard (delegates filtering to ServiceRepo)
-            text, kb = await _build_admin_bookings_view(state, lang, mode="upcoming", page=1, master_id=int(resolved_mid))
+            text, kb = await _build_admin_bookings_view(
+                state, lang, mode="upcoming", page=1, master_id=int(resolved_mid)
+            )
 
             try:
                 await nav_replace(state, text, kb)
@@ -880,12 +1020,14 @@ async def _process_admin_lookup_action(
 
             try:
                 ok = await safe_edit(msg_obj, text=text, reply_markup=kb)
-                if not ok and msg_obj is not None and hasattr(msg_obj, 'answer'):
+                if not ok and msg_obj is not None and hasattr(msg_obj, "answer"):
                     new_msg = await msg_obj.answer(text, reply_markup=kb)
                     try:
-                        bot_instance = getattr(msg_obj, 'bot', None)
+                        bot_instance = getattr(msg_obj, "bot", None)
                         if bot_instance is not None:
-                            await bot_instance.delete_message(chat_id=msg_obj.chat.id, message_id=msg_obj.message_id)
+                            await bot_instance.delete_message(
+                                chat_id=msg_obj.chat.id, message_id=msg_obj.message_id
+                            )
                     except Exception:
                         logger.exception("view_master: bot_instance.delete_message failed")
             except Exception:
@@ -899,7 +1041,9 @@ async def _process_admin_lookup_action(
 
 
 @admin_router.callback_query(AdminLookupUserCB.filter())
-async def admin_lookup_user_callback(callback: CallbackQuery, callback_data: CallbackData, state: FSMContext, locale: str) -> None:
+async def admin_lookup_user_callback(
+    callback: CallbackQuery, callback_data: CallbackData, state: FSMContext, locale: str
+) -> None:
     """Handle structured callback_data emitted by forwarded-user quick menu."""
     action = getattr(callback_data, "action", "") or ""
     target_tid = int(getattr(callback_data, "user_id", 0) or 0)
@@ -909,14 +1053,20 @@ async def admin_lookup_user_callback(callback: CallbackQuery, callback_data: Cal
 
     lang = await _lang_with_state(state, locale)
     forwarded_info = _get_forwarded_user_info(target_tid)
-    await _process_admin_lookup_action(action, target_tid, callback, lang, state, forwarded_user=forwarded_info)
+    await _process_admin_lookup_action(
+        action, target_tid, callback, lang, state, forwarded_user=forwarded_info
+    )
+
 
 @admin_router.callback_query(lambda q: q.data and q.data.startswith("select_view_master"))
-async def admin_show_services_for_master(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_show_services_for_master(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Given SelectViewMasterCB, show services linked to the master."""
     lang = locale
     # parse via CallbackData class for safety
     from bot.app.telegram.common.callbacks import SelectViewMasterCB
+
     if not callback.data:
         await callback.answer()
         return
@@ -942,15 +1092,19 @@ async def admin_show_services_for_master(callback: CallbackQuery, state: FSMCont
             lines.append(f" - {sname}")
         text = "\n".join(lines)
     from bot.app.telegram.client.client_keyboards import get_back_button
+
     await safe_edit(_shared_msg(callback), text, reply_markup=get_back_button())
     await callback.answer()
 
 
 @admin_router.callback_query(lambda q: q.data and q.data.startswith("select_view_service"))
-async def admin_show_masters_for_service(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_show_masters_for_service(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Given SelectViewServiceCB, show masters linked to the service."""
     lang = locale
     from bot.app.telegram.common.callbacks import SelectViewServiceCB
+
     if not callback.data:
         await callback.answer()
         return
@@ -962,7 +1116,11 @@ async def admin_show_masters_for_service(callback: CallbackQuery, state: FSMCont
     # use module alias imported at top to avoid circular import issues
     masters = await master_services.MasterRepo.get_masters_for_service(service_id)  # type: ignore[attr-defined]
     if not masters:
-        text = (t("service_no_masters", lang) if t("service_no_masters", lang) != "service_no_masters" else "Нет мастеров, выполняющих эту услугу.")
+        text = (
+            t("service_no_masters", lang)
+            if t("service_no_masters", lang) != "service_no_masters"
+            else "Нет мастеров, выполняющих эту услугу."
+        )
     else:
         # masters is list of Master models
         try:
@@ -979,6 +1137,7 @@ async def admin_show_masters_for_service(callback: CallbackQuery, state: FSMCont
 
 # --------------------- Панель / Выход / Отмена / Тест ----------------------
 
+
 @admin_router.message(Command("admin"))
 async def admin_panel_cmd(message: Message, state: FSMContext, locale: str) -> None:
     """Открывает админ-панель для пользователя с правами администратора.
@@ -986,7 +1145,7 @@ async def admin_panel_cmd(message: Message, state: FSMContext, locale: str) -> N
     Args:
         message: Входящее сообщение с командой /admin.
     """
-    
+
     try:
         # Locale is injected by LocaleMiddleware
         lang = locale
@@ -995,6 +1154,7 @@ async def admin_panel_cmd(message: Message, state: FSMContext, locale: str) -> N
         # Build a compact "today" salon summary using a service helper
         try:
             from bot.app.services.admin_services import get_admin_dashboard_summary
+
             text_root = await get_admin_dashboard_summary(lang=lang)
         except Exception:
             text_root = t("admin_panel_title", lang)
@@ -1012,6 +1172,7 @@ async def admin_panel_cmd(message: Message, state: FSMContext, locale: str) -> N
     except TelegramAPIError as e:
         logger.error("Ошибка Telegram API в admin_panel_cmd: %s", e)
 
+
 @admin_router.message(F.text.regexp(r"(?i)^(admin|админ)$"))
 async def admin_panel_plaintext(message: Message, state: FSMContext, locale: str) -> None:
     """Plaintext fallback for users typing 'admin' without slash."""
@@ -1021,7 +1182,7 @@ async def admin_panel_plaintext(message: Message, state: FSMContext, locale: str
 @admin_router.callback_query(AdminMenuCB.filter(F.act.in_({"panel", "cancel"})))
 async def admin_panel_cb(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Обрабатывает возврат в админ-панель или отмену действия."""
-    
+
     lang = locale
     # If user is already on the admin panel root, treating the 'panel' action
     # as a request to return to the client main menu is convenient for admins
@@ -1045,7 +1206,9 @@ async def admin_panel_cb(callback: CallbackQuery, state: FSMContext, locale: str
             try:
                 await m.edit_text(t("admin_panel_title", lang), reply_markup=admin_menu_kb(lang))
                 try:
-                    await nav_replace(state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang)
+                    await nav_replace(
+                        state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang
+                    )
                 except Exception:
                     logger.debug("nav_replace failed when returning to admin panel")
                 await state.update_data(preferred_role="admin")
@@ -1053,16 +1216,24 @@ async def admin_panel_cb(callback: CallbackQuery, state: FSMContext, locale: str
                 if "message is not modified" in str(ee).lower():
                     logger.debug("Ignored 'message is not modified' when returning to admin panel")
                     try:
-                        await nav_replace(state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang)
+                        await nav_replace(
+                            state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang
+                        )
                     except Exception:
                         logger.debug("nav_replace failed after 'message not modified'")
                     await state.update_data(preferred_role="admin")
                 else:
                     logger.debug("Failed to edit admin panel message in-place: %s", ee)
         else:
-            await safe_edit(_shared_msg(callback), t("admin_panel_title", lang), reply_markup=admin_menu_kb(lang))
+            await safe_edit(
+                _shared_msg(callback),
+                t("admin_panel_title", lang),
+                reply_markup=admin_menu_kb(lang),
+            )
             try:
-                await nav_replace(state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang)
+                await nav_replace(
+                    state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang
+                )
             except Exception:
                 logger.debug("nav_replace failed when returning to admin panel in fallback branch")
             await state.update_data(preferred_role="admin")
@@ -1105,7 +1276,7 @@ async def _render_manage_prices(
         services_cache_map = await ServiceRepo.services_cache()
         all_items = list(services_cache_map.items())
         start = (page - 1) * page_size
-        services_page = all_items[start:start + page_size]
+        services_page = all_items[start : start + page_size]
 
     if total_count <= 0 or not services_page:
         msg_text = t("no_services", lang)
@@ -1118,7 +1289,7 @@ async def _render_manage_prices(
 
     # Use concise selection title (same as other selection menus) and show page indicator
     try:
-        title = t('select_service', lang)
+        title = t("select_service", lang)
         page_label = f" ({t('page_short', lang)} {page}/{total_pages}):" if total_pages > 0 else ""
         text = f"{title} {page_label}"
     except Exception:
@@ -1139,7 +1310,9 @@ async def admin_manage_prices(callback: CallbackQuery, state: FSMContext, locale
 
 
 @admin_router.callback_query(PricePageCB.filter())
-async def admin_manage_prices_paginate(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_manage_prices_paginate(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     lang = locale
     try:
         page = max(1, int(getattr(callback_data, "page", 1) or 1))
@@ -1149,29 +1322,39 @@ async def admin_manage_prices_paginate(callback: CallbackQuery, callback_data: A
     await callback.answer()
 
 
-from bot.app.telegram.common.callbacks import AdminEditPriceCB, AdminSetPriceCB, AdminPriceAdjCB, ExecDelServiceCB, ConfirmDelServiceCB
+from bot.app.telegram.common.callbacks import (
+    AdminEditPriceCB,
+    AdminSetPriceCB,
+    AdminPriceAdjCB,
+    ExecDelServiceCB,
+    ConfirmDelServiceCB,
+)
 
 
 @admin_router.callback_query(AdminEditPriceCB.filter())
-
-async def admin_edit_price(callback: CallbackQuery, callback_data: _HasServiceId, state: FSMContext, locale: str) -> None:
+async def admin_edit_price(
+    callback: CallbackQuery, callback_data: _HasServiceId, state: FSMContext, locale: str
+) -> None:
     lang = locale
     sid = str(callback_data.service_id)
     svc = await ServiceRepo.get(sid)
     if not svc:
         await callback.answer(t("not_found", lang), show_alert=True)
         return
-    price_cents = getattr(svc, 'final_price_cents', None) or getattr(svc, 'price_cents', None) or 0
+    price_cents = getattr(svc, "final_price_cents", None) or getattr(svc, "price_cents", None) or 0
     from bot.app.services.shared_services import normalize_currency
-    cur_code = normalize_currency(getattr(svc, 'currency', None))
+
+    cur_code = normalize_currency(getattr(svc, "currency", None))
     if cur_code:
         currency = cur_code
     else:
         currency = await SettingsRepo.get_currency()
     price_txt = format_money_cents(price_cents, currency)
-    text = (f"<b>{svc.name}</b>\n"
-            f"ID: <code>{svc.id}</code>\n"
-            f"{t('current_price', lang)}: {price_txt}")
+    text = (
+        f"<b>{svc.name}</b>\n"
+        f"ID: <code>{svc.id}</code>\n"
+        f"{t('current_price', lang)}: {price_txt}"
+    )
     if mmsg := _shared_msg(callback):
         kb = edit_price_kb(svc.id, lang)
         await nav_push(state, text, kb, lang=lang)
@@ -1180,7 +1363,9 @@ async def admin_edit_price(callback: CallbackQuery, callback_data: _HasServiceId
 
 
 @admin_router.callback_query(AdminSetPriceCB.filter())
-async def admin_set_price(callback: CallbackQuery, callback_data: _HasServiceId, state: FSMContext, locale: str) -> None:
+async def admin_set_price(
+    callback: CallbackQuery, callback_data: _HasServiceId, state: FSMContext, locale: str
+) -> None:
     lang = locale
     sid = str(callback_data.service_id)
     await state.update_data(price_service_id=sid)
@@ -1188,6 +1373,7 @@ async def admin_set_price(callback: CallbackQuery, callback_data: _HasServiceId,
     if msg := _shared_msg(callback):
         try:
             from aiogram.utils.keyboard import InlineKeyboardBuilder
+
             kb = InlineKeyboardBuilder()
             kb.button(text=tr("cancel", lang=lang), callback_data=pack_cb(NavCB, act="back"))
             await msg.answer(t("enter_price", lang), reply_markup=kb.as_markup())
@@ -1195,14 +1381,17 @@ async def admin_set_price(callback: CallbackQuery, callback_data: _HasServiceId,
             await msg.answer(t("enter_price", lang))
     await callback.answer()
 
+
 @admin_router.callback_query(AdminPriceAdjCB.filter())
-async def admin_price_adjust(callback: CallbackQuery, callback_data: _HasServiceDelta, state: FSMContext, locale: str) -> None:
+async def admin_price_adjust(
+    callback: CallbackQuery, callback_data: _HasServiceDelta, state: FSMContext, locale: str
+) -> None:
     """Adjust service price by delta (in UAH) via inline stepper.
 
     Callback data format: admin_price_adj_{service_id}:{delta}
     where delta is integer UAH, can be prefixed with + or -.
     """
-    
+
     lang = locale
     sid = str(callback_data.service_id)
     delta_ua = int(callback_data.delta)
@@ -1214,7 +1403,9 @@ async def admin_price_adjust(callback: CallbackQuery, callback_data: _HasService
     if not _svc:
         await callback.answer(t("not_found", lang), show_alert=True)
         return
-    current_cents = getattr(_svc, 'final_price_cents', None) or getattr(_svc, 'price_cents', None) or 0
+    current_cents = (
+        getattr(_svc, "final_price_cents", None) or getattr(_svc, "price_cents", None) or 0
+    )
     new_cents = max(0, current_cents + delta_cents)
 
     svc = await ServiceRepo.update_price_cents(sid, new_cents)
@@ -1222,19 +1413,23 @@ async def admin_price_adjust(callback: CallbackQuery, callback_data: _HasService
         await callback.answer(t("error", lang), show_alert=True)
         return
     from bot.app.services.shared_services import normalize_currency
-    cur_code = normalize_currency(getattr(svc, 'currency', None))
+
+    cur_code = normalize_currency(getattr(svc, "currency", None))
     if cur_code:
         currency = cur_code
     else:
         currency = await SettingsRepo.get_currency()
     price_txt = format_money_cents(new_cents, currency)
-    text = (f"<b>{svc.name}</b>\n"
-            f"ID: <code>{svc.id}</code>\n"
-            f"{t('current_price', lang)}: {price_txt}")
+    text = (
+        f"<b>{svc.name}</b>\n"
+        f"ID: <code>{svc.id}</code>\n"
+        f"{t('current_price', lang)}: {price_txt}"
+    )
     if mmsg := _shared_msg(callback):
         kb = edit_price_kb(sid, lang)
         await safe_edit(mmsg, text, reply_markup=kb)
     await callback.answer(t("price_updated", lang))
+
 
 @admin_router.message(AdminStates.set_price, F.text)
 async def admin_price_input(message: Message, state: FSMContext, locale: str) -> None:
@@ -1270,15 +1465,17 @@ async def admin_price_input(message: Message, state: FSMContext, locale: str) ->
     from bot.app.telegram.common.navigation import nav_replace
     from bot.app.services.shared_services import normalize_currency
 
-    cur_code = normalize_currency(getattr(svc, 'currency', None))
+    cur_code = normalize_currency(getattr(svc, "currency", None))
     if cur_code:
         currency = cur_code
     else:
         currency = await SettingsRepo.get_currency()
     price_txt = format_money_cents(cents, currency)
-    text = (f"<b>{svc.name}</b>\n"
-            f"ID: <code>{svc.id}</code>\n"
-            f"{t('current_price', lang)}: {price_txt}")
+    text = (
+        f"<b>{svc.name}</b>\n"
+        f"ID: <code>{svc.id}</code>\n"
+        f"{t('current_price', lang)}: {price_txt}"
+    )
 
     kb = edit_price_kb(sid, lang)
     try:
@@ -1296,7 +1493,6 @@ async def admin_price_input(message: Message, state: FSMContext, locale: str) ->
     await state.clear()
 
 
-
 # Per-service currency callback removed: per-service currency is ignored by policy.
 # Admins should use global currency setting in Settings -> Currency.
 
@@ -1308,10 +1504,13 @@ from bot.app.telegram.common.callbacks import AdminSetGlobalCurrencyCB
     AdminSetGlobalCurrencyCB.filter(),
     ~StateFilter(AdminStates.admin_misc),
 )
-async def admin_set_global_currency(callback: CallbackQuery, callback_data: _HasCode, state: FSMContext, locale: str) -> None:
+async def admin_set_global_currency(
+    callback: CallbackQuery, callback_data: _HasCode, state: FSMContext, locale: str
+) -> None:
     """Persist the selected global currency to Settings (DB-first) with strict whitelist."""
     lang = locale
     from bot.app.services.shared_services import normalize_currency
+
     code_raw = str(getattr(callback_data, "code", "") or "")
     code = normalize_currency(code_raw)
     if not code:
@@ -1348,6 +1547,7 @@ async def admin_set_global_currency(callback: CallbackQuery, callback_data: _Has
     saved = False
     try:
         from bot.app.services.admin_services import SettingsRepo
+
         try:
             ok = await SettingsRepo.update_setting("currency", code)
             saved = bool(ok)
@@ -1366,7 +1566,11 @@ async def admin_set_global_currency(callback: CallbackQuery, callback_data: _Has
 
     toast = None
     if saved:
-        toast = t("currency_saved", lang) if t("currency_saved", lang) != "currency_saved" else "Currency saved"
+        toast = (
+            t("currency_saved", lang)
+            if t("currency_saved", lang) != "currency_saved"
+            else "Currency saved"
+        )
     else:
         toast = t("error", lang)
     try:
@@ -1382,7 +1586,9 @@ async def admin_set_global_currency(callback: CallbackQuery, callback_data: _Has
         if token:
             warn = tr("currency_provider_warning", lang=lang)
             if warn == "currency_provider_warning":
-                warn = f"Вы изменили валюту. Убедитесь, что ваш платежный токен поддерживает {code}."
+                warn = (
+                    f"Вы изменили валюту. Убедитесь, что ваш платежный токен поддерживает {code}."
+                )
             # Allow translation strings to include a {currency} or {code} placeholder
             try:
                 warn = warn.format(currency=code, code=code)
@@ -1405,6 +1611,7 @@ async def admin_show_settings(callback: CallbackQuery, state: FSMContext, locale
     """Show top-level settings categories to reduce UI clutter."""
     lang = locale
     from bot.app.telegram.admin.admin_keyboards import settings_categories_kb
+
     kb = settings_categories_kb(lang)
     title = t("admin_menu_settings", lang)
     if m := _shared_msg(callback):
@@ -1419,12 +1626,16 @@ async def admin_settings_contacts(callback: CallbackQuery, state: FSMContext, lo
     lang = locale
     try:
         from bot.app.services.admin_services import SettingsRepo
+
         address = await SettingsRepo.get_setting("contact_address", None)
         instagram = await SettingsRepo.get_setting("contact_instagram", None)
         phone = await SettingsRepo.get_setting("contact_phone", None)
         webapp_title = await SettingsRepo.get_setting("webapp_title", None)
         from bot.app.telegram.admin.admin_keyboards import contacts_settings_kb
-        kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title)
+
+        kb = contacts_settings_kb(
+            lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title
+        )
         if m := _shared_msg(callback):
             title = t("settings_category_contacts", lang)
             if not title or title == "settings_category_contacts":
@@ -1443,7 +1654,6 @@ class EditableSettingMeta:
     success_key: str
     validator: Callable[[str], tuple[str | None, str | None]]
     invalid_key: str | None
-
 
 
 EDITABLE_CONTACT_SETTINGS: dict[str, EditableSettingMeta] = {
@@ -1495,15 +1705,23 @@ EDITABLE_BUSINESS_SETTINGS: dict[str, EditableSettingMeta] = {
 }
 
 
-async def _reply_invalid_setting_input(message: Message, lang: str, invalid_key: str | None, old_value: str | None) -> None:
+async def _reply_invalid_setting_input(
+    message: Message, lang: str, invalid_key: str | None, old_value: str | None
+) -> None:
     text = t(invalid_key or "invalid_data", lang)
     try:
         kb = InlineKeyboardBuilder()
         retry_label = t("retry", lang)
-        kb.button(text=(retry_label if retry_label != "retry" else "Retry"), callback_data=pack_cb(NavCB, act="back"))
+        kb.button(
+            text=(retry_label if retry_label != "retry" else "Retry"),
+            callback_data=pack_cb(NavCB, act="back"),
+        )
         if old_value:
             keep_label = t("keep_old", lang)
-            kb.button(text=f"{keep_label if keep_label != 'keep_old' else 'Keep old'} {old_value}", callback_data=pack_cb(NavCB, act="back"))
+            kb.button(
+                text=f"{keep_label if keep_label != 'keep_old' else 'Keep old'} {old_value}",
+                callback_data=pack_cb(NavCB, act="back"),
+            )
         kb.adjust(1, 1)
         await message.answer(text, reply_markup=kb.as_markup())
     except Exception:
@@ -1515,7 +1733,9 @@ async def _refresh_contacts_menu(message: Message, lang: str) -> None:
     address = await SettingsRepo.get_setting("contact_address", None)
     instagram = await SettingsRepo.get_setting("contact_instagram", None)
     webapp_title = await SettingsRepo.get_setting("webapp_title", None)
-    kb = contacts_settings_kb(lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title)
+    kb = contacts_settings_kb(
+        lang, phone=phone, address=address, instagram=instagram, webapp_title=webapp_title
+    )
     title = t("settings_category_contacts", lang)
     if not title or title == "settings_category_contacts":
         title = tr("settings_category_contacts", lang=default_language())
@@ -1531,6 +1751,7 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
     """
     try:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+
         # Refresh runtime settings from DB to avoid stale in-process cache
         try:
             await load_settings_from_db()
@@ -1539,7 +1760,9 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
 
         telegram_provider_token = await get_telegram_provider_token() or ""
         try:
-            payments_enabled = bool(await SettingsRepo.get_setting("telegram_payments_enabled", False))
+            payments_enabled = bool(
+                await SettingsRepo.get_setting("telegram_payments_enabled", False)
+            )
         except Exception:
             payments_enabled = await is_telegram_payments_enabled()
         hold_min = await SettingsRepo.get_reservation_hold_minutes()
@@ -1553,8 +1776,10 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
         except Exception:
             discount_pct = 0
         import os
+
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+
         try:
             mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
         except Exception:
@@ -1592,7 +1817,9 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
 
 
 @admin_router.callback_query(AdminEditSettingCB.filter())
-async def admin_edit_contact_setting(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_edit_contact_setting(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     lang = locale
     setting_key = str(getattr(callback_data, "setting_key", "") or "")
     meta = EDITABLE_CONTACT_SETTINGS.get(setting_key) or EDITABLE_BUSINESS_SETTINGS.get(setting_key)
@@ -1635,7 +1862,12 @@ async def admin_edit_setting_input(message: Message, state: FSMContext, locale: 
     raw = message.text or ""
     value, error_key = meta.validator(raw)
     if value is None or error_key:
-        await _reply_invalid_setting_input(message, lang, error_key or meta.invalid_key, str(data.get("edit_setting_old")) if data.get("edit_setting_old") else None)
+        await _reply_invalid_setting_input(
+            message,
+            lang,
+            error_key or meta.invalid_key,
+            str(data.get("edit_setting_old")) if data.get("edit_setting_old") else None,
+        )
         return
     saved = False
     try:
@@ -1661,6 +1893,7 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
     lang = locale
     try:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
+
         # Refresh runtime settings from DB to avoid stale in-process cache
         try:
             await load_settings_from_db()
@@ -1669,7 +1902,9 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         telegram_provider_token = await get_telegram_provider_token() or ""
         # Read persisted flags directly from SettingsRepo to ensure latest value
         try:
-            payments_enabled = bool(await SettingsRepo.get_setting("telegram_payments_enabled", False))
+            payments_enabled = bool(
+                await SettingsRepo.get_setting("telegram_payments_enabled", False)
+            )
         except Exception:
             payments_enabled = await is_telegram_payments_enabled()
         hold_min = await SettingsRepo.get_reservation_hold_minutes()
@@ -1684,9 +1919,11 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         except Exception:
             discount_pct = 0
         import os
+
         # Timezone is fixed from environment to avoid runtime drift between admins
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+
         try:
             mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
         except Exception:
@@ -1732,10 +1969,11 @@ async def admin_settings_reminder(callback: CallbackQuery, state: FSMContext, lo
     lang = locale
     try:
         from bot.app.services.admin_services import SettingsRepo
+
         rem = await SettingsRepo.get_reminder_lead_minutes()
         rem_same = await SettingsRepo.get_same_day_lead_minutes()
         kb = admin_reminder_menu_kb(lang, lead_min=rem, same_day_min=rem_same)
-        title = t('settings_reminder_desc', lang)
+        title = t("settings_reminder_desc", lang)
         if m := _shared_msg(callback):
             await nav_push(state, title, kb, lang=lang)
             await safe_edit(m, title, reply_markup=kb)
@@ -1749,7 +1987,9 @@ async def admin_settings_reminder(callback: CallbackQuery, state: FSMContext, lo
 
 
 @admin_router.callback_query(AdminSetReminderCB.filter())
-async def admin_set_reminder(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_reminder(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Persist selected reminder lead-time (minutes)."""
     lang = locale
     try:
@@ -1759,15 +1999,24 @@ async def admin_set_reminder(callback: CallbackQuery, callback_data: Any, state:
     saved = False
     try:
         from bot.app.services.admin_services import SettingsRepo
+
         # minutes == 0 means disable reminders (persist 0)
         saved = bool(await SettingsRepo.update_setting("reminder_lead_minutes", int(minutes)))
     except Exception:
         saved = False
     if saved:
         if minutes <= 0:
-            await callback.answer(t("reminder_disabled", lang) if t("reminder_disabled", lang) != "reminder_disabled" else "Reminders disabled")
+            await callback.answer(
+                t("reminder_disabled", lang)
+                if t("reminder_disabled", lang) != "reminder_disabled"
+                else "Reminders disabled"
+            )
         else:
-            await callback.answer(t("reminder_saved", lang) if t("reminder_saved", lang) != "reminder_saved" else "Reminder saved")
+            await callback.answer(
+                t("reminder_saved", lang)
+                if t("reminder_saved", lang) != "reminder_saved"
+                else "Reminder saved"
+            )
     else:
         await callback.answer(t("error", lang), show_alert=True)
     # Stay inside reminder menu with refreshed checkmarks
@@ -1776,7 +2025,9 @@ async def admin_set_reminder(callback: CallbackQuery, callback_data: Any, state:
 
 
 @admin_router.callback_query(AdminSetReminderSameDayCB.filter())
-async def admin_set_reminder_same_day(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_reminder_same_day(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Persist selected same-day reminder lead-time (minutes)."""
     lang = locale
     try:
@@ -1786,14 +2037,23 @@ async def admin_set_reminder_same_day(callback: CallbackQuery, callback_data: An
     saved = False
     try:
         from bot.app.services.admin_services import SettingsRepo
+
         saved = bool(await SettingsRepo.update_setting("same_day_lead_minutes", int(minutes)))
     except Exception:
         saved = False
     if saved:
         if minutes <= 0:
-            await callback.answer(t("reminder_same_day_disabled", lang) if t("reminder_same_day_disabled", lang) != "reminder_same_day_disabled" else "Same-day reminders disabled")
+            await callback.answer(
+                t("reminder_same_day_disabled", lang)
+                if t("reminder_same_day_disabled", lang) != "reminder_same_day_disabled"
+                else "Same-day reminders disabled"
+            )
         else:
-            await callback.answer(t("reminder_same_day_saved", lang) if t("reminder_same_day_saved", lang) != "reminder_same_day_saved" else "Same-day reminder saved")
+            await callback.answer(
+                t("reminder_same_day_saved", lang)
+                if t("reminder_same_day_saved", lang) != "reminder_same_day_saved"
+                else "Same-day reminder saved"
+            )
     else:
         await callback.answer(t("error", lang), show_alert=True)
     await admin_settings_reminder(callback, state, locale)
@@ -1802,7 +2062,9 @@ async def admin_set_reminder_same_day(callback: CallbackQuery, callback_data: An
 
 # --- Manual currency entry (global)
 @admin_router.callback_query(AdminEnterCurrencyCB.filter())
-async def admin_enter_currency_callback(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_enter_currency_callback(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Switch to FSM state for entering a global currency code manually."""
     lang = locale
     # push navigation state so 'back' works predictably
@@ -1825,13 +2087,13 @@ async def admin_enter_currency_callback(callback: CallbackQuery, callback_data: 
     await callback.answer()
 
 
-
 @admin_router.message(AdminStates.enter_currency, F.text)
 async def admin_enter_currency_input(message: Message, state: FSMContext, locale: str) -> None:
     """Handle manual global currency input text."""
     lang = locale
     raw = (message.text or "").strip()
     from bot.app.services.shared_services import normalize_currency
+
     code = normalize_currency(raw)
     if not code:
         await message.answer(t("invalid_data", lang))
@@ -1854,7 +2116,10 @@ async def admin_enter_currency_input(message: Message, state: FSMContext, locale
         except Exception:
             # Conservative default: block change on error
             try:
-                await message.answer(tr("currency_change_blocked_provider", lang=lang) or "Cannot change currency at this time.")
+                await message.answer(
+                    tr("currency_change_blocked_provider", lang=lang)
+                    or "Cannot change currency at this time."
+                )
             except Exception:
                 pass
             await state.clear()
@@ -1899,7 +2164,7 @@ async def admin_exit(callback: CallbackQuery, state: FSMContext, locale: str) ->
         callback: CallbackQuery для выхода.
         state: Контекст FSM для очистки состояния.
     """
-    
+
     await state.clear()
     lang = locale
     try:
@@ -1911,7 +2176,7 @@ async def admin_exit(callback: CallbackQuery, state: FSMContext, locale: str) ->
     except Exception:
         # Best-effort: if edit fails, try to send a simple message via bot
         try:
-            bot = getattr(callback, 'bot', None)
+            bot = getattr(callback, "bot", None)
             if bot:
                 await bot.send_message(callback.from_user.id, t("exit_message", lang))
         except Exception:
@@ -1921,6 +2186,7 @@ async def admin_exit(callback: CallbackQuery, state: FSMContext, locale: str) ->
 
 
 # --------------------------- Управление записями ---------------------------
+
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "show_bookings"))
 async def admin_show_bookings(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
@@ -1944,19 +2210,25 @@ async def admin_show_bookings(callback: CallbackQuery, state: FSMContext, locale
             try:
                 await nav_replace(state, text, kb, lang=lang)
             except Exception as e2:
-                logger.exception("admin_show_bookings: nav_replace failed (both attempts): %s / %s", e, e2)
+                logger.exception(
+                    "admin_show_bookings: nav_replace failed (both attempts): %s / %s", e, e2
+                )
         try:
             ok = await safe_edit(m, text=text, reply_markup=kb)
             if not ok:
-                msg_obj = getattr(callback, 'message', None)
-                if msg_obj is not None and hasattr(msg_obj, 'answer'):
+                msg_obj = getattr(callback, "message", None)
+                if msg_obj is not None and hasattr(msg_obj, "answer"):
                     new_msg = await msg_obj.answer(text, reply_markup=kb)
                     try:
-                        bot_instance = getattr(msg_obj, 'bot', None)
+                        bot_instance = getattr(msg_obj, "bot", None)
                         if bot_instance is not None:
-                            await bot_instance.delete_message(chat_id=msg_obj.chat.id, message_id=msg_obj.message_id)
+                            await bot_instance.delete_message(
+                                chat_id=msg_obj.chat.id, message_id=msg_obj.message_id
+                            )
                     except Exception as e:
-                        logger.exception("admin_show_bookings: bot_instance.delete_message failed: %s", e)
+                        logger.exception(
+                            "admin_show_bookings: bot_instance.delete_message failed: %s", e
+                        )
         except Exception:
             logger.exception("force redraw failed in admin_show_bookings")
     logger.info("Дашборд записей показан для пользователя %s", callback.from_user.id)
@@ -1970,7 +2242,9 @@ from bot.app.telegram.common.callbacks import NavCB
 
 
 @admin_router.callback_query(NavCB.filter(F.act.in_(["root", "back", "role_root"])))
-async def admin_nav_clear_state(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_nav_clear_state(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Clear FSM on any admin navigation action to avoid input traps, then route.
 
     This handler mirrors the navigation helpers and should be kept lightweight.
@@ -1981,6 +2255,7 @@ async def admin_nav_clear_state(callback: CallbackQuery, callback_data: Any, sta
         logger.exception("admin_nav_clear_state: state.clear failed: %s", e)
     act = getattr(callback_data, "act", None)
     from bot.app.telegram.common.navigation import nav_root, nav_pop, nav_role_root
+
     if act == "root":
         await nav_root(callback, state)
     elif act == "back":
@@ -1995,7 +2270,9 @@ async def admin_nav_clear_state(callback: CallbackQuery, callback_data: Any, sta
 
 @admin_router.callback_query(AdminBookingsCB.filter())
 @admin_router.callback_query(BookingsPageCB.filter())
-async def admin_bookings_navigate(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_bookings_navigate(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Handle admin bookings tab changes and pagination (combined).
 
     Accepts AdminBookingsCB (mode switch) and BookingsPageCB (pagination).
@@ -2025,11 +2302,18 @@ async def admin_bookings_navigate(callback: CallbackQuery, callback_data: Any, s
     text, kb = await _build_admin_bookings_view(state, lang, mode=mode, page=int(page or 1))
     if callback.message:
         await safe_edit(callback.message, text=text, reply_markup=kb)
-    logger.info("Admin bookings navigate: user=%s mode=%s page=%s", getattr(callback.from_user, 'id', None), mode, page)
+    logger.info(
+        "Admin bookings navigate: user=%s mode=%s page=%s",
+        getattr(callback.from_user, "id", None),
+        mode,
+        page,
+    )
     await callback.answer()
 
 
-async def _build_admin_bookings_view(state: FSMContext, lang: str, mode: str, page: int, master_id: int | None = None) -> tuple[str, InlineKeyboardMarkup | None]:
+async def _build_admin_bookings_view(
+    state: FSMContext, lang: str, mode: str, page: int, master_id: int | None = None
+) -> tuple[str, InlineKeyboardMarkup | None]:
     """Fetch admin bookings data, build dynamic header and keyboard.
 
     If `master_id` is provided, the result will be filtered to that master.
@@ -2054,9 +2338,14 @@ async def _build_admin_bookings_view(state: FSMContext, lang: str, mode: str, pa
         except Exception:
             master_id = None
 
-    rows, meta = await ServiceRepo.get_admin_bookings(mode=mode or "upcoming", page=int(page or 1), page_size=DEFAULT_PAGE_SIZE, master_id=master_id)
+    rows, meta = await ServiceRepo.get_admin_bookings(
+        mode=mode or "upcoming",
+        page=int(page or 1),
+        page_size=DEFAULT_PAGE_SIZE,
+        master_id=master_id,
+    )
     # Format bookings inline using shared formatter (admin role)
-    formatted_rows: list[tuple[str,int]] = []
+    formatted_rows: list[tuple[str, int]] = []
     for r in rows:
         try:
             txt, bid = format_booking_list_item(r, role="admin", lang=lang)
@@ -2068,15 +2357,15 @@ async def _build_admin_bookings_view(state: FSMContext, lang: str, mode: str, pa
         meta = meta or {}
         mode_for_header = mode or "upcoming"
         mode_map = {
-            "upcoming": (t("upcoming", lang), int(meta.get('upcoming_count', 0) or 0)),
-            "done": (t("status_done", lang), int(meta.get('done_count', 0) or 0)),
-            "cancelled": (t("status_cancelled", lang), int(meta.get('cancelled_count', 0) or 0)),
-            "no_show": (t("no_show_bookings", lang), int(meta.get('noshow_count', 0) or 0)),
-            "all": (t("all_bookings", lang), int(meta.get('total', 0) or 0)),
+            "upcoming": (t("upcoming", lang), int(meta.get("upcoming_count", 0) or 0)),
+            "done": (t("status_done", lang), int(meta.get("done_count", 0) or 0)),
+            "cancelled": (t("status_cancelled", lang), int(meta.get("cancelled_count", 0) or 0)),
+            "no_show": (t("no_show_bookings", lang), int(meta.get("noshow_count", 0) or 0)),
+            "all": (t("all_bookings", lang), int(meta.get("total", 0) or 0)),
         }
         tab_name, tab_count = mode_map.get(mode_for_header, mode_map["upcoming"])
-        page_val = int(meta.get('page', 1) or 1)
-        total_pages = int(meta.get('total_pages', 1) or 1)
+        page_val = int(meta.get("page", 1) or 1)
+        total_pages = int(meta.get("total_pages", 1) or 1)
         try:
             dynamic_header = f"{tab_name} ({int(tab_count or 0)})"
             if total_pages > 1:
@@ -2088,22 +2377,22 @@ async def _build_admin_bookings_view(state: FSMContext, lang: str, mode: str, pa
 
     total_pages = int(meta.get("total_pages", 1))
     completed_count = (
-        int(meta.get('done_count', 0) or 0)
-        + int(meta.get('cancelled_count', 0) or 0)
-        + int(meta.get('noshow_count', 0) or 0)
+        int(meta.get("done_count", 0) or 0)
+        + int(meta.get("cancelled_count", 0) or 0)
+        + int(meta.get("noshow_count", 0) or 0)
     )
     kb = await build_my_bookings_keyboard(
         formatted_rows,
-        int(meta.get('upcoming_count', 0)),
+        int(meta.get("upcoming_count", 0)),
         completed_count,
         mode or "upcoming",
-        int(meta.get('page', 1)),
+        int(meta.get("page", 1)),
         lang,
         items_per_page=DEFAULT_PAGE_SIZE,
-        cancelled_count=int(meta.get('cancelled_count', 0)),
-        noshow_count=int(meta.get('noshow_count', 0)),
+        cancelled_count=int(meta.get("cancelled_count", 0)),
+        noshow_count=int(meta.get("noshow_count", 0)),
         total_pages=total_pages,
-        current_page=int(meta.get('page', 1)),
+        current_page=int(meta.get("page", 1)),
         role="admin",
         master_id=master_id,
     )
@@ -2137,6 +2426,7 @@ async def admin_export_csv(callback: CallbackQuery, state: FSMContext, locale: s
 
 
 # ----------------------- CRUD мастеров ---------------------------
+
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "add_master"))
 async def add_master_start(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
@@ -2217,6 +2507,7 @@ async def add_master_finish(message: Message, state: FSMContext, locale: str) ->
     lang = locale
     try:
         from bot.app.services.admin_services import get_admin_dashboard_summary
+
         panel_text = await get_admin_dashboard_summary(lang=lang)
     except Exception:
         panel_text = t("admin_panel_title", lang)
@@ -2226,7 +2517,6 @@ async def add_master_finish(message: Message, state: FSMContext, locale: str) ->
         await nav_replace(state, t("admin_panel_title", lang), admin_menu_kb(lang), lang=lang)
     except Exception as e:
         logger.exception("add_master_finish: nav_replace failed: %s", e)
-
 
 
 @admin_router.message(AdminStates.add_master_id, F.forward_from)
@@ -2242,7 +2532,11 @@ async def add_master_finish_forward(message: Message, state: FSMContext, locale:
     # If the admin forwarded a contact vCard with user_id, prefer that
     if contact and getattr(contact, "user_id", None):
         tg_id = int(contact.user_id)
-        full_name = getattr(contact, "full_name", None) or getattr(contact, "phone_number", None) or "Без імені"
+        full_name = (
+            getattr(contact, "full_name", None)
+            or getattr(contact, "phone_number", None)
+            or "Без імені"
+        )
         username = getattr(contact, "username", None)
         first_name = getattr(contact, "first_name", None)
         last_name = getattr(contact, "last_name", None)
@@ -2252,7 +2546,11 @@ async def add_master_finish_forward(message: Message, state: FSMContext, locale:
         except Exception:
             await message.answer(t("invalid_id", lang))
             return
-        full_name = getattr(fwd_user, "full_name", None) or getattr(fwd_user, "username", None) or "Без імені"
+        full_name = (
+            getattr(fwd_user, "full_name", None)
+            or getattr(fwd_user, "username", None)
+            or "Без імені"
+        )
         username = getattr(fwd_user, "username", None)
         first_name = getattr(fwd_user, "first_name", None)
         last_name = getattr(fwd_user, "last_name", None)
@@ -2280,7 +2578,9 @@ async def add_master_finish_forward(message: Message, state: FSMContext, locale:
             last_name=last_name,
         )
         if added:
-            logger.info("Админ %s добавил мастера (forward) %s (%s)", safe_user_id(message), tg_id, name)
+            logger.info(
+                "Админ %s добавил мастера (forward) %s (%s)", safe_user_id(message), tg_id, name
+            )
             await message.answer(t("master_added", lang).format(name=name))
         else:
             await message.answer(t("admin_exists", lang))
@@ -2292,6 +2592,7 @@ async def add_master_finish_forward(message: Message, state: FSMContext, locale:
     await state.clear()
     try:
         from bot.app.services.admin_services import get_admin_dashboard_summary
+
         panel_text = await get_admin_dashboard_summary(lang=lang)
     except Exception:
         panel_text = t("admin_panel_title", lang)
@@ -2315,21 +2616,26 @@ async def delete_master_start(callback: CallbackQuery, state: FSMContext, locale
     # We retain cache fallback for small deployments (< 200) for latency, but avoid storing list in FSM.
     try:
         from bot.app.services.master_services import MasterRepo
+
         total_count = await MasterRepo.count_masters()
     except Exception:
         masters = await masters_cache()
         total_count = len(masters)
     if total_count == 0:
         lang = locale
-        await safe_edit(_shared_msg(callback), t("no_masters_admin", lang), reply_markup=admin_menu_kb(lang))
+        await safe_edit(
+            _shared_msg(callback), t("no_masters_admin", lang), reply_markup=admin_menu_kb(lang)
+        )
         await callback.answer()
         return
     from bot.app.core.constants import DEFAULT_PAGE_SIZE
+
     page_size = DEFAULT_PAGE_SIZE
     total_pages = (total_count + page_size - 1) // page_size
     # Fetch first page slice
     try:
         from bot.app.services.master_services import MasterRepo
+
         page_items = await MasterRepo.get_masters_page(page=1, page_size=page_size)
     except Exception:
         masters_fallback = await masters_cache()
@@ -2348,7 +2654,9 @@ async def delete_master_start(callback: CallbackQuery, state: FSMContext, locale
 
 
 @admin_router.callback_query(DelMasterPageCB.filter())
-async def delete_master_paginate(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_master_paginate(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Обрабатывает пагинацию при удалении мастера.
 
     Args:
@@ -2360,9 +2668,11 @@ async def delete_master_paginate(callback: CallbackQuery, callback_data: Any, st
         page = max(1, int(callback_data.page))
         lang = locale
         from bot.app.core.constants import DEFAULT_PAGE_SIZE
+
         page_size = DEFAULT_PAGE_SIZE
         try:
             from bot.app.services.master_services import MasterRepo
+
             total_count = await MasterRepo.count_masters()
             total_pages = (total_count + page_size - 1) // page_size
             if page > total_pages:
@@ -2376,7 +2686,7 @@ async def delete_master_paginate(callback: CallbackQuery, callback_data: Any, st
                 page = total_pages or 1
             all_items = list(masters_fallback.items())
             start = (page - 1) * page_size
-            page_items = all_items[start:start+page_size]
+            page_items = all_items[start : start + page_size]
         await state.update_data(delete_page=page)
         await _show_paginated(
             callback,
@@ -2387,7 +2697,9 @@ async def delete_master_paginate(callback: CallbackQuery, callback_data: Any, st
             lang,
             page_items=page_items,
         )
-        logger.info("Пагинация мастеров, страница %d, для пользователя %s", page, callback.from_user.id)
+        logger.info(
+            "Пагинация мастеров, страница %d, для пользователя %s", page, callback.from_user.id
+        )
     except Exception as e:
         logger.exception("Ошибка пагинации мастеров: %s", e)
         lang = locale
@@ -2397,7 +2709,9 @@ async def delete_master_paginate(callback: CallbackQuery, callback_data: Any, st
 
 
 @admin_router.callback_query(ConfirmDelMasterCB.filter())
-async def delete_master_confirm(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_master_confirm(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Запрашивает подтверждение удаления мастера.
 
     Args:
@@ -2410,9 +2724,17 @@ async def delete_master_confirm(callback: CallbackQuery, callback_data: Any, sta
         # Reuse centralized keyboard
         kb_markup = confirm_delete_master_kb(mid, lang=lang)
         if m := _shared_msg(callback):
-            await nav_push(state, t("confirm_master_delete", lang).format(id=mid), kb_markup, lang=lang)
-            await safe_edit(m, t("confirm_master_delete", lang).format(id=mid), reply_markup=kb_markup)
-        logger.info("Запрос подтверждения удаления мастера %s для пользователя %s", mid, callback.from_user.id)
+            await nav_push(
+                state, t("confirm_master_delete", lang).format(id=mid), kb_markup, lang=lang
+            )
+            await safe_edit(
+                m, t("confirm_master_delete", lang).format(id=mid), reply_markup=kb_markup
+            )
+        logger.info(
+            "Запрос подтверждения удаления мастера %s для пользователя %s",
+            mid,
+            callback.from_user.id,
+        )
     except Exception as e:
         logger.exception("Ошибка подтверждения удаления мастера: %s", e)
         lang = locale
@@ -2421,9 +2743,10 @@ async def delete_master_confirm(callback: CallbackQuery, callback_data: Any, sta
         await callback.answer()
 
 
-
 @admin_router.callback_query(ConfirmCancelAllMasterCB.filter())
-async def confirm_cancel_all_master(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def confirm_cancel_all_master(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Ask admin to confirm cancelling all bookings for a master."""
     try:
         mid = int(callback_data.master_id)
@@ -2435,7 +2758,9 @@ async def confirm_cancel_all_master(callback: CallbackQuery, callback_data: Any,
         if m := _shared_msg(callback):
             await nav_push(state, prompt, kb_markup, lang=lang)
             await safe_edit(m, prompt, reply_markup=kb_markup)
-        logger.info("Confirm cancel all bookings for master %s requested by %s", mid, callback.from_user.id)
+        logger.info(
+            "Confirm cancel all bookings for master %s requested by %s", mid, callback.from_user.id
+        )
     except Exception as e:
         logger.exception("confirm_cancel_all_master failed: %s", e)
         lang = locale
@@ -2445,7 +2770,9 @@ async def confirm_cancel_all_master(callback: CallbackQuery, callback_data: Any,
 
 
 @admin_router.callback_query(ExecCancelAllMasterCB.filter())
-async def exec_cancel_all_master(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def exec_cancel_all_master(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Cancel all active bookings for a master, notify clients and then delete the master."""
     try:
         mid = int(callback_data.master_id)
@@ -2471,18 +2798,30 @@ async def exec_cancel_all_master(callback: CallbackQuery, callback_data: Any, st
             remaining = await admin_services.AdminRepo.get_active_future_booking_ids_for_master(mid)  # type: ignore[attr-defined]
             lang = locale
             if remaining:
-                text = tr("cancel_all_bookings_dependencies", lang=lang).format(cancelled=cancelled, remaining=len(remaining))
-                logger.info("Mass cancel for master %s completed; remaining dependencies: %s", mid, remaining)
+                text = tr("cancel_all_bookings_dependencies", lang=lang).format(
+                    cancelled=cancelled, remaining=len(remaining)
+                )
+                logger.info(
+                    "Mass cancel for master %s completed; remaining dependencies: %s",
+                    mid,
+                    remaining,
+                )
             else:
                 # No active/future bookings reference the master; safe to delete the master record via MasterRepo
                 deleted = await master_services.MasterRepo.delete_master(mid)  # type: ignore[attr-defined]
                 if deleted:
                     text = t("master_deleted", lang)
-                    logger.info("Master %s deleted after mass-cancel by admin %s", mid, safe_user_id(callback))
+                    logger.info(
+                        "Master %s deleted after mass-cancel by admin %s",
+                        mid,
+                        safe_user_id(callback),
+                    )
                 else:
                     text = t("not_found", lang)
         except Exception:
-            logger.exception("Failed to finalize master deletion check after mass-cancel for master %s", mid)
+            logger.exception(
+                "Failed to finalize master deletion check after mass-cancel for master %s", mid
+            )
             lang = locale
             text = t("db_error", lang)
 
@@ -2501,7 +2840,9 @@ async def exec_cancel_all_master(callback: CallbackQuery, callback_data: Any, st
 
 
 @admin_router.callback_query(ExecDelMasterCB.filter())
-async def delete_master_exec(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_master_exec(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Удаляет мастера.
 
     Args:
@@ -2525,7 +2866,9 @@ async def delete_master_exec(callback: CallbackQuery, callback_data: Any, state:
                 )
                 logger.info(
                     "Admin %s attempted to delete master %s but %d active/future bookings reference it",
-                    safe_user_id(callback), mid, blocking,
+                    safe_user_id(callback),
+                    mid,
+                    blocking,
                 )
             else:
                 text = t("db_error", lang)
@@ -2551,7 +2894,9 @@ async def delete_master_exec(callback: CallbackQuery, callback_data: Any, state:
 
 
 @admin_router.callback_query(ConfirmForceDelMasterCB.filter())
-async def confirm_force_delete_master(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def confirm_force_delete_master(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Show the destructive force-delete confirmation keyboard."""
     try:
         mid = int(callback_data.master_id)
@@ -2569,7 +2914,9 @@ async def confirm_force_delete_master(callback: CallbackQuery, callback_data: An
 
 
 @admin_router.callback_query(ExecForceDelMasterCB.filter())
-async def exec_force_delete_master(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def exec_force_delete_master(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Execute physical deletion of master (force delete)."""
     try:
         mid = int(callback_data.master_id)
@@ -2578,7 +2925,9 @@ async def exec_force_delete_master(callback: CallbackQuery, callback_data: Any, 
         lang = locale
         if success:
             text = t("master_force_deleted", lang)
-            logger.info("Admin %s force-deleted master %s (meta=%s)", safe_user_id(callback), mid, meta)
+            logger.info(
+                "Admin %s force-deleted master %s (meta=%s)", safe_user_id(callback), mid, meta
+            )
         else:
             text = t("db_error", lang)
         if m := _shared_msg(callback):
@@ -2597,6 +2946,7 @@ async def exec_force_delete_master(callback: CallbackQuery, callback_data: Any, 
 
 
 # ----------------------- CRUD услуг ---------------------------
+
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "add_service"))
 async def add_service_start(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
@@ -2644,7 +2994,12 @@ async def add_service_finish(message: Message, state: FSMContext, locale: str) -
         cur_state = await state.get_state()
     except Exception:
         cur_state = None
-    logger.debug("add_service_finish invoked: from=%s cur_state=%r text=%r", message.from_user.id, cur_state, message.text)
+    logger.debug(
+        "add_service_finish invoked: from=%s cur_state=%r text=%r",
+        message.from_user.id,
+        cur_state,
+        message.text,
+    )
     name = (message.text or "(без назви)").strip()
     try:
         sid = await generate_unique_slug_from_name(name)
@@ -2687,10 +3042,13 @@ async def delete_service_start(callback: CallbackQuery, state: FSMContext, local
         total_count = len(services_cache_map)
     if total_count == 0:
         lang = locale
-        await safe_edit(_shared_msg(callback), t("no_services_admin", lang), reply_markup=admin_menu_kb(lang))
+        await safe_edit(
+            _shared_msg(callback), t("no_services_admin", lang), reply_markup=admin_menu_kb(lang)
+        )
         await callback.answer()
         return
     from bot.app.core.constants import DEFAULT_PAGE_SIZE
+
     page_size = DEFAULT_PAGE_SIZE
     total_pages = (total_count + page_size - 1) // page_size
     try:
@@ -2712,7 +3070,9 @@ async def delete_service_start(callback: CallbackQuery, state: FSMContext, local
 
 
 @admin_router.callback_query(DelServicePageCB.filter())
-async def delete_service_paginate(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_service_paginate(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Обрабатывает пагинацию при удалении услуги.
 
     Args:
@@ -2724,6 +3084,7 @@ async def delete_service_paginate(callback: CallbackQuery, callback_data: Any, s
         page = max(1, int(callback_data.page))
         lang = locale
         from bot.app.core.constants import DEFAULT_PAGE_SIZE
+
         page_size = DEFAULT_PAGE_SIZE
         try:
             total_count = await ServiceRepo.count_services()
@@ -2739,7 +3100,7 @@ async def delete_service_paginate(callback: CallbackQuery, callback_data: Any, s
                 page = total_pages or 1
             all_items = list(services_cache_map.items())
             start = (page - 1) * page_size
-            page_items = all_items[start:start+page_size]
+            page_items = all_items[start : start + page_size]
         await state.update_data(delete_page=page)
         await _show_paginated(
             callback,
@@ -2750,7 +3111,9 @@ async def delete_service_paginate(callback: CallbackQuery, callback_data: Any, s
             lang,
             page_items=page_items,
         )
-        logger.info("Пагинация услуг, страница %d, для пользователя %s", page, callback.from_user.id)
+        logger.info(
+            "Пагинация услуг, страница %d, для пользователя %s", page, callback.from_user.id
+        )
     except Exception as e:
         logger.exception("Ошибка пагинации услуг: %s", e)
         lang = locale
@@ -2760,7 +3123,9 @@ async def delete_service_paginate(callback: CallbackQuery, callback_data: Any, s
 
 
 @admin_router.callback_query(ConfirmDelServiceCB.filter())
-async def delete_service_confirm(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_service_confirm(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Запрашивает подтверждение удаления услуги.
 
     Args:
@@ -2778,7 +3143,10 @@ async def delete_service_confirm(callback: CallbackQuery, callback_data: Any, st
             linked = 0
 
         kb = InlineKeyboardBuilder()
-        kb.button(text=t("confirm_delete", lang), callback_data=pack_cb(ExecDelServiceCB, service_id=str(sid)))
+        kb.button(
+            text=t("confirm_delete", lang),
+            callback_data=pack_cb(ExecDelServiceCB, service_id=str(sid)),
+        )
         kb.button(text=t("cancel", lang), callback_data=pack_cb(AdminMenuCB, act="delete_service"))
         message_text = t("confirm_service_delete", lang).format(id=sid)
         if linked:
@@ -2793,7 +3161,12 @@ async def delete_service_confirm(callback: CallbackQuery, callback_data: Any, st
         if m := _shared_msg(callback):
             await nav_push(state, message_text, kb_markup, lang=lang)
             await safe_edit(m, message_text, reply_markup=kb_markup)
-        logger.info("Запрос подтверждения удаления услуги %s (linked=%d) для пользователя %s", sid, linked, callback.from_user.id)
+        logger.info(
+            "Запрос подтверждения удаления услуги %s (linked=%d) для пользователя %s",
+            sid,
+            linked,
+            callback.from_user.id,
+        )
     except Exception as e:
         logger.exception("Ошибка подтверждения удаления услуги: %s", e)
         lang = locale
@@ -2803,7 +3176,9 @@ async def delete_service_confirm(callback: CallbackQuery, callback_data: Any, st
 
 
 @admin_router.callback_query(ExecDelServiceCB.filter())
-async def delete_service_exec(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def delete_service_exec(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Выполняет удаление услуги из базы.
 
     Args:
@@ -2815,9 +3190,13 @@ async def delete_service_exec(callback: CallbackQuery, callback_data: Any, state
         # Attempt unlink-and-delete atomically. The helper returns (deleted, unlinked_count).
         deleted, unlinked = await ServiceRepo.unlink_from_all_and_delete(sid)
         if deleted:
-            logger.info("Админ %s удалил услугу %s (unlinked=%d)", safe_user_id(callback), sid, unlinked)
+            logger.info(
+                "Админ %s удалил услугу %s (unlinked=%d)", safe_user_id(callback), sid, unlinked
+            )
             lang = locale
-            text = t("service_deleted", lang) + (f"\n\nUnlinked from {unlinked} masters." if unlinked else "")
+            text = t("service_deleted", lang) + (
+                f"\n\nUnlinked from {unlinked} masters." if unlinked else ""
+            )
         else:
             lang = locale
             text = t("not_found", lang)
@@ -2841,7 +3220,10 @@ async def delete_service_exec(callback: CallbackQuery, callback_data: Any, state
 
 # ----------------- Привязка и отвязка мастеров к услугам -----------------
 
-async def _start_master_service_flow(callback: CallbackQuery, state: FSMContext, action: str, locale: str) -> None:
+
+async def _start_master_service_flow(
+    callback: CallbackQuery, state: FSMContext, action: str, locale: str
+) -> None:
     """Инициирует процесс привязки/отвязки мастера и услуги.
 
     Args:
@@ -2876,7 +3258,13 @@ async def _start_master_service_flow(callback: CallbackQuery, state: FSMContext,
     await callback.answer()
 
 
-async def _select_master_for_service_flow(callback: CallbackQuery, state: FSMContext, action: str, callback_data: Any = None, locale: str | None = None) -> None:
+async def _select_master_for_service_flow(
+    callback: CallbackQuery,
+    state: FSMContext,
+    action: str,
+    callback_data: Any = None,
+    locale: str | None = None,
+) -> None:
     # Access is enforced by AdminRoleFilter applied on the router
     try:
         if callback_data is not None and getattr(callback_data, "master_id", None) is not None:
@@ -2890,7 +3278,7 @@ async def _select_master_for_service_flow(callback: CallbackQuery, state: FSMCon
         return
 
     lang = locale or default_language()
-    
+
     # Получаем список услуг
     if action == "unlink":
         # Для отвязки: получаем услуги через MasterRepo
@@ -2903,7 +3291,11 @@ async def _select_master_for_service_flow(callback: CallbackQuery, state: FSMCon
 
     if not services:
         if m := _shared_msg(callback):
-            await safe_edit(m, t("no_services_linked" if action == "unlink" else "no_services_admin", lang), reply_markup=admin_menu_kb(lang))
+            await safe_edit(
+                m,
+                t("no_services_linked" if action == "unlink" else "no_services_admin", lang),
+                reply_markup=admin_menu_kb(lang),
+            )
         await callback.answer()
         return
 
@@ -2916,17 +3308,21 @@ async def _select_master_for_service_flow(callback: CallbackQuery, state: FSMCon
     # Show a Back button that returns to the previous step (master selection)
     kb.button(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))
     kb.adjust(1)
-    
+
     if m := _shared_msg(callback):
         await nav_push(state, t("select_service", lang), kb.as_markup(), lang=lang)
         await safe_edit(m, t("select_service", lang), reply_markup=kb.as_markup())
     await state.set_state(AdminStates.link_master_service_select_service)
-    logger.info("Выбор услуги для %s мастера %s пользователем %s", action, master_tid, callback.from_user.id)
+    logger.info(
+        "Выбор услуги для %s мастера %s пользователем %s", action, master_tid, callback.from_user.id
+    )
     await callback.answer()
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "link_ms"))
-async def link_master_service_start(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def link_master_service_start(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Инициирует привязку мастера к услуге.
 
     Args:
@@ -2937,18 +3333,24 @@ async def link_master_service_start(callback: CallbackQuery, state: FSMContext, 
 
 
 @admin_router.callback_query(SelectLinkMasterCB.filter())
-async def link_master_select(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def link_master_select(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Обрабатывает выбор мастера для привязки.
 
     Args:
         callback: CallbackQuery с ID мастера.
         state: Контекст FSM для сохранения состояния.
     """
-    await _select_master_for_service_flow(callback, state, "link", callback_data=callback_data, locale=locale)
+    await _select_master_for_service_flow(
+        callback, state, "link", callback_data=callback_data, locale=locale
+    )
 
 
 @admin_router.callback_query(SelectLinkServiceCB.filter())
-async def link_master_finish(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def link_master_finish(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Завершает привязку мастера к услуге.
 
     Args:
@@ -2968,13 +3370,20 @@ async def link_master_finish(callback: CallbackQuery, callback_data: Any, state:
         if master_name is None:
             await callback.answer(t("master_not_found", lang), show_alert=True)
             return
-        linked = await master_services.MasterRepo.link_service(master_telegram_id=master_tid_int, service_id=service_id)  # type: ignore[attr-defined]
+        linked = await master_services.MasterRepo.link_service(
+            master_telegram_id=master_tid_int, service_id=service_id
+        )  # type: ignore[attr-defined]
         if linked:
             try:
                 invalidate_masters_cache()
             except Exception as e:
                 logger.exception("link_master_finish: invalidate_masters_cache failed: %s", e)
-            logger.info("Админ %s привязал мастера %s к услуге %s", safe_user_id(callback), master_tid, service_id)
+            logger.info(
+                "Админ %s привязал мастера %s к услуге %s",
+                safe_user_id(callback),
+                master_tid,
+                service_id,
+            )
             text = t("link_added", lang)
         else:
             text = t("already_linked", lang)
@@ -2994,7 +3403,9 @@ async def link_master_finish(callback: CallbackQuery, callback_data: Any, state:
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "unlink_ms"))
-async def unlink_master_service_start(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def unlink_master_service_start(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Инициирует отвязку мастера от услуги.
 
     Args:
@@ -3005,18 +3416,24 @@ async def unlink_master_service_start(callback: CallbackQuery, state: FSMContext
 
 
 @admin_router.callback_query(SelectUnlinkMasterCB.filter())
-async def unlink_master_select(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def unlink_master_select(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Обрабатывает выбор мастера для отвязки.
 
     Args:
         callback: CallbackQuery с ID мастера.
         state: Контекст FSM для сохранения состояния.
     """
-    await _select_master_for_service_flow(callback, state, "unlink", callback_data=callback_data, locale=locale)
+    await _select_master_for_service_flow(
+        callback, state, "unlink", callback_data=callback_data, locale=locale
+    )
 
 
 @admin_router.callback_query(SelectUnlinkServiceCB.filter())
-async def unlink_master_finish(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def unlink_master_finish(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     # Access is enforced by AdminRoleFilter applied on the router
     service_id = str(callback_data.service_id)
     lang = locale
@@ -3028,13 +3445,20 @@ async def unlink_master_finish(callback: CallbackQuery, callback_data: Any, stat
         if master_name is None:
             await callback.answer(t("master_not_found", lang), show_alert=True)
             return
-        removed = await master_services.MasterRepo.unlink_service(master_telegram_id=master_tid_int, service_id=service_id)  # type: ignore[attr-defined]
+        removed = await master_services.MasterRepo.unlink_service(
+            master_telegram_id=master_tid_int, service_id=service_id
+        )  # type: ignore[attr-defined]
         if removed:
             try:
                 invalidate_masters_cache()
             except Exception as e:
                 logger.exception("unlink_master_finish: invalidate_masters_cache failed: %s", e)
-            logger.info("Админ %s отвязал мастера %s от услуги %s", safe_user_id(callback), master_tid, service_id)
+            logger.info(
+                "Админ %s отвязал мастера %s от услуги %s",
+                safe_user_id(callback),
+                master_tid,
+                service_id,
+            )
             text = t("link_removed", lang)
         else:
             text = t("link_not_found", lang)
@@ -3050,6 +3474,7 @@ async def unlink_master_finish(callback: CallbackQuery, callback_data: Any, stat
 
 
 # ----------------------------- Настройки ---------------------------------
+
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "settings"))
 async def admin_settings(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
@@ -3080,7 +3505,9 @@ async def admin_settings(callback: CallbackQuery, state: FSMContext, locale: str
         except Exception:
             reschedule_min = 180
         try:
-            expire_sec = int(await SettingsRepo.get_setting("reservation_expire_check_seconds", 30) or 30)
+            expire_sec = int(
+                await SettingsRepo.get_setting("reservation_expire_check_seconds", 30) or 30
+            )
         except Exception:
             expire_sec = 30
     except Exception:
@@ -3159,23 +3586,37 @@ async def apply_setting_change(key: str, value: Any, callback: CallbackQuery, lo
             else:
                 label = f"{seconds} s"
             try:
-                await callback.answer(f"✅ {t('expire_check_frequency', lang) if t('expire_check_frequency', lang) != 'expire_check_frequency' else 'Frequency updated'}: каждые {label}")
+                await callback.answer(
+                    f"✅ {t('expire_check_frequency', lang) if t('expire_check_frequency', lang) != 'expire_check_frequency' else 'Frequency updated'}: каждые {label}"
+                )
             except Exception as e:
-                logger.exception("apply_setting_change: primary callback.answer failed for expire_check_frequency: %s", e)
+                logger.exception(
+                    "apply_setting_change: primary callback.answer failed for expire_check_frequency: %s",
+                    e,
+                )
                 try:
                     await callback.answer(f"✅ Частота проверки обновлена: каждые {label}")
                 except Exception as e2:
-                    logger.exception("apply_setting_change: secondary callback.answer failed for expire_check_frequency: %s", e2)
+                    logger.exception(
+                        "apply_setting_change: secondary callback.answer failed for expire_check_frequency: %s",
+                        e2,
+                    )
         elif key == "reservation_hold_minutes":
             minutes = int(value)
             try:
                 await callback.answer(t("hold_label", lang).format(minutes=minutes))
             except Exception as e:
-                logger.exception("apply_setting_change: callback.answer failed for reservation_hold_minutes: %s", e)
+                logger.exception(
+                    "apply_setting_change: callback.answer failed for reservation_hold_minutes: %s",
+                    e,
+                )
                 try:
                     await callback.answer(f"✅ hold minutes set: {minutes}")
                 except Exception as e2:
-                    logger.exception("apply_setting_change: secondary callback.answer failed for reservation_hold_minutes: %s", e2)
+                    logger.exception(
+                        "apply_setting_change: secondary callback.answer failed for reservation_hold_minutes: %s",
+                        e2,
+                    )
         elif key in {"client_cancel_lock_minutes", "client_reschedule_lock_minutes"}:
             minutes = int(value)
             label = format_minutes_short(minutes, lang)
@@ -3189,18 +3630,27 @@ async def apply_setting_change(key: str, value: Any, callback: CallbackQuery, lo
                 try:
                     await callback.answer(f"✅ {key} set: {minutes}")
                 except Exception as e2:
-                    logger.exception("apply_setting_change: secondary callback.answer failed for %s: %s", key, e2)
+                    logger.exception(
+                        "apply_setting_change: secondary callback.answer failed for %s: %s", key, e2
+                    )
         else:
             try:
                 await callback.answer(t("settings_saved", lang))
             except Exception as e:
-                logger.exception("apply_setting_change: callback.answer failed for settings_saved: %s", e)
+                logger.exception(
+                    "apply_setting_change: callback.answer failed for settings_saved: %s", e
+                )
                 try:
                     await callback.answer("✅ Saved")
                 except Exception as e2:
-                    logger.exception("apply_setting_change: secondary callback.answer failed for settings_saved: %s", e2)
+                    logger.exception(
+                        "apply_setting_change: secondary callback.answer failed for settings_saved: %s",
+                        e2,
+                    )
     except Exception as e:
-        logger.exception("apply_setting_change: unexpected error when applying setting %s=%s: %s", key, value, e)
+        logger.exception(
+            "apply_setting_change: unexpected error when applying setting %s=%s: %s", key, value, e
+        )
         try:
             await callback.answer(t("settings_saved", locale))
         except Exception as e2:
@@ -3208,13 +3658,17 @@ async def apply_setting_change(key: str, value: Any, callback: CallbackQuery, lo
             try:
                 await callback.answer("✅ Saved")
             except Exception as e3:
-                logger.exception("apply_setting_change: final fallback callback.answer failed: %s", e3)
+                logger.exception(
+                    "apply_setting_change: final fallback callback.answer failed: %s", e3
+                )
 
     return True
 
 
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "toggle_telegram_payments"))
-async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_toggle_telegram_payments_handler(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Переключает состояние Telegram Payments.
 
     Args:
@@ -3234,26 +3688,36 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
             )
             # show settings with current token/enabled state
             try:
-                from bot.app.services.shared_services import is_telegram_payments_enabled as _is_enabled
+                from bot.app.services.shared_services import (
+                    is_telegram_payments_enabled as _is_enabled,
+                )
+
                 enabled_now = bool(_is_enabled())
             except Exception:
                 enabled_now = False
             from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+
             hold_min = None
             cancel_min = None
             reschedule_min = None
             try:
                 hold_min = await SettingsRepo.get_reservation_hold_minutes()
             except Exception as e:
-                logger.exception("admin_toggle_payments: get_reservation_hold_minutes failed: %s", e)
+                logger.exception(
+                    "admin_toggle_payments: get_reservation_hold_minutes failed: %s", e
+                )
             try:
                 cancel_min = await SettingsRepo.get_client_cancel_lock_minutes()
             except Exception as e:
-                logger.exception("admin_toggle_payments: get_client_cancel_lock_minutes failed: %s", e)
+                logger.exception(
+                    "admin_toggle_payments: get_client_cancel_lock_minutes failed: %s", e
+                )
             try:
                 reschedule_min = await SettingsRepo.get_client_reschedule_lock_minutes()
             except Exception as e:
-                logger.exception("admin_toggle_payments: get_client_reschedule_lock_minutes failed: %s", e)
+                logger.exception(
+                    "admin_toggle_payments: get_client_reschedule_lock_minutes failed: %s", e
+                )
             try:
                 expire_sec = await SettingsRepo.get_expire_check_seconds()
             except Exception:
@@ -3262,7 +3726,11 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
                 lang,
                 telegram_provider_token=token,
                 payments_enabled=enabled_now,
-                discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
+                discount_percent=(
+                    await SettingsRepo.get_online_payment_discount_percent()
+                    if hasattr(SettingsRepo, "get_online_payment_discount_percent")
+                    else 0
+                ),
                 hold_min=hold_min,
                 cancel_min=cancel_min,
                 reschedule_min=reschedule_min,
@@ -3288,6 +3756,7 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
             token_now = await get_telegram_provider_token() or ""
             payments_now = bool(new_val)
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+
         hold_min = None
         cancel_min = None
         reschedule_min = None
@@ -3297,15 +3766,21 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
         try:
             hold_min = await SettingsRepo.get_reservation_hold_minutes()
         except Exception as e:
-            logger.exception("admin_toggle_payments (refresh): get_reservation_hold_minutes failed: %s", e)
+            logger.exception(
+                "admin_toggle_payments (refresh): get_reservation_hold_minutes failed: %s", e
+            )
         try:
             cancel_min = await SettingsRepo.get_client_cancel_lock_minutes()
         except Exception as e:
-            logger.exception("admin_toggle_payments (refresh): get_client_cancel_lock_minutes failed: %s", e)
+            logger.exception(
+                "admin_toggle_payments (refresh): get_client_cancel_lock_minutes failed: %s", e
+            )
         try:
             reschedule_min = await SettingsRepo.get_client_reschedule_lock_minutes()
         except Exception as e:
-            logger.exception("admin_toggle_payments (refresh): get_client_reschedule_lock_minutes failed: %s", e)
+            logger.exception(
+                "admin_toggle_payments (refresh): get_client_reschedule_lock_minutes failed: %s", e
+            )
         try:
             reminder_min = await SettingsRepo.get_reminder_lead_minutes()
         except Exception:
@@ -3326,7 +3801,11 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
             lang,
             telegram_provider_token=token_now,
             payments_enabled=payments_now,
-            discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
+            discount_percent=(
+                await SettingsRepo.get_online_payment_discount_percent()
+                if hasattr(SettingsRepo, "get_online_payment_discount_percent")
+                else 0
+            ),
             miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,
@@ -3352,9 +3831,10 @@ async def admin_toggle_telegram_payments_handler(callback: CallbackQuery, state:
         logger.exception("Неожиданная ошибка в admin_toggle_telegram_payments_handler: %s", e)
 
 
-
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "toggle_telegram_miniapp"))
-async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
+async def admin_toggle_telegram_miniapp_handler(
+    callback: CallbackQuery, state: FSMContext, locale: str
+) -> None:
     """Toggle Telegram MiniApp booking feature flag from admin UI."""
     user_id = callback.from_user.id
     logger.info("Переключение Telegram MiniApp для пользователя %s", user_id)
@@ -3380,6 +3860,7 @@ async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: 
         # DB read fails.
         try:
             from bot.app.services.admin_services import load_settings_from_db, SettingsRepo
+
             try:
                 await load_settings_from_db()
             except Exception:
@@ -3405,7 +3886,9 @@ async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: 
         except Exception:
             reschedule_min = 180
         try:
-            expire_sec = int(await SettingsRepo.get_setting("reservation_expire_check_seconds", 30) or 30)
+            expire_sec = int(
+                await SettingsRepo.get_setting("reservation_expire_check_seconds", 30) or 30
+            )
         except Exception:
             expire_sec = 30
 
@@ -3421,11 +3904,16 @@ async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: 
 
         # Rebuild the Business settings keyboard (keep same ordering as Payments toggle)
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
+
         kb = business_settings_kb(
             lang,
             telegram_provider_token=token,
             payments_enabled=payments_now,
-            discount_percent=(await SettingsRepo.get_online_payment_discount_percent() if hasattr(SettingsRepo, 'get_online_payment_discount_percent') else 0),
+            discount_percent=(
+                await SettingsRepo.get_online_payment_discount_percent()
+                if hasattr(SettingsRepo, "get_online_payment_discount_percent")
+                else 0
+            ),
             miniapp_enabled=mini_now,
             hold_min=hold_min,
             cancel_min=cancel_min,
@@ -3450,7 +3938,6 @@ async def admin_toggle_telegram_miniapp_handler(callback: CallbackQuery, state: 
         logger.exception("Неожиданная ошибка в admin_toggle_telegram_miniapp_handler: %s", e)
 
 
-
 @admin_router.callback_query(AdminMenuCB.filter(F.act == "hold_menu"))
 async def admin_hold_menu(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Показывает меню выбора времени удержания резерва."""
@@ -3462,7 +3949,7 @@ async def admin_hold_menu(callback: CallbackQuery, state: FSMContext, locale: st
         except Exception:
             cur_hold = None
         kb = admin_hold_menu_kb(lang, current_min=cur_hold)
-        text = t('hold_desc', lang)
+        text = t("hold_desc", lang)
         await nav_push(state, text, kb, lang=lang)
         # Only catch Telegram errors for the editing call
         try:
@@ -3483,7 +3970,7 @@ async def admin_cancel_menu(callback: CallbackQuery, state: FSMContext, locale: 
         except Exception:
             cur_cancel = None
         kb = admin_cancel_menu_kb(lang, current_min=cur_cancel)
-        text = t('cancel_desc', lang)
+        text = t("cancel_desc", lang)
         await nav_push(state, text, kb, lang=lang)
         try:
             await safe_edit(m, text, reply_markup=kb)
@@ -3502,7 +3989,7 @@ async def admin_reschedule_menu(callback: CallbackQuery, state: FSMContext, loca
         except Exception:
             cur_reschedule = None
         kb = admin_reschedule_menu_kb(lang, current_min=cur_reschedule)
-        text = t('reschedule_desc', lang)
+        text = t("reschedule_desc", lang)
         await nav_push(state, text, kb, lang=lang)
         try:
             await safe_edit(m, text, reply_markup=kb)
@@ -3521,7 +4008,7 @@ async def admin_expire_menu(callback: CallbackQuery, state: FSMContext, locale: 
         except Exception:
             cur_expire = None
         kb = admin_expire_menu_kb(lang, current_expire=cur_expire)
-        text = t('expire_check_desc', lang)
+        text = t("expire_check_desc", lang)
         await nav_push(state, text, kb, lang=lang)
         try:
             await safe_edit(m, text, reply_markup=kb)
@@ -3531,7 +4018,9 @@ async def admin_expire_menu(callback: CallbackQuery, state: FSMContext, locale: 
 
 
 @admin_router.callback_query(AdminSetExpireCB.filter())
-async def admin_set_expire(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_expire(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Set reservation_expire_check_seconds and refresh settings UI via admin_settings."""
     # Let failures propagate to global error handler; parse input and perform update.
     seconds = int(callback_data.seconds)
@@ -3540,7 +4029,9 @@ async def admin_set_expire(callback: CallbackQuery, callback_data: Any, state: F
 
 
 @admin_router.callback_query(AdminSetHoldCB.filter())
-async def admin_set_hold(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_hold(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Set reservation_hold_minutes and refresh settings UI via admin_settings."""
     minutes = int(callback_data.minutes)
     await SettingsRepo.update_setting("reservation_hold_minutes", minutes)
@@ -3548,7 +4039,9 @@ async def admin_set_hold(callback: CallbackQuery, callback_data: Any, state: FSM
 
 
 @admin_router.callback_query(AdminSetCancelCB.filter())
-async def admin_set_cancel_lock(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_cancel_lock(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Set client_cancel_lock_minutes and refresh settings UI via admin_settings."""
     minutes = int(callback_data.minutes)
     await SettingsRepo.update_setting("client_cancel_lock_minutes", minutes)
@@ -3556,7 +4049,9 @@ async def admin_set_cancel_lock(callback: CallbackQuery, callback_data: Any, sta
 
 
 @admin_router.callback_query(AdminSetRescheduleCB.filter())
-async def admin_set_reschedule_lock(callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
+async def admin_set_reschedule_lock(
+    callback: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
+) -> None:
     """Set client_reschedule_lock_minutes and refresh settings UI via admin_settings."""
     minutes = int(callback_data.minutes)
     await SettingsRepo.update_setting("client_reschedule_lock_minutes", minutes)
@@ -3564,6 +4059,7 @@ async def admin_set_reschedule_lock(callback: CallbackQuery, callback_data: Any,
 
 
 # ---------------------------- Статистика и Аналитика ----------------------------
+
 
 async def _format_and_send_stats(
     callback: CallbackQuery,
@@ -3607,7 +4103,9 @@ async def show_stats_menu(callback: CallbackQuery, state: FSMContext, locale: st
     await callback.answer(cache_time=1, show_alert=False)
 
 
-@admin_router.callback_query(AdminMenuCB.filter(F.act.in_({"stats_range_week", "stats_range_month"})))
+@admin_router.callback_query(
+    AdminMenuCB.filter(F.act.in_({"stats_range_week", "stats_range_month"}))
+)
 async def show_stats_range(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     kind = "week" if "week" in (callback.data or "") else "month"
     lang = locale
@@ -3622,8 +4120,12 @@ async def show_stats_range(callback: CallbackQuery, state: FSMContext, locale: s
 
     title = f"📈 {t('stats_week', lang) if kind == 'week' else t('stats_month', lang)}"
 
-    bookings_trend = admin_services._format_trend_text(stats.get('bookings', 0), prev_stats.get('bookings', 0), lang=lang)
-    users_trend = admin_services._format_trend_text(stats.get('unique_users', 0), prev_stats.get('unique_users', 0), lang=lang)
+    bookings_trend = admin_services._format_trend_text(
+        stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=lang
+    )
+    users_trend = admin_services._format_trend_text(
+        stats.get("unique_users", 0), prev_stats.get("unique_users", 0), lang=lang
+    )
 
     lines = [
         title,
@@ -3634,20 +4136,24 @@ async def show_stats_range(callback: CallbackQuery, state: FSMContext, locale: s
     ]
 
     # For month view, also include revenue + trend
-    if kind == 'month':
+    if kind == "month":
         # Show split revenue: in-cash vs expected
         rev_split = await admin_services._revenue_split_for_bounds(start, end)
         prev_rev_split = await admin_services._revenue_split_for_bounds(prev_start, prev_end)
-        in_cash = rev_split.get('in_cash', 0)
-        expected = rev_split.get('expected', 0)
-        prev_in_cash = prev_rev_split.get('in_cash', 0)
-        prev_expected = prev_rev_split.get('expected', 0)
+        in_cash = rev_split.get("in_cash", 0)
+        expected = rev_split.get("expected", 0)
+        prev_in_cash = prev_rev_split.get("in_cash", 0)
+        prev_expected = prev_rev_split.get("expected", 0)
         in_cash_trend = admin_services._format_trend_text(in_cash, prev_in_cash, lang=lang)
         expected_trend = admin_services._format_trend_text(expected, prev_expected, lang=lang)
         in_cash_txt = format_money_cents(in_cash)
         expected_txt = format_money_cents(expected)
-        lines.insert(2, f"{t('admin_dashboard_revenue_in_cash', lang)}: {in_cash_txt}{in_cash_trend}")
-        lines.insert(3, f"{t('admin_dashboard_revenue_expected', lang)}: {expected_txt}{expected_trend}")
+        lines.insert(
+            2, f"{t('admin_dashboard_revenue_in_cash', lang)}: {in_cash_txt}{in_cash_trend}"
+        )
+        lines.insert(
+            3, f"{t('admin_dashboard_revenue_expected', lang)}: {expected_txt}{expected_trend}"
+        )
 
     text = "\n".join(lines)
     markup = stats_menu_kb(lang)
@@ -3668,7 +4174,7 @@ async def show_stats_by_master(callback: CallbackQuery, state: FSMContext, local
         await _format_and_send_stats(
             callback,
             t("top_masters", lang),
-                await AdminRepo.get_top_masters(limit=10),
+            await AdminRepo.get_top_masters(limit=10),
             "{name}: {count}",
             lang,
             stats_menu_kb(lang),
@@ -3746,8 +4252,12 @@ async def admin_biz_menu(callback: CallbackQuery, state: FSMContext, locale: str
 
             # Use localized summary title and localized labels without emojis.
             title = t("biz_summary_title", lang) or "Business summary (last 30 days)"
-            revenue_trend = admin_services._format_trend_text(revenue_month, prev_revenue_month, lang=lang)
-            revenue_line = t("admin_dashboard_revenue", lang).format(amount=revenue_txt) + (revenue_trend or "")
+            revenue_trend = admin_services._format_trend_text(
+                revenue_month, prev_revenue_month, lang=lang
+            )
+            revenue_line = t("admin_dashboard_revenue", lang).format(amount=revenue_txt) + (
+                revenue_trend or ""
+            )
             retention_line = (
                 f"{t('admin_dashboard_retention', lang)} {retention_month.get('rate', 0) * 100:.1f}% "
                 f"({retention_month.get('repeaters', 0)}/{retention_month.get('total', 0)})"
@@ -3763,16 +4273,22 @@ async def admin_biz_menu(callback: CallbackQuery, state: FSMContext, locale: str
                 prev_lost = await admin_services._lost_revenue_for_bounds(prev_start, prev_end)
                 lost_txt = format_money_cents(lost)
                 lost_trend = admin_services._format_trend_text(lost, prev_lost, lang=lang)
-                lost_line = t("admin_dashboard_lost_revenue", lang).format(amount=lost_txt) + (lost_trend or "")
+                lost_line = t("admin_dashboard_lost_revenue", lang).format(amount=lost_txt) + (
+                    lost_trend or ""
+                )
             except Exception:
                 lost_line = t("admin_dashboard_lost_revenue", lang).format(amount="0")
 
             # Average order value (AOV) and trend
             try:
                 revenue_count = await admin_services._revenue_count_for_bounds(start, end)
-                prev_revenue_count = await admin_services._revenue_count_for_bounds(prev_start, prev_end)
+                prev_revenue_count = await admin_services._revenue_count_for_bounds(
+                    prev_start, prev_end
+                )
                 aov_cents = int(revenue_month // revenue_count) if revenue_count else 0
-                prev_aov_cents = int(prev_revenue_month // prev_revenue_count) if prev_revenue_count else 0
+                prev_aov_cents = (
+                    int(prev_revenue_month // prev_revenue_count) if prev_revenue_count else 0
+                )
                 try:
                     aov_txt = format_money_cents(aov_cents)
                 except Exception:
@@ -3895,15 +4411,11 @@ async def admin_biz_revenue(callback: CallbackQuery, state: FSMContext, locale: 
                 body[:200],
             )
             await safe_edit(m, body, reply_markup=biz_menu_kb(lang))
-        logger.info(
-            "Статистика выручки отображена для пользователя %s", callback.from_user.id
-        )
+        logger.info("Статистика выручки отображена для пользователя %s", callback.from_user.id)
     except Exception as e:
         logger.exception("Ошибка в admin_biz_revenue: %s", e)
         if m := _shared_msg(callback):
-            logger.debug(
-                "admin_biz_revenue: encountered exception, sending error text to message"
-            )
+            logger.debug("admin_biz_revenue: encountered exception, sending error text to message")
             await safe_edit(m, t("error", lang), reply_markup=biz_menu_kb(lang))
     await callback.answer()
 
@@ -3986,12 +4498,14 @@ async def admin_biz_ltv(callback: CallbackQuery, state: FSMContext, locale: str)
                 logger.warning("Некорректная структура данных в get_top_clients_ltv: %s", row)
                 continue
             money = format_money_cents(row["revenue_cents"], row.get("currency", default_currency))
-            formatted_data.append({
-                "name": row["name"],
-                "money": money,
-                "bookings": row["bookings"],
-                "bookings_short": t("bookings_short", lang),
-            })
+            formatted_data.append(
+                {
+                    "name": row["name"],
+                    "money": money,
+                    "bookings": row["bookings"],
+                    "bookings_short": t("bookings_short", lang),
+                }
+            )
 
         if not topc:
             logger.info("Данные LTV отсутствуют для пользователя %s", callback.from_user.id)
@@ -4013,6 +4527,7 @@ async def admin_biz_ltv(callback: CallbackQuery, state: FSMContext, locale: str)
 
 
 # -------------------------- Управление локалью ---------------------------
+
 
 def _parse_locale_command(raw: str | None) -> tuple[str | None, str | None, str | None]:
     """Разбирает команду /set_locale.
@@ -4062,7 +4577,7 @@ async def cmd_set_locale(message: Message, locale: str) -> None:
     if error:
         await message.reply(t("locale_usage", lang))
         return
-    if new_locale not in ['uk', 'en', 'ru']:
+    if new_locale not in ["uk", "en", "ru"]:
         await message.reply(t("invalid_locale", lang))
         return
     target_id = _resolve_target_id(target, message)
@@ -4080,7 +4595,9 @@ async def cmd_set_locale(message: Message, locale: str) -> None:
                 await message.reply(t("error", lang))
                 return
             await message.reply(t("global_locale_set", lang).format(locale=new_locale))
-            logger.info("Админ %s установил глобальную локаль %s", safe_user_id(message), new_locale)
+            logger.info(
+                "Админ %s установил глобальную локаль %s", safe_user_id(message), new_locale
+            )
             return
         # Use UserRepo to avoid opening sessions in the handler
         try:
@@ -4093,8 +4610,15 @@ async def cmd_set_locale(message: Message, locale: str) -> None:
                 ok = await UserRepo.set_locale(tid, new_locale)
                 action = t("user_updated", lang) if ok else t("error", lang)
 
-            await message.reply(t("user_locale_set_fmt", lang).format(action=action, id=tid, locale=new_locale))
-            logger.info("Админ %s установил локаль %s для пользователя %s", safe_user_id(message), new_locale, tid)
+            await message.reply(
+                t("user_locale_set_fmt", lang).format(action=action, id=tid, locale=new_locale)
+            )
+            logger.info(
+                "Админ %s установил локаль %s для пользователя %s",
+                safe_user_id(message),
+                new_locale,
+                tid,
+            )
         except Exception:
             await message.reply(t("error", lang))
     except Exception as e:
@@ -4106,5 +4630,6 @@ async def cmd_set_locale(message: Message, locale: str) -> None:
             await message.reply(t("db_error", _lang))
         else:
             logger.exception("Unexpected error in cmd_set_locale: %s", e)
+
 
 __all__ = ["admin_router"]

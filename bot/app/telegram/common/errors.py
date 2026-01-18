@@ -10,7 +10,9 @@ logger = logging.getLogger(__name__)
 __all__ = ["handle_db_error", "handle_telegram_error"]
 
 
-async def handle_db_error(error: Exception, context: str = "database operation", bot: Bot | None = None) -> None:
+async def handle_db_error(
+    error: Exception, context: str = "database operation", bot: Bot | None = None
+) -> None:
     """Обрабатывает ошибки базы данных: логирует и уведомляет админов.
 
     Args:
@@ -27,7 +29,9 @@ async def handle_db_error(error: Exception, context: str = "database operation",
         logger.error("Не удалось уведомить админов о DB Error: %s", notify_err)
 
 
-async def handle_telegram_error(error: Exception, context: str = "Telegram API operation", bot: Bot | None = None) -> None:
+async def handle_telegram_error(
+    error: Exception, context: str = "Telegram API operation", bot: Bot | None = None
+) -> None:
     """Обрабатывает ошибки Telegram API: логирует и уведомляет админов.
 
     Args:

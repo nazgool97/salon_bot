@@ -18,9 +18,7 @@ class _UserServiceShim:
         self, telegram_id: int, name: str
     ) -> Any:  # pragma: no cover - thin
         # Fallback minimal user object for tests that only check attributes
-        return type(
-            "U", (), {"telegram_id": telegram_id, "name": name, "id": telegram_id}
-        )()
+        return type("U", (), {"telegram_id": telegram_id, "name": name, "id": telegram_id})()
 
     async def is_master(self, telegram_id: int) -> bool:  # pragma: no cover - thin
         return False

@@ -55,6 +55,7 @@ def get_back_button() -> InlineKeyboardMarkup:
     service-layer helpers. Only localization is applied; no role logic.
     """
     from bot.app.telegram.common.callbacks import pack_cb, NavCB
+
     lang = default_language()
     back_txt = _localize("back", lang, "⬅️ Назад")
     b = InlineKeyboardBuilder()
@@ -79,6 +80,7 @@ def get_simple_kb(
     - lang: used for localizing back label
     """
     from bot.app.telegram.common.callbacks import pack_cb, NavCB
+
     kb = InlineKeyboardBuilder()
     for text, data in buttons:
         kb.button(text=text, callback_data=data)
@@ -145,7 +147,12 @@ async def get_time_slots_kb(
 
     # Offer a stepwise hour->minute picker entry
     choose_by_hour = _localize("choose_time_by_hour", lang, "Выбрать время")
-    builder.button(text=choose_by_hour, callback_data=pack_cb(HoursViewCB, service_id=str(service_id or ""), master_id=int(master_id or 0), date=date))
+    builder.button(
+        text=choose_by_hour,
+        callback_data=pack_cb(
+            HoursViewCB, service_id=str(service_id or ""), master_id=int(master_id or 0), date=date
+        ),
+    )
 
     # Compact picker button: open +/- picker prefilled with first available slot
     compact_label = _localize("compact_picker", lang, "Compact picker")
@@ -160,12 +167,23 @@ async def get_time_slots_kb(
                 im = int(first[2:4])
             else:
                 # datetime or time
-                ih = int(getattr(first, 'hour', 0) or 0)
-                im = int(getattr(first, 'minute', 0) or 0)
+                ih = int(getattr(first, "hour", 0) or 0)
+                im = int(getattr(first, "minute", 0) or 0)
     except Exception:
         ih = 0
         im = 0
-    builder.button(text=compact_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(ih), minute=int(im), service_id=str(service_id or ""), master_id=int(master_id or 0), date=date))
+    builder.button(
+        text=compact_label,
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="noop",
+            hour=int(ih),
+            minute=int(im),
+            service_id=str(service_id or ""),
+            master_id=int(master_id or 0),
+            date=date,
+        ),
+    )
 
     back_text = _localize("back", lang, "⬅️ Назад")
     builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
@@ -173,14 +191,31 @@ async def get_time_slots_kb(
     return builder.as_markup()
 
 
-async def get_hour_picker_kb(hours: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, lang: str, cols: int = 4) -> InlineKeyboardMarkup:
+async def get_hour_picker_kb(
+    hours: Sequence[int],
+    *,
+    service_id: str | None = None,
+    master_id: int | None = None,
+    date: str,
+    lang: str,
+    cols: int = 4,
+) -> InlineKeyboardMarkup:
     """Build an hours keyboard (e.g. 09:00, 10:00)."""
     builder = InlineKeyboardBuilder()
     normalized_service = str(service_id or "")
     normalized_master = int(master_id or 0)
     for h in sorted(set(int(x) for x in hours)):
         label = f"{h:02d}:00"
-        builder.button(text=label, callback_data=pack_cb(HourCB, service_id=normalized_service, master_id=normalized_master, date=date, hour=int(h)))
+        builder.button(
+            text=label,
+            callback_data=pack_cb(
+                HourCB,
+                service_id=normalized_service,
+                master_id=normalized_master,
+                date=date,
+                hour=int(h),
+            ),
+        )
     back_text = _localize("back", lang, "⬅️ Назад")
     # Cancel returns to nav back and clears FSM (handler will manage state)
     builder.button(text=back_text, callback_data=pack_cb(NavCB, act="back"))
@@ -188,7 +223,18 @@ async def get_hour_picker_kb(hours: Sequence[int], *, service_id: str | None = N
     return builder.as_markup()
 
 
-async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None = None, master_id: int | None = None, date: str, hour: int, lang: str, action: Literal["booking", "reschedule"] = "booking", booking_id: int | None = None, cols: int = 4) -> InlineKeyboardMarkup:
+async def get_minute_picker_kb(
+    minutes: Sequence[int],
+    *,
+    service_id: str | None = None,
+    master_id: int | None = None,
+    date: str,
+    hour: int,
+    lang: str,
+    action: Literal["booking", "reschedule"] = "booking",
+    booking_id: int | None = None,
+    cols: int = 4,
+) -> InlineKeyboardMarkup:
     """Build minutes keyboard (e.g. 00,15,30,45). Back returns to hour picker."""
     builder = InlineKeyboardBuilder()
     normalized_service = str(service_id or "")
@@ -202,9 +248,17 @@ async def get_minute_picker_kb(minutes: Sequence[int], *, service_id: str | None
             label = str(int(m))
         compact = f"{int(hour):02d}{int(m):02d}"
         if action == "reschedule":
-            cb = pack_cb(RescheduleCB, action="time", booking_id=normalized_booking, date=date, time=compact)
+            cb = pack_cb(
+                RescheduleCB, action="time", booking_id=normalized_booking, date=date, time=compact
+            )
         else:
-            cb = pack_cb(TimeCB, service_id=normalized_service, master_id=normalized_master, date=date, time=compact)
+            cb = pack_cb(
+                TimeCB,
+                service_id=normalized_service,
+                master_id=normalized_master,
+                date=date,
+                time=compact,
+            )
         builder.button(text=label, callback_data=cb)
 
     back_text = _localize("back", lang, "⬅️ Назад")
@@ -239,7 +293,13 @@ async def get_compact_time_picker_kb(
     Buttons call `TimeAdjustCB` to increment/decrement and reconstruct the keyboard.
     The submit button packs `TimeCB` with the currently selected time.
     """
-    from bot.app.telegram.common.callbacks import pack_cb, TimeAdjustCB, TimeCB, CancelTimeCB, RescheduleCB
+    from bot.app.telegram.common.callbacks import (
+        pack_cb,
+        TimeAdjustCB,
+        TimeCB,
+        CancelTimeCB,
+        RescheduleCB,
+    )
 
     builder = InlineKeyboardBuilder()
     normalized_service = str(service_id or "")
@@ -247,22 +307,99 @@ async def get_compact_time_picker_kb(
 
     # Top label (more visible): formatted time (emoji removed per UX request).
     top_label = f"{hour:02d}:{minute:02d}"
-    builder.button(text=top_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(
+        text=top_label,
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="noop",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
 
     # Localized labels for Hours / Minutes
     hours_label = _localize("picker_hours_label", lang, "Hours")
     minutes_label = _localize("picker_minutes_label", lang, "Minutes")
     # Use noop callbacks for label buttons to keep layout consistent
-    builder.button(text=hours_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
-    builder.button(text=minutes_label, callback_data=pack_cb(TimeAdjustCB, op="noop", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(
+        text=hours_label,
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="noop",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
+    builder.button(
+        text=minutes_label,
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="noop",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
 
     # Adjustment rows: place hour +/- in the left column and minute +/- in the right column
     # Plus row (on top) so users see increment above and decrement below
-    builder.button(text="➕", callback_data=pack_cb(TimeAdjustCB, op="hour_inc", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
-    builder.button(text="➕", callback_data=pack_cb(TimeAdjustCB, op="min_inc", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(
+        text="➕",
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="hour_inc",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
+    builder.button(
+        text="➕",
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="min_inc",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
     # Minus row (below)
-    builder.button(text="➖", callback_data=pack_cb(TimeAdjustCB, op="hour_dec", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
-    builder.button(text="➖", callback_data=pack_cb(TimeAdjustCB, op="min_dec", hour=int(hour), minute=int(minute), service_id=normalized_service, master_id=normalized_master, date=date))
+    builder.button(
+        text="➖",
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="hour_dec",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
+    builder.button(
+        text="➖",
+        callback_data=pack_cb(
+            TimeAdjustCB,
+            op="min_dec",
+            hour=int(hour),
+            minute=int(minute),
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+        ),
+    )
 
     # Submit: pack TimeCB or RescheduleCB with compact time, localized label
     compact = f"{int(hour):02d}{int(minute):02d}"
@@ -270,9 +407,17 @@ async def get_compact_time_picker_kb(
 
     # If this picker is used in a reschedule flow, pack RescheduleCB
     if action == "reschedule":
-        cb_data = pack_cb(RescheduleCB, action="time", booking_id=int(booking_id or 0), date=date, time=compact)
+        cb_data = pack_cb(
+            RescheduleCB, action="time", booking_id=int(booking_id or 0), date=date, time=compact
+        )
     else:
-        cb_data = pack_cb(TimeCB, service_id=normalized_service, master_id=normalized_master, date=date, time=compact)
+        cb_data = pack_cb(
+            TimeCB,
+            service_id=normalized_service,
+            master_id=normalized_master,
+            date=date,
+            time=compact,
+        )
 
     builder.button(text=submit_text, callback_data=cb_data)
 
@@ -284,7 +429,9 @@ async def get_compact_time_picker_kb(
     builder.adjust(1, 2, 2, 2, 1, 1)
     return builder.as_markup()
 
+
 logger = logging.getLogger(__name__)
+
 
 def _localize(key: str, lang: str, fallback: str) -> str:
     # Ignore hardcoded fallbacks; rely on translations. If missing in the
@@ -312,12 +459,14 @@ def _default_currency() -> str:
     # Delegate to the canonical helper in shared_services so the SSoT is
     # centralized. This keeps keyboard code lightweight and consistent.
     from bot.app.services.shared_services import _default_currency
+
     return _default_currency()
 
 
 @runtime_checkable
 class _HasMasterAttrs(Protocol):
     """Протокол для объектов мастера с необходимыми атрибутами."""
+
     name: str
     telegram_id: int
 
@@ -347,30 +496,36 @@ def _build_week_row_states(
             full -> 🔴 (fully booked / no slots)
     """
     from datetime import date as _date
+
     row: list[InlineKeyboardButton] = []
     for day, state in week_states:
-        if state == 'empty':
+        if state == "empty":
             row.append(InlineKeyboardButton(text=" ", callback_data=pack_cb(NavCB, act="noop")))
             continue
-        if state == 'past':
+        if state == "past":
             row.append(InlineKeyboardButton(text="✖", callback_data=pack_cb(NavCB, act="noop")))
             continue
-        if state == 'not_allowed':
+        if state == "not_allowed":
             row.append(InlineKeyboardButton(text="—", callback_data=pack_cb(NavCB, act="noop")))
             continue
-        if state == 'available':
+        if state == "available":
             try:
                 day_date = _date(year, month, day)
                 cb = pack_cb(DateCB, service_id=service_id, master_id=master_id, date=str(day_date))
                 row.append(InlineKeyboardButton(text=str(day), callback_data=cb))
             except Exception:
-                row.append(InlineKeyboardButton(text="🔴", callback_data=pack_cb(NavCB, act="noop")))
+                row.append(
+                    InlineKeyboardButton(text="🔴", callback_data=pack_cb(NavCB, act="noop"))
+                )
             continue
         # full / fallback
         row.append(InlineKeyboardButton(text="🔴", callback_data=pack_cb(NavCB, act="noop")))
     return row
 
-def _build_month_nav_row(service_id: str, master_id: int, year: int, month: int, month_label: str) -> list[InlineKeyboardButton]:
+
+def _build_month_nav_row(
+    service_id: str, master_id: int, year: int, month: int, month_label: str
+) -> list[InlineKeyboardButton]:
     """Return navigation row (prev, current month label, next) for calendar.
 
     Extracted from get_calendar_keyboard to reduce its size. Accepts a
@@ -384,12 +539,24 @@ def _build_month_nav_row(service_id: str, master_id: int, year: int, month: int,
     return [
         InlineKeyboardButton(
             text="◀️",
-            callback_data=pack_cb(CalendarCB, service_id=service_id, master_id=master_id, year=prev_year, month=prev_month),
+            callback_data=pack_cb(
+                CalendarCB,
+                service_id=service_id,
+                master_id=master_id,
+                year=prev_year,
+                month=prev_month,
+            ),
         ),
         InlineKeyboardButton(text=month_label, callback_data=pack_cb(NavCB, act="noop")),
         InlineKeyboardButton(
             text="▶️",
-            callback_data=pack_cb(CalendarCB, service_id=service_id, master_id=master_id, year=next_year, month=next_month),
+            callback_data=pack_cb(
+                CalendarCB,
+                service_id=service_id,
+                master_id=master_id,
+                year=next_year,
+                month=next_month,
+            ),
         ),
     ]
 
@@ -426,7 +593,9 @@ async def get_calendar_keyboard(
         now = local_now()
         year, month = now.year, now.month
     if date(year, month, 1) > max_date:
-        logger.warning("Попытка открыть календарь для слишком далекого будущего: %d-%d", year, month)
+        logger.warning(
+            "Попытка открыть календарь для слишком далекого будущего: %d-%d", year, month
+        )
         year, month = max_date.year, max_date.month
 
     today = local_now().date()
@@ -455,7 +624,9 @@ async def get_calendar_keyboard(
             wd = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     except Exception:
         wd = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
-    buttons.append([InlineKeyboardButton(text=n, callback_data=pack_cb(NavCB, act="noop")) for n in wd])
+    buttons.append(
+        [InlineKeyboardButton(text=n, callback_data=pack_cb(NavCB, act="noop")) for n in wd]
+    )
 
     # Use precomputed day_states provided by handler
     if day_states is None:
@@ -467,7 +638,14 @@ async def get_calendar_keyboard(
             buttons.append(_build_week_row_states(service_id, master_id, year, month, week_states))
         except Exception as e:
             logger.exception("Error building week row from states: %s", e)
-            buttons.append([InlineKeyboardButton(text=(_t("error", lang) if _t is not None else "Ошибка"), callback_data=pack_cb(NavCB, act="noop"))])
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=(_t("error", lang) if _t is not None else "Ошибка"),
+                        callback_data=pack_cb(NavCB, act="noop"),
+                    )
+                ]
+            )
 
     # Кнопка назад
     try:
@@ -483,7 +661,9 @@ async def get_calendar_keyboard(
 # to keep keyboards presentation-only.
 
 
-async def get_service_menu(services: dict[str, str], include_back: bool = True) -> InlineKeyboardMarkup:
+async def get_service_menu(
+    services: dict[str, str], include_back: bool = True
+) -> InlineKeyboardMarkup:
     """Генерирует меню выбора услуг из переданного отображения service_id->name.
 
     Handlers must prefetch `services` (use `client_services.get_filtered_services`).
@@ -507,7 +687,9 @@ async def get_service_menu(services: dict[str, str], include_back: bool = True) 
     return builder.as_markup()
 
 
-async def get_service_menu_multi(selected: set[str], services: dict[str, str]) -> InlineKeyboardMarkup:
+async def get_service_menu_multi(
+    selected: set[str], services: dict[str, str]
+) -> InlineKeyboardMarkup:
     """Генерирует меню для множественного выбора услуг с отметками выбранных.
 
     `services` must be provided by the caller (handlers should call
@@ -520,6 +702,7 @@ async def get_service_menu_multi(selected: set[str], services: dict[str, str]) -
 
     # Формируем кнопки для услуг с отметками
     from bot.app.telegram.common.callbacks import ServiceToggleCB
+
     for service_id, name in services.items():
         mark = "✅" if service_id in selected else "☑️"
         builder.button(
@@ -531,7 +714,11 @@ async def get_service_menu_multi(selected: set[str], services: dict[str, str]) -
     builder.button(text=cont_txt, callback_data=pack_cb(ClientMenuCB, act="svc_done"))
     builder.button(text=back_txt, callback_data=pack_cb(NavCB, act="back"))
     builder.adjust(1, 1)  # Две колонки для услуг, одна для управления
-    logger.debug("Меню мультивыбора услуг сгенерировано, услуг: %d, выбрано: %d", len(services), len(selected))
+    logger.debug(
+        "Меню мультивыбора услуг сгенерировано, услуг: %d, выбрано: %d",
+        len(services),
+        len(selected),
+    )
     return builder.as_markup()
 
 
@@ -575,10 +762,7 @@ async def get_master_keyboard(service_id: str, masters: list | None) -> InlineKe
         # расположить кнопки мастеров по 2 в ряд (Профіль | Запис)
         builder.adjust(2)
     else:
-        builder.button(
-            text=t("no_masters", lang),
-            callback_data="no_masters"
-        )
+        builder.button(text=t("no_masters", lang), callback_data="no_masters")
 
     back_txt = t("back", lang)
 
@@ -588,7 +772,9 @@ async def get_master_keyboard(service_id: str, masters: list | None) -> InlineKe
     return builder.as_markup()
 
 
-async def get_masters_catalog_keyboard(masters: list | None, *, page: int = 1, total_pages: int = 1) -> InlineKeyboardMarkup:
+async def get_masters_catalog_keyboard(
+    masters: list | None, *, page: int = 1, total_pages: int = 1
+) -> InlineKeyboardMarkup:
     """Build a generic masters catalog keyboard (no service preselected).
 
     Renders per-master row: [👤 Profile] [🛠️ Послуги]
@@ -601,9 +787,17 @@ async def get_masters_catalog_keyboard(masters: list | None, *, page: int = 1, t
         nav_buttons: list[InlineKeyboardButton] = []
         try:
             if page > 1:
-                nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=pack_cb(MastersListCB, page=page-1)))
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        text="⬅️", callback_data=pack_cb(MastersListCB, page=page - 1)
+                    )
+                )
             if page < total_pages:
-                nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=pack_cb(MastersListCB, page=page+1)))
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        text="➡️", callback_data=pack_cb(MastersListCB, page=page + 1)
+                    )
+                )
             if nav_buttons:
                 builder.row(*nav_buttons)
         except Exception:
@@ -639,12 +833,14 @@ async def get_masters_catalog_keyboard(masters: list | None, *, page: int = 1, t
             # Users should view the profile and then start booking from there.
             builder.adjust(1)
     else:
-        builder.button(text=_localize("no_masters", lang, "❌ Нема доступних майстрів"), callback_data="no_masters")
+        builder.button(
+            text=_localize("no_masters", lang, "❌ Нема доступних майстрів"),
+            callback_data="no_masters",
+        )
 
     back_txt = _localize("back", lang, "⬅️ Назад")
     builder.row(InlineKeyboardButton(text=back_txt, callback_data=pack_cb(NavCB, act="back")))
     return builder.as_markup()
-
 
 
 # `get_back_button` moved to `bot.app.services.shared_services` (avoid duplication).
@@ -658,6 +854,7 @@ def build_rating_keyboard(booking_id: int) -> InlineKeyboardMarkup:
     lang = default_language()
     builder = InlineKeyboardBuilder()
     from typing import cast, Any
+
     for i in range(1, 6):
         builder.row(
             InlineKeyboardButton(
@@ -678,7 +875,13 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
     try:
         admin_flag = await is_admin(telegram_id)
         master_flag = await is_master(telegram_id)
-        logger.debug("is_admin(%s) -> %s, is_master(%s) -> %s", telegram_id, admin_flag, telegram_id, master_flag)
+        logger.debug(
+            "is_admin(%s) -> %s, is_master(%s) -> %s",
+            telegram_id,
+            admin_flag,
+            telegram_id,
+            master_flag,
+        )
 
         builder = InlineKeyboardBuilder()
         lang = await _resolve_lang(telegram_id)
@@ -697,21 +900,41 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
         except Exception:
             logger.debug("Mini app button skipped (missing URL or disabled)", exc_info=True)
 
-        builder.button(text=_t("book", "Записатися"), callback_data=pack_cb(ClientMenuCB, act="booking_service"))
+        builder.button(
+            text=_t("book", "Записатися"),
+            callback_data=pack_cb(ClientMenuCB, act="booking_service"),
+        )
         # New entry: browse by master
-        builder.button(text=_t("masters_button", "Наші майстри"), callback_data=pack_cb(ClientMenuCB, act="masters_list"))
+        builder.button(
+            text=_t("masters_button", "Наші майстри"),
+            callback_data=pack_cb(ClientMenuCB, act="masters_list"),
+        )
         from bot.app.telegram.common.callbacks import MyBookingsCB
+
         # Default entry to 'Мої записи' should show upcoming bookings only.
-        builder.button(text=_t("my_bookings_button", "Мої записи"), callback_data=pack_cb(MyBookingsCB, mode="upcoming"))
-        builder.button(text=_t("contacts", "Контакти"), callback_data=pack_cb(ClientMenuCB, act="contacts"))
+        builder.button(
+            text=_t("my_bookings_button", "Мої записи"),
+            callback_data=pack_cb(MyBookingsCB, mode="upcoming"),
+        )
+        builder.button(
+            text=_t("contacts", "Контакти"), callback_data=pack_cb(ClientMenuCB, act="contacts")
+        )
 
         if admin_flag:
             from bot.app.telegram.common.callbacks import AdminMenuCB
-            builder.button(text=_t("admin_panel_button", "Управління"), callback_data=pack_cb(AdminMenuCB, act="panel"))
+
+            builder.button(
+                text=_t("admin_panel_button", "Управління"),
+                callback_data=pack_cb(AdminMenuCB, act="panel"),
+            )
         if master_flag:
             # Use typed MasterMenuCB for master menu navigation
             from bot.app.telegram.common.callbacks import MasterMenuCB
-            builder.button(text=_t("master_menu_button", "Меню майстра"), callback_data=pack_cb(MasterMenuCB, act="menu"))
+
+            builder.button(
+                text=_t("master_menu_button", "Меню майстра"),
+                callback_data=pack_cb(MasterMenuCB, act="menu"),
+            )
 
         builder.adjust(2)
         logger.debug("Главное меню сгенерировано для telegram_id=%s", telegram_id)
@@ -719,7 +942,7 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
     except Exception as e:
         logger.error("Ошибка построения главного меню для telegram_id=%s: %s", telegram_id, e)
         return InlineKeyboardBuilder().as_markup()
-    
+
 
 def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
     """Build a unified bookings dashboard keyboard for client/master/admin.
@@ -782,9 +1005,17 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
                 nav_buttons: list[InlineKeyboardButton] = []
                 # Allow pagination for both upcoming and completed modes
                 if page > 1:
-                    nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)))
+                    nav_buttons.append(
+                        InlineKeyboardButton(
+                            text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)
+                        )
+                    )
                 if page < max(1, int(total_pages or 1)):
-                    nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)))
+                    nav_buttons.append(
+                        InlineKeyboardButton(
+                            text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)
+                        )
+                    )
                 if nav_buttons:
                     kb.row(*nav_buttons)
             except Exception:
@@ -809,12 +1040,16 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
                 else:
                     # completed mode: show Upcoming + Back
                     upcoming_cb = pack_cb(RoleCB, mode="upcoming", page=1)
-                    bottom_row.append(InlineKeyboardButton(text=upcoming_label, callback_data=upcoming_cb))
+                    bottom_row.append(
+                        InlineKeyboardButton(text=upcoming_label, callback_data=upcoming_cb)
+                    )
             except Exception:
                 pass
 
             # Back on the right
-            bottom_row.append(InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb))
+            bottom_row.append(
+                InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb)
+            )
             if bottom_row:
                 kb.row(*bottom_row)
             return kb.as_markup()
@@ -825,18 +1060,41 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
         # masters/admins see both upcoming and done tabs
         kb.button(
             text=mark(upcoming_label, "upcoming"),
-            callback_data=pack_cb(RoleCB, mode="upcoming") if str(role).lower() != "client" else pack_cb(RoleCB, mode="upcoming", page=1),
+            callback_data=pack_cb(RoleCB, mode="upcoming")
+            if str(role).lower() != "client"
+            else pack_cb(RoleCB, mode="upcoming", page=1),
         )
         kb.button(
-            text=mark(done_label, client_done_mode if str(role).lower() == "client" else master_done_mode),
-            callback_data=pack_cb(RoleCB, mode=(client_done_mode if str(role).lower() == "client" else master_done_mode)) if str(role).lower() != "client" else pack_cb(RoleCB, mode=(client_done_mode if str(role).lower() == "client" else master_done_mode), page=1),
+            text=mark(
+                done_label, client_done_mode if str(role).lower() == "client" else master_done_mode
+            ),
+            callback_data=pack_cb(
+                RoleCB,
+                mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
+            )
+            if str(role).lower() != "client"
+            else pack_cb(
+                RoleCB,
+                mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
+                page=1,
+            ),
         )
 
         if str(role).lower() != "client":
-            kb.button(text=mark(cancelled_label, "cancelled"), callback_data=pack_cb(RoleCB, mode="cancelled", page=1) if str(role).lower() == "client" else pack_cb(RoleCB, mode="cancelled"))
-            kb.button(text=mark(noshow_label, "no_show"), callback_data=pack_cb(RoleCB, mode="no_show", page=1) if str(role).lower() == "client" else pack_cb(RoleCB, mode="no_show"))
+            kb.button(
+                text=mark(cancelled_label, "cancelled"),
+                callback_data=pack_cb(RoleCB, mode="cancelled", page=1)
+                if str(role).lower() == "client"
+                else pack_cb(RoleCB, mode="cancelled"),
+            )
+            kb.button(
+                text=mark(noshow_label, "no_show"),
+                callback_data=pack_cb(RoleCB, mode="no_show", page=1)
+                if str(role).lower() == "client"
+                else pack_cb(RoleCB, mode="no_show"),
+            )
 
-        kb.adjust(4) # Adjust the 4 tabs
+        kb.adjust(4)  # Adjust the 4 tabs
 
         # Pagination row for non-client roles
         try:
@@ -844,11 +1102,19 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
             total_pages = int(meta.get("total_pages", 1) if meta else 1)
             nav_buttons: list[InlineKeyboardButton] = []
             if page > 1:
-                nav_buttons.append(InlineKeyboardButton(text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)))
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)
+                    )
+                )
             if page < max(1, int(total_pages or 1)):
-                nav_buttons.append(InlineKeyboardButton(text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)))
+                nav_buttons.append(
+                    InlineKeyboardButton(
+                        text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)
+                    )
+                )
             if nav_buttons:
-                kb.row(*nav_buttons) # Add pagination row
+                kb.row(*nav_buttons)  # Add pagination row
         except Exception:
             pass
 
@@ -889,7 +1155,17 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
             # InlineKeyboardButton imported at top-level instead.
             from aiogram.types import InlineKeyboardMarkup
             from bot.app.telegram.common.callbacks import pack_cb, NavCB
-            return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_localize('back', lang, "⬅️ Назад"), callback_data=pack_cb(NavCB, act="role_root"))]])
+
+            return InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=_localize("back", lang, "⬅️ Назад"),
+                            callback_data=pack_cb(NavCB, act="role_root"),
+                        )
+                    ]
+                ]
+            )
         except Exception:
             from aiogram.types import InlineKeyboardMarkup
 
@@ -928,7 +1204,7 @@ async def get_payment_keyboard(
             # заменяем "Дата: <b>25.12.2025</b>" → "Дата: <b>25.12.2025 09:00</b>"
             header = header.replace(
                 f"{_t('date_label','Дата')}: <b>{date}</b>",
-                f"{_t('date_label','Дата')}: <b>{date} {start_time_str}</b>"
+                f"{_t('date_label','Дата')}: <b>{date} {start_time_str}</b>",
             )
 
         # Отступ и выбор оплаты
@@ -954,7 +1230,9 @@ async def get_payment_keyboard(
         elif isinstance(booking, dict):
             booking_id_val = int(booking.get("id") or booking.get("booking_id") or 0)
         else:
-            booking_id_val = int(getattr(booking, "id", None) or getattr(booking, "booking_id", None) or 0)
+            booking_id_val = int(
+                getattr(booking, "id", None) or getattr(booking, "booking_id", None) or 0
+            )
     except Exception:
         pass
 
@@ -969,6 +1247,7 @@ async def get_payment_keyboard(
         callback_data=pack_cb(PayCB, action="prep_cash", booking_id=booking_id_val),
     )
     from bot.app.telegram.common.callbacks import BookingActionCB
+
     builder.button(
         text=_t("back", "⬅️ Назад"),
         callback_data=pack_cb(BookingActionCB, act="cancel_reservation", booking_id=booking_id_val),
@@ -1055,13 +1334,23 @@ async def build_my_bookings_keyboard(
         # Use UI module's dashboard builder directly (keep UI out of services)
         try:
             from bot.app.telegram.client.client_keyboards import build_bookings_dashboard_kb
+
             # dashboard builder accepts role so tabs/callbacks are typed per role
             dashboard_kb = build_bookings_dashboard_kb(role, meta, lang=lang)
         except Exception:
             # Fallback: return a minimal back-only keyboard when UI module isn't available
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             from bot.app.telegram.common.callbacks import pack_cb, NavCB
-            dashboard_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("back", lang), callback_data=pack_cb(NavCB, act="back"))]])
+
+            dashboard_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=t("back", lang), callback_data=pack_cb(NavCB, act="back")
+                        )
+                    ]
+                ]
+            )
         # Extract existing rows from dashboard (list of lists)
         existing_rows: list[list[InlineKeyboardButton]] = []
         try:
@@ -1099,9 +1388,14 @@ async def build_my_bookings_keyboard(
                 text, bid = ("—", None)
             if bid is None:
                 continue
-            booking_rows.append([
-                InlineKeyboardButton(text=text, callback_data=pack_cb(BookingActionCB, act=row_act, booking_id=int(bid)))
-            ])
+            booking_rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=text,
+                        callback_data=pack_cb(BookingActionCB, act=row_act, booking_id=int(bid)),
+                    )
+                ]
+            )
 
         final_rows: list[list[InlineKeyboardButton]] = []
         final_rows.extend(top_rows)
@@ -1112,7 +1406,14 @@ async def build_my_bookings_keyboard(
             # ensure there is at least a back button
             try:
                 from bot.app.telegram.common.callbacks import pack_cb as _pack
-                final_rows.append([InlineKeyboardButton(text=t("back", lang), callback_data=_pack(NavCB, act="back"))])
+
+                final_rows.append(
+                    [
+                        InlineKeyboardButton(
+                            text=t("back", lang), callback_data=_pack(NavCB, act="back")
+                        )
+                    ]
+                )
             except Exception:
                 pass
 
@@ -1122,14 +1423,21 @@ async def build_my_bookings_keyboard(
         # Fallback: minimal keyboard
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         from bot.app.telegram.common.callbacks import pack_cb, NavCB
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Back", callback_data=pack_cb(NavCB, act="back"))]])
+
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back", callback_data=pack_cb(NavCB, act="back"))]
+            ]
+        )
     # end build_my_bookings_keyboard
 
 
 # format_booking_details_text moved to bot.app.services.client_services
 
 
-def build_booking_card_kb(data: dict | Any, booking_id: int, role: str = "client", lang: str | None = None):
+def build_booking_card_kb(
+    data: dict | Any, booking_id: int, role: str = "client", lang: str | None = None
+):
     """Build InlineKeyboardMarkup for a booking card (moved from services)."""
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     from bot.app.telegram.common.callbacks import pack_cb, BookingActionCB, RescheduleCB, NavCB
@@ -1138,9 +1446,17 @@ def build_booking_card_kb(data: dict | Any, booking_id: int, role: str = "client
     kb = InlineKeyboardBuilder()
     # Determine read-only
     try:
-        s_val = getattr(data, 'status', None) if hasattr(data, 'status') else (data.get('status') if isinstance(data, dict) else None)
-        if s_val is None and getattr(data, 'raw', None) and isinstance(getattr(data, 'raw', None), dict):
-            s_val = getattr(data, 'raw', {}).get('status')
+        s_val = (
+            getattr(data, "status", None)
+            if hasattr(data, "status")
+            else (data.get("status") if isinstance(data, dict) else None)
+        )
+        if (
+            s_val is None
+            and getattr(data, "raw", None)
+            and isinstance(getattr(data, "raw", None), dict)
+        ):
+            s_val = getattr(data, "raw", {}).get("status")
         s_norm = str(s_val).lower() if s_val is not None else None
         terminal_statuses = {"cancelled", "done", "no_show", "expired"}
         read_only = bool(s_norm in terminal_statuses)
@@ -1151,52 +1467,112 @@ def build_booking_card_kb(data: dict | Any, booking_id: int, role: str = "client
     if not read_only:
         if r == "client":
             try:
-                can_reschedule = getattr(data, 'can_reschedule', False) if hasattr(data, 'can_reschedule') else data.get('can_reschedule', False)
-                can_cancel = getattr(data, 'can_cancel', False) if hasattr(data, 'can_cancel') else data.get('can_cancel', False)
+                can_reschedule = (
+                    getattr(data, "can_reschedule", False)
+                    if hasattr(data, "can_reschedule")
+                    else data.get("can_reschedule", False)
+                )
+                can_cancel = (
+                    getattr(data, "can_cancel", False)
+                    if hasattr(data, "can_cancel")
+                    else data.get("can_cancel", False)
+                )
                 if can_reschedule:
                     master_id = None
                     try:
                         raw_mid = None
-                        if hasattr(data, 'raw') and isinstance(getattr(data, 'raw'), dict):
-                            raw_mid = getattr(data, 'raw', {}).get('master_id')
+                        if hasattr(data, "raw") and isinstance(getattr(data, "raw"), dict):
+                            raw_mid = getattr(data, "raw", {}).get("master_id")
                         elif isinstance(data, dict):
-                            raw_mid = data.get('master_id')
+                            raw_mid = data.get("master_id")
                         master_id = int(raw_mid) if raw_mid is not None else None
                     except Exception:
                         master_id = None
-                    kb.button(text=_tr("reschedule", lang=lang), callback_data=pack_cb(RescheduleCB, action="start", booking_id=int(booking_id), master_id=master_id))
+                    kb.button(
+                        text=_tr("reschedule", lang=lang),
+                        callback_data=pack_cb(
+                            RescheduleCB,
+                            action="start",
+                            booking_id=int(booking_id),
+                            master_id=master_id,
+                        ),
+                    )
                 if can_cancel:
-                    kb.button(text=_tr("cancel", lang=lang), callback_data=pack_cb(BookingActionCB, act="cancel_confirm", booking_id=int(booking_id)))
+                    kb.button(
+                        text=_tr("cancel", lang=lang),
+                        callback_data=pack_cb(
+                            BookingActionCB, act="cancel_confirm", booking_id=int(booking_id)
+                        ),
+                    )
             except Exception:
                 pass
         else:
             try:
-                kb.button(text=_tr("booking_mark_done_button", lang=lang), callback_data=pack_cb(BookingActionCB, act="mark_done", booking_id=int(booking_id)))
-                kb.button(text=_tr("booking_mark_noshow_button", lang=lang), callback_data=pack_cb(BookingActionCB, act="mark_noshow", booking_id=int(booking_id)))
-                kb.button(text=_tr("booking_client_history_button", lang=lang), callback_data=pack_cb(BookingActionCB, act="client_history", booking_id=int(booking_id)))
+                kb.button(
+                    text=_tr("booking_mark_done_button", lang=lang),
+                    callback_data=pack_cb(
+                        BookingActionCB, act="mark_done", booking_id=int(booking_id)
+                    ),
+                )
+                kb.button(
+                    text=_tr("booking_mark_noshow_button", lang=lang),
+                    callback_data=pack_cb(
+                        BookingActionCB, act="mark_noshow", booking_id=int(booking_id)
+                    ),
+                )
+                kb.button(
+                    text=_tr("booking_client_history_button", lang=lang),
+                    callback_data=pack_cb(
+                        BookingActionCB, act="client_history", booking_id=int(booking_id)
+                    ),
+                )
                 # Determine whether a client note already exists; adjust button label accordingly
                 try:
                     note = None
-                    if hasattr(data, 'raw') and isinstance(getattr(data, 'raw'), dict):
-                        note = getattr(data, 'raw', {}).get("note")
+                    if hasattr(data, "raw") and isinstance(getattr(data, "raw"), dict):
+                        note = getattr(data, "raw", {}).get("note")
                     elif isinstance(data, dict):
                         note = data.get("note")
                     if note and isinstance(note, str) and note.strip():
                         add_note_label = _tr("booking_edit_note_button", lang=lang)
                     else:
                         add_note_label = _tr("booking_add_note_button", lang=lang)
-                    kb.button(text=add_note_label, callback_data=pack_cb(BookingActionCB, act="add_note", booking_id=int(booking_id)))
+                    kb.button(
+                        text=add_note_label,
+                        callback_data=pack_cb(
+                            BookingActionCB, act="add_note", booking_id=int(booking_id)
+                        ),
+                    )
                     if note and isinstance(note, str) and len(note) > 120:
-                        kb.button(text=_tr("show_full_note_button", lang=lang), callback_data=pack_cb(BookingActionCB, act="show_full_note", booking_id=int(booking_id)))
+                        kb.button(
+                            text=_tr("show_full_note_button", lang=lang),
+                            callback_data=pack_cb(
+                                BookingActionCB, act="show_full_note", booking_id=int(booking_id)
+                            ),
+                        )
                 except Exception:
                     # Fallback to generic add note label
                     try:
-                        kb.button(text=_tr("booking_add_note_button", lang=lang), callback_data=pack_cb(BookingActionCB, act="add_note", booking_id=int(booking_id)))
+                        kb.button(
+                            text=_tr("booking_add_note_button", lang=lang),
+                            callback_data=pack_cb(
+                                BookingActionCB, act="add_note", booking_id=int(booking_id)
+                            ),
+                        )
                     except Exception:
                         pass
-                can_cancel = getattr(data, 'can_cancel', False) if hasattr(data, 'can_cancel') else data.get('can_cancel', False)
+                can_cancel = (
+                    getattr(data, "can_cancel", False)
+                    if hasattr(data, "can_cancel")
+                    else data.get("can_cancel", False)
+                )
                 if can_cancel:
-                    kb.button(text=_tr("cancel", lang=lang), callback_data=pack_cb(BookingActionCB, act="cancel_confirm", booking_id=int(booking_id)))
+                    kb.button(
+                        text=_tr("cancel", lang=lang),
+                        callback_data=pack_cb(
+                            BookingActionCB, act="cancel_confirm", booking_id=int(booking_id)
+                        ),
+                    )
             except Exception:
                 pass
     # For masters viewing a terminal (read-only) booking card we prefer a

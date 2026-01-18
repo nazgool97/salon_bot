@@ -10,11 +10,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def build_main_router() -> Router:
     router = Router()
     # Register global navigation handler after feature routers so feature
     # CallbackData handlers are matched first.
-    
+
     # Include public/client router first so general commands (like /start)
     # and fallback message handlers are evaluated before role-protected
     # routers. This prevents router-level filters (Admin/Master) from
@@ -25,6 +26,7 @@ def build_main_router() -> Router:
     # unintentionally intercepting or affecting public commands.
     try:
         from .client.client_handlers import client_router
+
         router.include_router(client_router)
         logger.info("Client router included")
     except Exception as e:
@@ -34,6 +36,7 @@ def build_main_router() -> Router:
     # role filters and should be evaluated after public handlers.
     try:
         from .admin.admin_handlers import admin_router
+
         router.include_router(admin_router)
         logger.info("Admin router included")
     except Exception as e:
@@ -41,10 +44,12 @@ def build_main_router() -> Router:
 
     try:
         from .master.master_handlers import master_router
+
         router.include_router(master_router)
         logger.info("Master router included")
     except Exception as e:
         logger.error("Failed to include master_router: %s", e)
+
     # Register global navigation handler after feature routers so it doesn't
     # intercept typed callback_data handlers defined in feature routers.
     @router.callback_query(NavCB.filter(F.act.in_(["root", "back", "role_root", "noop"])))

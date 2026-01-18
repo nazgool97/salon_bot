@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Role-based access helpers centralized for admin/master checks.
 
 Usage:
@@ -133,9 +134,7 @@ async def is_admin_db(user_id: int) -> bool:
 async def is_master_db(user_id: int) -> bool:
     try:
         async with get_session() as session:
-            result = await session.execute(
-                select(Master).where(Master.telegram_id == user_id)
-            )
+            result = await session.execute(select(Master).where(Master.telegram_id == user_id))
             found = result.scalar_one_or_none() is not None
             logger.debug("is_master_db: user_id=%s found=%s", user_id, found)
             return found
@@ -154,7 +153,6 @@ async def is_master(user_id: int) -> bool:
     if is_master_env(user_id):
         return True
     return await is_master_db(user_id)
-
 
 
 class AdminRoleFilter(BaseFilter):
