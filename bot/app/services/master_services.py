@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime, date as _date, time as _time, timedelta
 from typing import Any, cast
 from collections.abc import Mapping, Sequence
@@ -144,7 +145,6 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
         services = data.get("services") or []
         durations_map = data.get("durations_map") or {}
         about_text = data.get("about_text")
-        reviews = data.get("reviews") or []
 
         lines: list[str] = []
         if with_title:
@@ -198,7 +198,6 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
             rating_label = tr("rating_label", lang=lang)
             orders_word = tr("orders", lang=lang)
             completed = int(getattr(master, "completed_orders", 0) or 0)
-            ratings_count = int(getattr(master, "ratings_count", 0) or 0)
             # Show simplified rating: average /5 and completed orders count
             # Example: "⭐ Рейтинг: 4.8/5 (120 замовлень)"
             lines.append(
@@ -210,7 +209,7 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
 
         sched = data.get("schedule") or {}
         if isinstance(sched, dict):
-            try:
+            with suppress(Exception):
                 lines.append("")
                 lines.append(f"{tr('schedule_title', lang=lang)}:")
                 wd_full = tr("weekday_full", lang=lang)
@@ -233,8 +232,6 @@ def format_master_profile_text(data: dict | None, lang: str, *, with_title: bool
                 for i in range(7):
                     windows = sched.get(str(i)) or sched.get(i) or []
                     lines.append(f"• {wd_full[i]}: {fmt_windows(windows)}")
-            except Exception:
-                pass
         return "\n".join(lines)
     except Exception:
         return tr("error", lang=lang)
@@ -269,7 +266,7 @@ async def masters_cache() -> dict[int, str]:
                     Master.first_name,
                     Master.last_name,
                     Master.name,
-                ).where(Master.is_active == True)
+                ).where(Master.is_active)
             )
             rows = res.all()
             if rows:
@@ -526,26 +523,20 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 rev_lbl = "Revenue"
             seven_lines.append(f"{rev_lbl}: {rev_txt}")
             # Avg per day (localized)
-            try:
+            with suppress(Exception):
                 avgd = float(stats.get("avg_per_day", 0.0) or 0.0)
                 avg_lbl = t("avg_per_day", lang_value) or "Avg/day"
                 seven_lines.append(f"{avg_lbl}: {avgd:.1f}")
-            except Exception:
-                pass
             # No-show rate (localized)
-            try:
+            with suppress(Exception):
                 nsr = float(stats.get("no_show_rate", 0.0) or 0.0)
                 nsr_lbl = t("no_show_rate", lang_value) or "No-show rate"
                 seven_lines.append(f"{nsr_lbl}: {nsr:.1f}%")
-            except Exception:
-                pass
             # Next booking time (localized)
-            try:
+            with suppress(Exception):
                 if stats.get("next_booking_time"):
                     next_lbl = t("next_label", lang_value) or "Next"
                     seven_lines.append(f"{next_lbl}: {stats.get('next_booking_time')}")
-            except Exception:
-                pass
             seven_line = "\n" + "\n".join(seven_lines)
         except Exception:
             seven_line = ""
@@ -693,10 +684,8 @@ def invalidate_masters_cache() -> None:
     global _masters_cache_store
     _masters_cache_store = None
     # Also clear resolve cache so future lookups hit DB once and refresh.
-    try:
+    with suppress(Exception):
         _resolve_master_cache.clear()
-    except Exception:
-        pass
 
 
 # ---------------- MasterRepo (merged from shared_services) -----------------
@@ -852,10 +841,7 @@ class MasterRepo:
                     end = base + timedelta(days=days)
             else:
                 if end is None:
-                    if days is not None:
-                        end = start + timedelta(days=days)
-                    else:
-                        end = None
+                    end = start + timedelta(days=days) if days is not None else None
 
             async with get_session() as session:
                 from bot.app.domain.models import Booking
@@ -898,7 +884,7 @@ class MasterRepo:
                 return int(
                     (
                         await session.execute(
-                            select(func.count()).select_from(Master).where(Master.is_active == True)
+                            select(func.count()).select_from(Master).where(Master.is_active)
                         )
                     ).scalar()
                     or 0
@@ -928,7 +914,7 @@ class MasterRepo:
                 offset = (page - 1) * page_size
                 stmt = (
                     select(Master.id, Master.name)
-                    .where(Master.is_active == True)
+                    .where(Master.is_active)
                     .order_by(Master.id)
                     .offset(offset)
                     .limit(page_size)
@@ -953,11 +939,9 @@ class MasterRepo:
             return None
 
         # Fast path: in-memory cache to avoid repeated DB hits for the same id/tid.
-        try:
+        with suppress(Exception):
             if key in _resolve_master_cache:
                 return _resolve_master_cache[key]
-        except Exception:
-            pass
 
         try:
             async with get_session() as session:
@@ -972,10 +956,8 @@ class MasterRepo:
                     resolved = int(mid) if mid else None
 
             if resolved is not None:
-                try:
+                with suppress(Exception):
                     _resolve_master_cache[key] = resolved
-                except Exception:
-                    pass
             return resolved
         except Exception as e:
             logger.exception("MasterRepo.resolve_master_id failed for %s: %s", master_identifier, e)
@@ -1085,14 +1067,12 @@ class MasterRepo:
                     "client_note": client_note,
                 }
                 # If ends_at is present, compute duration_minutes for display purposes
-                try:
+                with suppress(Exception):
                     sa = data.get("starts_at")
                     ea = data.get("ends_at")
                     if sa and ea:
                         diff = ea - sa
                         data["duration_minutes"] = int(diff.total_seconds() // 60)
-                except Exception:
-                    pass
                 return data
         except Exception as e:
             logger.exception("MasterRepo.get_booking_display_data failed: %s", e)
@@ -1472,13 +1452,11 @@ class MasterRepo:
                     completed_orders = 0
 
                 # Attach metrics to master instance for downstream formatter
-                try:
+                with suppress(Exception):
                     if rating_avg is not None:
                         master.rating = float(rating_avg)
                     master.completed_orders = completed_orders
                     master.ratings_count = int(ratings_count or 0)
-                except Exception:
-                    pass
 
                 # profile bio -> durations and about (now stored on masters.bio)
                 try:
@@ -1496,11 +1474,8 @@ class MasterRepo:
                 # Start from bio-provided durations (legacy), then override with MasterService table values
                 durations_map = bio.get("durations") or bio.get("durations_map") or {}
                 # Normalize to str->int where possible
-                try:
+                with suppress(Exception):
                     durations_map = {str(k): int(v) for k, v in (durations_map or {}).items() if k}
-                except Exception:
-                    # Leave as-is if normalization fails
-                    pass
                 # Fetch any explicit overrides from master_services table and merge (overrides take precedence)
                 try:
                     ms_rows = await session.execute(
@@ -1601,10 +1576,8 @@ class MasterRepo:
                             existing.last_name = last_name
                             session.add(existing)
                             await session.commit()
-                            try:
+                            with suppress(Exception):
                                 invalidate_masters_cache()
-                            except Exception:
-                                pass
                             return True
                         # Active master already present => do not create duplicate
                         return False
@@ -1621,10 +1594,8 @@ class MasterRepo:
                     )
                 )
                 await session.commit()
-            try:
+            with suppress(Exception):
                 invalidate_masters_cache()
-            except Exception:
-                pass
             return True
         except Exception as e:
             logger.exception("MasterRepo.add_master failed for %s: %s", telegram_id, e)
@@ -1650,10 +1621,8 @@ class MasterRepo:
                 master.is_active = False
                 session.add(master)
                 await session.commit()
-            try:
+            with suppress(Exception):
                 invalidate_masters_cache()
-            except Exception:
-                pass
             return True
         except Exception as e:
             logger.exception("MasterRepo.delete_master failed for %s: %s", master_id, e)
@@ -1811,10 +1780,8 @@ class MasterRepo:
                 await session.commit()
 
             # Invalidate cache
-            try:
+            with suppress(Exception):
                 invalidate_masters_cache()
-            except Exception:
-                pass
 
             metadata = {
                 "backup_file": backup_file,
@@ -2022,11 +1989,9 @@ class MasterRepo:
                         )
                     )
                 else:
-                    try:
+                    with suppress(Exception):
                         # row.duration_minutes is Optional[int]; safe to assign None
                         row.duration_minutes = minutes
-                    except Exception:
-                        pass
                 await session.commit()
             return True
         except Exception as e:
@@ -2768,7 +2733,6 @@ async def get_master_stats_summary(master_telegram_id: int, *, days: int = 7) ->
     Returns a dict with keys: total_bookings, completed_bookings, no_shows, next_booking_time
     """
     try:
-        local_tz = get_local_tz() or UTC
         try:
             resolved_mid = await MasterRepo.resolve_master_id(int(master_telegram_id))
         except Exception:
@@ -2871,21 +2835,16 @@ async def get_work_windows_for_day(
 
         Falls back to 09:00–18:00 if constants are missing/invalid.
         """
-        try:
+        with suppress(Exception):
             start_h = int(DEFAULT_DAY_START_HOUR)
             end_h = int(DEFAULT_DAY_END_HOUR)
             if 0 <= start_h < 24 and 0 < end_h <= 24 and start_h < end_h:
                 return [(_time(hour=start_h), _time(hour=end_h))]
-        except Exception:
-            pass
         return [(_time(hour=9), _time(hour=18))]
 
     try:
         # Normalize target_date to a date object
-        if isinstance(target_date, datetime):
-            td = target_date.date()
-        else:
-            td = target_date
+        td = target_date.date() if isinstance(target_date, datetime) else target_date
         # Use relational tables only: check per-date exceptions first, then
         # weekly schedules (respecting `is_day_off`), and finally default
         # working hours. We no longer read `master_profiles.bio` for schedules.
@@ -2911,14 +2870,12 @@ async def get_work_windows_for_day(
             if exc_rows:
                 # If any exception row is a sentinel off-day (start==end==00:00 or reason=='off'), treat as day off
                 for st, et, reason in exc_rows:
-                    try:
+                    with suppress(Exception):
                         if (
                             format_slot_label(st, fmt="%H:%M") == "00:00"
                             and format_slot_label(et, fmt="%H:%M") == "00:00"
                         ) or (reason and str(reason).lower() == "off"):
                             return []
-                    except Exception:
-                        pass
                 # Otherwise, return explicit exception windows
                 windows = []
                 for st, et, _ in exc_rows:

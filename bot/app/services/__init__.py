@@ -5,7 +5,7 @@ We now delegate directly to the modular booking package.
 """
 
 import importlib as _il
-from typing import Any, Optional
+from typing import Any
 from types import ModuleType
 
 
