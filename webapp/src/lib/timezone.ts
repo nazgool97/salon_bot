@@ -65,7 +65,7 @@ export function formatISO(iso: string | Date | number | null | undefined, patter
     "date-short": { day: "2-digit", month: "2-digit", year: "numeric" },
     "date-long": { day: "numeric", month: "long", year: "numeric" },
     "time-short": { hour: "2-digit", minute: "2-digit" },
-    "time-long": { hour: "2-digit", minute: "2-digit", second: "2-digit" },
+    "time-long": { hour: "2-digit", minute: "2-digit" },
     "datetime-short": { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" },
     "datetime-long": { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" },
   };

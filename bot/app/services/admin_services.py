@@ -46,11 +46,47 @@ def validate_contact_phone(value: str) -> tuple[str | None, str | None]:
 
 def validate_instagram_handle(value: str) -> tuple[str | None, str | None]:
     """Validate Instagram handle input coming from admin wizard forms."""
-    handle = value.strip().lstrip("@")
-    if not handle:
+    # Accept either plain handles (with or without leading '@') or full
+    # Instagram URLs. We normalize and return a full https://instagram.com/<user>
+    # URL on success so the contacts rendering can use it directly as an href.
+    if not value:
         return None, None
-    if re.fullmatch(r"[A-Za-z0-9._]{2,30}", handle) and not (".." in handle or handle.startswith(".") or handle.endswith(".")):
-        return handle, None
+    v = value.strip()
+    if not v:
+        return None, None
+
+    # Try to detect URLs and extract username part when present.
+    username = None
+    try:
+        from urllib.parse import urlparse
+
+        # If user pasted a URL without scheme (e.g. "www.instagram.com/..."),
+        # prepend https:// so urlparse parses netloc.
+        maybe = v
+        if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", maybe) and (maybe.startswith("www.") or "instagram" in maybe):
+            maybe = "https://" + maybe
+        parsed = urlparse(maybe)
+        netloc = (parsed.netloc or "").lower()
+        if "instagram" in netloc:
+            # path like '/username/' — take first non-empty segment
+            parts = [p for p in (parsed.path or "").split("/") if p]
+            if parts:
+                username = parts[0]
+    except Exception:
+        username = None
+
+    # If we extracted a username from a URL, validate it and return full URL
+    if username:
+        handle = username.lstrip("@")
+        if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (".." in handle or handle.startswith(".") or handle.endswith(".")):
+            return f"https://instagram.com/{handle}", None
+        return None, "invalid_instagram"
+
+    # Fallback: treat input as a raw handle (possibly starting with @)
+    handle = v.lstrip("@")
+    if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle) and not (".." in handle or handle.startswith(".") or handle.endswith(".")):
+        return f"https://instagram.com/{handle}", None
+
     return None, "invalid_instagram"
 
 

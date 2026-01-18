@@ -70,18 +70,19 @@ a { color: inherit; text-decoration: none; }
   position: relative;
   max-width: 720px;
   margin: 0 auto;
-  padding: 20px 18px 28px;
+  padding: 12px 12px 16px;
 }
 
 .tma-hero {
-  padding: 10px 6px 22px;
+  padding: 0 6px 8px; /* remove top padding to raise salon title */
+  margin-top: -8px; /* lift hero upwards */
   color: var(--t-text);
   font-family: inherit;
 }
 
 /* Unified hero styling: consistent spacing, color and font across hubs/menus */
-.tma-hero .tma-chip, .tma-hero .tma-chip-ghost { margin-bottom: 18px; }
-.tma-hero h1 { margin: 6px 0 8px; font-size: 28px; letter-spacing: -0.02em; }
+.tma-hero .tma-chip, .tma-hero .tma-chip-ghost { margin-bottom: 12px; }
+.tma-hero h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.02em; }
 .tma-hero .tma-subtle { color: var(--t-subtle); margin: 0; }
 .tma-hero .tma-hero-subtle { font-size: 1.15em; font-weight: 600; }
 
@@ -138,11 +139,11 @@ a { color: inherit; text-decoration: none; }
   background: var(--t-card);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-radius: 20px;
-  padding: 18px;
+  border-radius: 16px;
+  padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: var(--t-shadow);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
 /* Compact variant keeps spacing but inherits glass style */
@@ -157,21 +158,23 @@ a { color: inherit; text-decoration: none; }
 }
 .tma-pop { background: linear-gradient(135deg, color-mix(in srgb, var(--t-bg) 40%, #0f233a) 0%, color-mix(in srgb, var(--t-bg) 40%, #12314c) 100%); color: var(--t-text); }
 
-.tma-success button { width: 100%; margin-top: 14px; }
+.tma-success { margin-top: -30px; padding: 12px; min-height: auto; }
+.tma-success button { width: 100%; margin-top: 12px; }
 .tma-checkmark { position: relative; width: 82px; height: 82px; margin: 0 auto 16px; }
-.tma-checkmark-circle { position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(135deg, #28d6c8, #6ae0ff); box-shadow: 0 18px 40px rgba(42, 214, 200, 0.32); animation: pop-in 420ms ease; }
+.tma-checkmark { position: relative; width: 64px; height: 64px; margin: 0 auto 10px; }
+.tma-checkmark-circle { position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(135deg, #28d6c8, #6ae0ff); box-shadow: 0 12px 28px rgba(42, 214, 200, 0.28); animation: pop-in 360ms ease; }
 .tma-checkmark-stem, .tma-checkmark-kick {
   position: absolute;
-  height: 10px;
+  height: 8px;
   background: #0b2335;
-  border-radius: 6px;
-  top: 44px;
-  left: 24px;
+  border-radius: 5px;
+  top: 34px;
+  left: 18px;
   transform-origin: left center;
-  animation: draw 320ms ease forwards;
+  animation: draw 300ms ease forwards;
 }
-.tma-checkmark-stem { width: 18px; transform: rotate(40deg) scaleX(0); animation-delay: 140ms; }
-.tma-checkmark-kick { width: 38px; transform: rotate(-40deg) scaleX(0); left: 34px; animation-delay: 220ms; }
+.tma-checkmark-stem { width: 14px; transform: rotate(40deg) scaleX(0); animation-delay: 120ms; }
+.tma-checkmark-kick { width: 30px; transform: rotate(-40deg) scaleX(0); left: 26px; animation-delay: 200ms; }
 
 @keyframes pop-in {
   0% { transform: scale(0.6); opacity: 0; }
@@ -184,15 +187,15 @@ a { color: inherit; text-decoration: none; }
   100% { transform: scaleX(1); opacity: 1; }
 }
 
-.tma-section-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
-.tma-section-head h2 { margin: 4px 0; }
+.tma-section-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.tma-section-head h2 { margin: 2px 0; font-size: 1.05em; }
 
 .tma-pill-label { color: #4f6789; margin: 0; font-size: 13px; }
 
 .tma-summary { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
 .tma-summary span { background: var(--t-surface-ghost); padding: 6px 10px; border-radius: 10px; font-size: 13px; color: var(--t-text); }
 
-.tma-stack { display: flex; flex-direction: column; gap: 14px; }
+.tma-stack { display: flex; flex-direction: column; gap: 10px; }
 
 .tma-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .tma-grid-time { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
@@ -510,6 +513,14 @@ a { color: inherit; text-decoration: none; }
   margin: 0 -6px; /* widen preview background slightly inside cards */
 }
 
+/* Increase readable font sizes inside the compact preview/booking card */
+.tma-mini-card {
+  font-size: 15px; /* base for card content */
+}
+.tma-mini-card .u-font-13 { font-size: 14px; }
+.tma-mini-card .u-font-14 { font-size: 14px; }
+.tma-mini-card .u-font-16 { font-size: 14px; }
+
 .tma-empty {
   padding: 14px;
   border-radius: 12px;
@@ -757,8 +768,8 @@ a { color: inherit; text-decoration: none; }
 .tma-chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .tma-chip-row--spaced { margin-bottom: 16px; }
 
-.tma-progress-header { width: 100%; display: flex; gap: 8px; margin-bottom: 16px; padding-inline: 8px; }
-.tma-progress-bar { height: 6px; flex: 1; border-radius: 999px; transition: all 300ms; background: rgba(255, 255, 255, 0.08); }
+.tma-progress-header { width: 100%; display: flex; gap: 6px; margin-bottom: 8px; padding-inline: 6px; }
+.tma-progress-bar { height: 6px; flex: 1; border-radius: 999px; transition: all 220ms; background: rgba(255, 255, 255, 0.08); }
 .tma-progress-bar--active { background: var(--t-accent); }
 
 .tma-tile-row { display: flex; justify-content: space-between; align-items: center; }

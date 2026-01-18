@@ -3,7 +3,7 @@ import logging
 from datetime import date, datetime, timedelta, time as dt_time
 from typing import Any, Literal, Protocol, Sequence, runtime_checkable
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Keyboards are presentation-only. Handlers must prefetch data (available_days,
@@ -683,6 +683,19 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
         builder = InlineKeyboardBuilder()
         lang = await _resolve_lang(telegram_id)
         _t = lambda key, default: _localize(key, lang, default)
+
+        # Optional Telegram Mini App entry (shown only when enabled and URL is configured)
+        try:
+            from bot.app.telegram.common.webapp_entry import WEBAPP_URL
+            from bot.app.services.shared_services import is_telegram_miniapp_enabled
+
+            if WEBAPP_URL and await is_telegram_miniapp_enabled():
+                builder.button(
+                    text=_t("miniapp_button", "\ud83d\udcf1 Mini app"),
+                    web_app=WebAppInfo(url=f"{WEBAPP_URL}?entry=booking"),
+                )
+        except Exception:
+            logger.debug("Mini app button skipped (missing URL or disabled)", exc_info=True)
 
         builder.button(text=_t("book", "Записатися"), callback_data=pack_cb(ClientMenuCB, act="booking_service"))
         # New entry: browse by master

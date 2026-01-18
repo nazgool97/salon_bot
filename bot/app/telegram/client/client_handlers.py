@@ -371,21 +371,6 @@ async def cmd_start(message: Message, state: FSMContext, locale: str) -> None:
     logger.debug("Команда /start вызвана для пользователя %s", user_id)
     await state.clear()
     
-    # Offer Mini App entry as a first-class action (only if URL configured and feature enabled)
-    try:
-        from bot.app.telegram.common.webapp_entry import WEBAPP_URL
-        from bot.app.services.shared_services import is_telegram_miniapp_enabled
-
-        if WEBAPP_URL and await is_telegram_miniapp_enabled():
-            webapp_kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Book Now", web_app=WebAppInfo(url=f"{WEBAPP_URL}?entry=booking"))]]
-            )
-            await message.answer("Welcome! Click to book your appointment.", reply_markup=webapp_kb)
-        else:
-            logger.info("WEBAPP_URL not set or MiniApp disabled; skipping WebApp button")
-    except Exception:
-        logger.warning("Failed to send webapp button", exc_info=True)
-
     logger.debug("show_main_menu вызвана для user %s", user_id)
     await show_main_menu(message, state, prefer_edit=False)
     # Let router-level error handlers process unexpected exceptions

@@ -134,7 +134,7 @@ function TimeWheel({
   onPick: (origSlot: string, display: string) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const ITEM_HEIGHT = 50;
+  const ITEM_HEIGHT = 44;
 
   // Normalize slots once per change to keep render cheap (no try/catch in loops).
   const entries = useMemo(() => {
@@ -1144,34 +1144,38 @@ export default function BookingWizard() {
     }
   }, [step, queryClient, refetchSlots]);
 
-  // Best-effort: cancel hold when Mini App is hidden/closed
+  // Best-effort: cancel hold only when page is being closed/navigated away (not just backgrounded)
   useEffect(() => {
-    const onHidden = () => {
-      if (holdBookingId) {
-        cancelBooking(holdBookingId).catch(() => {});
-        resetHold();
-      }
+    const sendCancellation = () => {
+      if (!holdBookingId) return;
+      try {
+        const url = "/api/cancel";
+        const payload = JSON.stringify({ booking_id: holdBookingId });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url, payload);
+        } else {
+          fetch(url, { method: "POST", body: payload, credentials: "same-origin", headers: { "Content-Type": "application/json" } });
+        }
+      } catch (err) {}
     };
+
+    const onPageHide = (event: PageTransitionEvent | Event) => {
+      // Ignore backgrounding (visibilitychange) to keep the hold and countdown alive when Telegram is minimized
+      if ((event as PageTransitionEvent).persisted) return;
+      sendCancellation();
+    };
+
     const onBeforeUnload = () => {
-      if (holdBookingId) {
-        try {
-          const url = "/api/cancel";
-          const payload = JSON.stringify({ booking_id: holdBookingId });
-          if (navigator.sendBeacon) {
-            navigator.sendBeacon(url, payload);
-          } else {
-            fetch(url, { method: "POST", body: payload, credentials: "same-origin", headers: { "Content-Type": "application/json" } });
-          }
-        } catch (err) {}
-      }
+      sendCancellation();
     };
-    document.addEventListener("visibilitychange", onHidden);
+
+    window.addEventListener("pagehide", onPageHide);
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
-      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [holdBookingId, resetHold]);
+  }, [holdBookingId]);
 
   // Countdown for hold expiry — forces re-render each second and auto-refreshes slots when expired
   useEffect(() => {
@@ -1506,15 +1510,15 @@ export default function BookingWizard() {
       <div className="tma-shell">
         <div className="tma-bg"></div>
         <div className="tma-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: 24 }}>
-          <div className="tma-card tma-pop tma-success" style={{ width: '100%', maxWidth: 720, minHeight: '64vh', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: 28 }}>
-            <div>
-              <div className="tma-checkmark" aria-hidden="true" style={{ margin: '8px auto 14px' }}>
-                <span className="tma-checkmark-circle" />
-                <span className="tma-checkmark-stem" />
-                <span className="tma-checkmark-kick" />
-              </div>
+          <div className="tma-card tma-pop tma-success" style={{ width: '100%', maxWidth: 720, minHeight: '52vh', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', padding: 20 }}>
+              <div>
+                <div className="tma-checkmark" aria-hidden="true" style={{ margin: '6px auto 10px' }}>
+                  <span className="tma-checkmark-circle" />
+                  <span className="tma-checkmark-stem" />
+                  <span className="tma-checkmark-kick" />
+                </div>
 
-              <h2 style={{ marginTop: 6, marginBottom: 8, fontSize: 22, textAlign: 'center' }}>{t("success_heading")}</h2>
+                <h2 style={{ marginTop: 4, marginBottom: 6, fontSize: 20, textAlign: 'center' }}>{t("success_heading")}</h2>
               {remindersEnabled && (
                 <p className="tma-subtle" style={{ marginBottom: 12, textAlign: 'center' }}>
                   {String(t("reminder_message")).replace("%s", String(leadLabel))}
