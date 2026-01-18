@@ -13,7 +13,6 @@ from collections.abc import Mapping
 
 from sqlalchemy import func, select, String, and_
 from sqlalchemy.sql.expression import ColumnElement
-from sqlalchemy.sql.elements import BinaryExpression
 
 
 from bot.app.domain.models import Booking, Master, Service, User, BookingStatus, REVENUE_STATUSES
