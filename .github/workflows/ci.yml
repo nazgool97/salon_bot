@@ -22,10 +22,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install ruff mypy
+          pip install ruff mypy bandit pip-audit black isort
 
+      # --- Сборка и зависимости ---
       - name: Syntax check (compileall)
         run: python -m compileall bot
+
+      - name: Dependency check
+        run: pip check
+
+      # --- Качество кода ---
+      - name: Format check (Black)
+        run: black --check bot
+
+      - name: Import order check (isort)
+        run: isort --check-only bot
 
       - name: Format check (ruff fmt --check)
         run: ruff format --check bot
@@ -33,17 +44,20 @@ jobs:
 
       - name: Lint (ruff check)
         run: ruff check bot
-        continue-on-error: true
 
-      - name: Lint (ruff check)
-        run: ruff check bot
-
+      # --- Типизация ---
       - name: Type check (mypy)
         run: mypy bot
 
+      # --- Безопасность ---
+      - name: Security check (Bandit)
+        run: bandit -r bot
+
+      - name: Security check (Dependencies)
+        run: pip-audit
+
       - name: Skip tests (as requested)
-        run: |
-          echo 'CI configured: skipping tests as requested.'
+        run: echo 'CI configured: skipping tests as requested.'
 
   deploy-placeholder:
     if: github.ref == 'refs/heads/main'
@@ -54,5 +68,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Deploy placeholder
-        run: |
-          echo "Deploy step placeholder — configure real deployment steps and secrets"
+        run: echo "Deploy step placeholder — configure real deployment steps and secrets"
