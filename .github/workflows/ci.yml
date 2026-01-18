@@ -1,11 +1,53 @@
-name: disabled-ci
+name: CI (no tests)
 
 on:
-  workflow_dispatch:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
 
 jobs:
-  noop:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Disabled
-        run: echo "CI workflow disabled locally"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install ruff mypy
+
+      - name: Syntax check (compileall)
+        run: python -m compileall bot
+
+      - name: Format check (ruff fmt --check)
+        run: ruff format --check bot
+
+      - name: Lint (ruff check)
+        run: ruff check bot
+
+      - name: Type check (mypy)
+        run: mypy bot
+
+      - name: Skip tests (as requested)
+        run: |
+          echo 'CI configured: skipping tests as requested.'
+
+  deploy-placeholder:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy placeholder
+        run: |
+          echo "Deploy step placeholder — configure real deployment steps and secrets"
