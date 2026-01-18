@@ -36,7 +36,7 @@ else:
             pass
 
 TelegramAPIError: type[BaseException] = TelegramAPIErrorType
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, time as dt_time
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 
@@ -1099,7 +1099,7 @@ def local_now() -> datetime:
 
 
 def format_slot_label(
-    slot: datetime | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None
+    slot: datetime | dt_time | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None
 ) -> str:
     """Format a single UI time slot consistently across the app.
 

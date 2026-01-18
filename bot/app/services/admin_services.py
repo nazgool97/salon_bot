@@ -884,7 +884,7 @@ async def generate_bookings_csv(
                     io.TextIOWrapper(tmp_bytes, encoding="utf-8", newline="")
                 )
                 writer_handle: IO[str] = text_wrapper
-                tmp_obj = tmp_bytes
+                tmp_obj: IO[bytes] | IO[str] = tmp_bytes
             else:
                 tmp_file = stack.enter_context(
                     tempfile.NamedTemporaryFile(
