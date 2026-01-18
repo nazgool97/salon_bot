@@ -3055,11 +3055,12 @@ async def pay_online(cb: CallbackQuery, callback_data: Any, locale: str) -> None
         async with get_session() as session:
             b = await session.get(Booking, booking_id)
             if b:
-                setattr(b, "original_price_cents", int(base_price_cents))
-                setattr(b, "final_price_cents", int(discounted_cents))
-                setattr(b, "discount_amount_cents", int(discount_amount_cents))
+                b_any: Any = b
+                b_any.original_price_cents = int(base_price_cents)
+                b_any.final_price_cents = int(discounted_cents)
+                b_any.discount_amount_cents = int(discount_amount_cents)
                 if currency:
-                    setattr(b, "currency", currency)
+                    b_any.currency = currency
                 await session.commit()
                 await session.refresh(b)
                 booking = b
