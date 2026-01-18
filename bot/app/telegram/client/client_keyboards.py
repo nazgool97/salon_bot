@@ -608,11 +608,11 @@ async def get_calendar_keyboard(
     try:
         weekdays = _tr("weekday_short", lang) if _tr is not None else None
         if isinstance(weekdays, list) and weekdays:
-            wd = weekdays
+            wd: list[str] = list(weekdays)
         else:
-            wd = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+            wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     except Exception:
-        wd = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+        wd = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     buttons.append(
         [InlineKeyboardButton(text=n, callback_data=pack_cb(NavCB, act="noop")) for n in wd]
     )
@@ -711,7 +711,9 @@ async def get_service_menu_multi(
     return builder.as_markup()
 
 
-async def get_master_keyboard(service_id: str, masters: list | None) -> InlineKeyboardMarkup:
+async def get_master_keyboard(
+    service_id: str, masters: list[_HasMasterAttrs] | None
+) -> InlineKeyboardMarkup:
     """Build master selection keyboard from pre-fetched masters list.
 
     Args:
@@ -934,18 +936,15 @@ async def get_main_menu(telegram_id: int) -> InlineKeyboardMarkup:
         return InlineKeyboardBuilder().as_markup()
 
 
-def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
-    """Build a unified bookings dashboard keyboard for client/master/admin.
+def build_bookings_dashboard_kb(
+    role: str, meta: dict[str, Any] | None, lang: str = "uk"
+) -> InlineKeyboardMarkup:
+    """Build a unified bookings dashboard keyboard for client/master/admin."""
 
-    This function was moved from shared_services to keep UI builders in
-    telegram-specific modules. It intentionally does lazy imports to avoid
-    import cycles with services.
-    """
     try:
         from aiogram.utils.keyboard import InlineKeyboardBuilder
         from bot.app.telegram.common.callbacks import pack_cb, NavCB
 
-        # Import role-specific booking callbacks lazily to avoid cycles
         if str(role).lower() == "client":
             from bot.app.telegram.common.callbacks import MyBookingsCB as RoleCB
         elif str(role).lower() == "master":
@@ -955,8 +954,6 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
 
         kb = InlineKeyboardBuilder()
 
-        # Prepare concise labels (no numeric indicators).
-        # Use short canonical labels; translations may provide localized equivalents
         upcoming_label = _localize("upcoming", lang, "Upcoming")
         done_label = _localize("master_completed", lang, "Done")
         cancelled_label = _localize("cancelled", lang, "Cancelled")
@@ -967,34 +964,28 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
         def mark(lbl: str, tab: str) -> str:
             return f"✅ {lbl}" if tab == mode else lbl
 
-        # For client role we render tabs at the BOTTOM alongside Back so UX is:
-        # - upcoming mode: show upcoming list; bottom row = [Done, Back]
-        # - completed mode: show completed+cancelled; top pagination row appears; bottom row = [Upcoming, Back]
         if str(role).lower() == "client":
-            # Pagination (render at top for completed mode)
             try:
                 page = int(meta.get("page", 1) if meta else 1)
                 total_pages = int(meta.get("total_pages", 1) if meta else 1)
-                nav_buttons: list[InlineKeyboardButton] = []
-                # Allow pagination for both upcoming and completed modes
+                nav_buttons_client: list[InlineKeyboardButton] = []
                 if page > 1:
-                    nav_buttons.append(
+                    nav_buttons_client.append(
                         InlineKeyboardButton(
                             text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)
                         )
                     )
                 if page < max(1, int(total_pages or 1)):
-                    nav_buttons.append(
+                    nav_buttons_client.append(
                         InlineKeyboardButton(
                             text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)
                         )
                     )
-                if nav_buttons:
-                    kb.row(*nav_buttons)
+                if nav_buttons_client:
+                    kb.row(*nav_buttons_client)
             except Exception:
                 logger.exception("get_masters_catalog_keyboard: failed to extract master id/name")
 
-            # Back button callback (client-specific)
             try:
                 if mode == "completed":
                     back_cb = pack_cb(RoleCB, mode="upcoming", page=1)
@@ -1003,15 +994,12 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
             except Exception:
                 back_cb = pack_cb(NavCB, act="role_root")
 
-            # Bottom row: two buttons
             bottom_row: list[InlineKeyboardButton] = []
             try:
                 if mode == "upcoming":
-                    # show Done + Back
                     done_cb = pack_cb(RoleCB, mode="completed", page=1)
                     bottom_row.append(InlineKeyboardButton(text=done_label, callback_data=done_cb))
                 else:
-                    # completed mode: show Upcoming + Back
                     upcoming_cb = pack_cb(RoleCB, mode="upcoming", page=1)
                     bottom_row.append(
                         InlineKeyboardButton(text=upcoming_label, callback_data=upcoming_cb)
@@ -1019,7 +1007,6 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
             except Exception:
                 pass
 
-            # Back on the right
             bottom_row.append(
                 InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb)
             )
@@ -1027,10 +1014,8 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
                 kb.row(*bottom_row)
             return kb.as_markup()
 
-        # Non-client roles: keep existing top-tabs + pagination behavior
         client_done_mode = "completed"
         master_done_mode = "done"
-        # masters/admins see both upcoming and done tabs
         kb.button(
             text=mark(upcoming_label, "upcoming"),
             callback_data=pack_cb(RoleCB, mode="upcoming")
@@ -1056,51 +1041,42 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
         if str(role).lower() != "client":
             kb.button(
                 text=mark(cancelled_label, "cancelled"),
-                callback_data=pack_cb(RoleCB, mode="cancelled", page=1)
-                if str(role).lower() == "client"
-                else pack_cb(RoleCB, mode="cancelled"),
+                callback_data=pack_cb(RoleCB, mode="cancelled"),
             )
             kb.button(
                 text=mark(noshow_label, "no_show"),
-                callback_data=pack_cb(RoleCB, mode="no_show", page=1)
-                if str(role).lower() == "client"
-                else pack_cb(RoleCB, mode="no_show"),
+                callback_data=pack_cb(RoleCB, mode="no_show"),
             )
 
-        kb.adjust(4)  # Adjust the 4 tabs
+        kb.adjust(4)
 
-        # Pagination row for non-client roles
         try:
             page = int(meta.get("page", 1) if meta else 1)
             total_pages = int(meta.get("total_pages", 1) if meta else 1)
-            nav_buttons: list[InlineKeyboardButton] = []
+            nav_buttons_nonclient: list[InlineKeyboardButton] = []
             if page > 1:
-                nav_buttons.append(
+                nav_buttons_nonclient.append(
                     InlineKeyboardButton(
                         text="⬅️", callback_data=pack_cb(RoleCB, mode=mode, page=page - 1)
                     )
                 )
             if page < max(1, int(total_pages or 1)):
-                nav_buttons.append(
+                nav_buttons_nonclient.append(
                     InlineKeyboardButton(
                         text="➡️", callback_data=pack_cb(RoleCB, mode=mode, page=page + 1)
                     )
                 )
-            if nav_buttons:
-                kb.row(*nav_buttons)  # Add pagination row
+            if nav_buttons_nonclient:
+                kb.row(*nav_buttons_nonclient)
         except Exception:
             pass
 
-        # Back button for non-client roles
         try:
             if str(role).lower() == "master":
                 from bot.app.telegram.common.callbacks import MasterMenuCB
 
                 back_cb = pack_cb(MasterMenuCB, act="menu")
             elif str(role).lower() == "admin":
-                # For admin dashboards prefer an explicit target. If a master
-                # filter is present, Back should return to that master's card;
-                # otherwise return to Admin Panel.
                 try:
                     from bot.app.telegram.common.callbacks import AdminMenuCB, AdminMasterCardCB
 
@@ -1111,10 +1087,7 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
                 except Exception:
                     back_cb = pack_cb(NavCB, act="back")
             else:
-                if str(role).lower() == "client" and mode == "completed":
-                    back_cb = pack_cb(RoleCB, mode="upcoming", page=1)
-                else:
-                    back_cb = pack_cb(NavCB, act="root")
+                back_cb = pack_cb(NavCB, act="root")
         except Exception:
             back_cb = pack_cb(NavCB, act="role_root")
         kb.row(InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb))
@@ -1122,10 +1095,6 @@ def build_bookings_dashboard_kb(role: str, meta: dict | None, lang: str = "uk"):
     except Exception as e:
         logger.exception("build_bookings_dashboard_kb failed: %s", e)
         try:
-            # Avoid importing InlineKeyboardButton here to prevent it being
-            # treated as a local variable in the function scope (which causes
-            # UnboundLocalError when referenced earlier). Use the module-level
-            # InlineKeyboardButton imported at top-level instead.
             from aiogram.types import InlineKeyboardMarkup
             from bot.app.telegram.common.callbacks import pack_cb, NavCB
 

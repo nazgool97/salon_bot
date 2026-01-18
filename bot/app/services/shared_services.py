@@ -1099,37 +1099,40 @@ def local_now() -> datetime:
 
 
 def format_slot_label(
-    slot: datetime | dt_time | None, fmt: str = "%H:%M", tz: ZoneInfo | str | None = None
+    slot: datetime | dt_time | None,
+    fmt: str = "%H:%M",
+    tz: ZoneInfo | str | None = None,
 ) -> str:
-    """Format a single UI time slot consistently across the app.
-
-    - `slot` may be a `datetime` or `time`-like object; when `None` returns empty string.
-    - `fmt` defaults to ``"%H:%M"`` and can be overridden for other layouts.
-    - `tz` may be a `zoneinfo.ZoneInfo` or a string timezone name; when provided,
-      the slot will be converted to that timezone before formatting.
-
-    This consolidates UI slot rendering (buttons, compact pickers) so the
-    format is applied uniformly and can centralize future localization.
-    """
+    """Format a single UI time slot consistently across the app."""
     if slot is None:
         return ""
+
     try:
-        # Resolve timezone preference using a compact conditional
-        lt = get_local_tz() if tz is None else tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
-        # If slot is a datetime with tzinfo, convert; if it's time-only, just format
-        if hasattr(slot, "tzinfo") and slot.tzinfo is not None:
-            try:
-                return slot.astimezone(lt).strftime(fmt)
-            except Exception:
-                return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
-        # Fallback formatting for naive datetimes or time objects
-        return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
+        # Определяем локальную таймзону
+        if tz is None:
+            lt = get_local_tz()
+        elif isinstance(tz, ZoneInfo):
+            lt = tz
+        else:
+            lt = ZoneInfo(str(tz))
+
+        if isinstance(slot, datetime):
+            if slot.tzinfo is not None:
+                try:
+                    return slot.astimezone(lt).strftime(fmt)
+                except Exception:
+                    return slot.strftime(fmt)
+            return slot.strftime(fmt)
+
+        if hasattr(slot, "strftime"):
+            return slot.strftime(fmt)
+
+        return str(slot)
+
     except Exception:
-        try:
-            return slot.strftime(fmt) if hasattr(slot, "strftime") else str(slot)
-        except Exception:
-            logger.exception("format_slot_label failed for slot=%s", slot)
-            return str(slot)
+        logger.exception("format_slot_label failed for slot=%s", slot)
+        return str(slot)
+
 
 
 def ensure_utc(dt: datetime | None) -> datetime | None:
