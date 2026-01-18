@@ -141,10 +141,7 @@ def admin_masters_list_kb(
     # Master buttons: one per row
     iterable = None
     try:
-        if hasattr(masters, "items"):
-            iterable = list(masters.items())
-        else:
-            iterable = list(masters)
+        iterable = list(masters.items()) if hasattr(masters, "items") else list(masters)
     except Exception:
         iterable = []
 

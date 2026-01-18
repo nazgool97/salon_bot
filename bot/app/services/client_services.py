@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from contextlib import suppress
 from datetime import datetime, time as dtime, timedelta, UTC
 from typing import Any, TypedDict
 from collections.abc import Iterable, Sequence
@@ -821,10 +822,8 @@ class BookingRepo:
             b.starts_at = new_starts_at
             b.ends_at = new_starts_at + duration
 
-            try:
+            with suppress(Exception):
                 b.cash_hold_expires_at = None
-            except Exception:
-                pass
             await session.commit()
             return True
 
@@ -990,10 +989,10 @@ class BookingRepo:
             old = status
             b.status = BookingStatus.PENDING_PAYMENT
             # Extend hold window to give the user time to finish payment/confirmation
-            try:
-                b.cash_hold_expires_at = now_utc + timedelta(minutes=max(1, int(hold_min or 0)))
-            except Exception:
-                pass
+            with suppress(Exception):
+                b.cash_hold_expires_at = now_utc + timedelta(
+                    minutes=max(1, int(hold_min or 0))
+                )
             try:
                 hist = BookingStatusHistory(
                     booking_id=b.id, old_status=old, new_status=BookingStatus.PENDING_PAYMENT
@@ -1707,26 +1706,20 @@ class UserRepo:
             if user:
                 changed = False
                 if username and getattr(user, "username", None) != username:
-                    try:
+                    with suppress(Exception):
                         user.username = username
                         changed = True
-                    except Exception:
-                        pass
                 if name and getattr(user, "name", None) != name:
-                    try:
+                    with suppress(Exception):
                         user.name = name
                         changed = True
-                    except Exception:
-                        pass
                 if changed:
                     await session.commit()
                 return user
 
             new_user = User(telegram_id=telegram_id, name=name or (username or str(telegram_id)))
-            try:
+            with suppress(Exception):
                 new_user.username = username
-            except Exception:
-                pass
             session.add(new_user)
             await session.commit()
             await session.refresh(new_user)
@@ -1742,10 +1735,8 @@ class UserRepo:
                 user = User(telegram_id=telegram_id, name=str(telegram_id), locale=locale)
                 session.add(user)
             else:
-                try:
+                with suppress(Exception):
                     user.locale = locale
-                except Exception:
-                    pass
             await session.commit()
         return True
 
@@ -2286,10 +2277,8 @@ async def create_booking(
                 # Integrity errors during flush (e.g. exclusion constraint violation)
                 # leave the session in a rolled-back state and surface a friendly
                 # `slot_unavailable` error so callers can handle it.
-                try:
+                with suppress(Exception):
                     await session.rollback()
-                except Exception:
-                    pass
                 logger.info(
                     "IntegrityError on flush while creating booking (slot likely taken): %s", ie
                 )
@@ -2587,8 +2576,7 @@ async def create_composite_booking(
                 select(Service.id, Service.price_cents).where(Service.id.in_(list(service_ids)))
             )
             svc_map = {str(r[0]): int(r[1] or 0) for r in svc_rows.all()}
-            pos = 0
-            for sid in service_ids:
+            for pos, sid in enumerate(service_ids):
                 item_price = svc_map.get(str(sid), 0)
                 session.add(
                     BookingItem(
@@ -2598,7 +2586,6 @@ async def create_composite_booking(
                         position=pos,
                     )
                 )
-                pos += 1
             try:
                 await session.commit()
             except IntegrityError as ie:
@@ -2704,10 +2691,8 @@ async def book_slot(
             return {"ok": False, "error": code}
 
         # Transition to PENDING_PAYMENT optimistically
-        try:
+        with suppress(Exception):
             await BookingRepo.set_pending_payment(int(getattr(booking, "id", 0)))
-        except Exception:
-            pass
 
         master_name = await MasterRepo.get_master_name(int(master_id))
         try:
@@ -2955,12 +2940,10 @@ async def cancel_client_booking(
                 recipients: list[int] = []
                 master_rec = getattr(b, "master_id", None)
                 if master_rec is not None:
-                    try:
+                    with suppress(Exception):
                         recipients.append(int(master_rec))
-                    except Exception:
-                        # ignore invalid master id
-                        pass
-                recipients.extend(get_admin_ids())
+                with suppress(Exception):
+                    recipients.extend(get_admin_ids())
                 # Only send if we have at least one valid recipient
                 if recipients:
                     from bot.app.core.notifications import send_booking_notification
@@ -3282,14 +3265,10 @@ async def _send_reschedule_notifications(
         except Exception:
             master_rec = None
         if master_rec is not None:
-            try:
+            with suppress(Exception):
                 recipients.append(int(master_rec))
-            except Exception:
-                pass
-        try:
+        with suppress(Exception):
             recipients.extend(get_admin_ids())
-        except Exception:
-            pass
 
         if recipients:
             bot = Bot(BOT_TOKEN)
@@ -3322,10 +3301,8 @@ async def _send_reschedule_notifications(
                             "Failed to send client confirmation after reschedule for %s", booking_id
                         )
 
-                try:
+                with suppress(Exception):
                     await bot.session.close()
-                except Exception:
-                    pass
             except Exception:
                 logger.exception("reschedule: notification block failed for %s", booking_id)
     except Exception:
@@ -3490,16 +3467,12 @@ async def process_booking_finalization(
             invoice_url = str(link) if link is not None else None
         except Exception:
             logger.exception("create_invoice_link failed for booking=%s", booking_id)
-            try:
+            with suppress(Exception):
                 await bot.session.close()
-            except Exception:
-                pass
             return {"ok": False, "error": "invoice_failed", "booking_id": None}
 
-        try:
+        with suppress(Exception):
             await bot.session.close()
-        except Exception:
-            pass
 
         # Echo the freshest computed pricing even if the DB snapshot failed to persist.
         final_out = (
@@ -3554,14 +3527,10 @@ async def _notify_after_cash_confirmation(
         recipients: list[int] = []
         master_rec = getattr(booking, "master_id", None) if booking else None
         if master_rec is not None:
-            try:
+            with suppress(Exception):
                 recipients.append(int(master_rec))
-            except Exception:
-                pass
-        try:
+        with suppress(Exception):
             recipients.extend(get_admin_ids())
-        except Exception:
-            pass
         if not recipients:
             return
         bot = Bot(BOT_TOKEN)
@@ -3582,10 +3551,8 @@ async def _notify_after_cash_confirmation(
                 await bot.send_message(chat_id=client_tid, text=body, parse_mode="HTML")
             except Exception:
                 pass
-        try:
+        with suppress(Exception):
             await bot.session.close()
-        except Exception:
-            pass
     except Exception:
         logger.exception("finalize: notification block failed for booking=%s", booking_id)
 

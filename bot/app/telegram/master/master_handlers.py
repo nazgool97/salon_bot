@@ -855,10 +855,8 @@ async def schedule_remove_window(
         logger.exception("schedule_clear_day: failed to normalize day value: %s", e)
         raise
     if day is None or master_id is None:
-        try:
+        with contextlib.suppress(Exception):
             await cb.answer(t("error_retry"), show_alert=True)
-        except Exception:
-            pass
         return
     try:
         # Require value tokens; if missing, instruct user to refresh the day view.

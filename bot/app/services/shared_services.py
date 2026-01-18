@@ -6,6 +6,7 @@ from importlib import import_module
 from typing import Any, TYPE_CHECKING
 from collections.abc import Mapping
 from dataclasses import dataclass
+from contextlib import suppress
 
 
 from sqlalchemy import select
@@ -307,16 +308,13 @@ def get_cancel_keywords(lang: str | None = None) -> set[str]:
         kws: set[str] = set()
         if isinstance(raw, list):
             for kw in raw:
-                try:
-                    if kw:
-                        kws.add(str(kw).strip().lower())
-                except Exception:
+                if not kw:
                     continue
+                with suppress(Exception):
+                    kws.add(str(kw).strip().lower())
         elif raw:
-            try:
+            with suppress(Exception):
                 kws.add(str(raw).strip().lower())
-            except Exception:
-                pass
         if not kws:
             kws = {"cancel"}
         return kws
@@ -724,10 +722,8 @@ async def is_telegram_payments_enabled() -> bool:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
 
         if _PAYMENTS_ENABLED is None or _settings_cache_expired(_PAYMENTS_LAST_CHECKED):
-            try:
+            with suppress(Exception):
                 await load_settings_from_db()
-            except Exception:
-                pass
             val = await SettingsRepo.get_setting("telegram_payments_enabled", None)
             if val is None:
                 val = _env_bool("TELEGRAM_PAYMENTS_ENABLED", True)
@@ -785,10 +781,8 @@ async def is_telegram_miniapp_enabled() -> bool:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
 
         if _MINIAPP_ENABLED is None or _settings_cache_expired(_MINIAPP_LAST_CHECKED):
-            try:
+            with suppress(Exception):
                 await load_settings_from_db()
-            except Exception:
-                pass
             val = await SettingsRepo.get_setting("telegram_miniapp_enabled", None)
             if val is None:
                 val = _env_bool("TELEGRAM_MINIAPP_ENABLED", True)
@@ -886,7 +880,7 @@ def format_money_cents(cents: int | float | None, currency: str | None = None) -
         # Coerce to integer cents; accept float/int/Decimal
         cents_int = 0
         try:
-            if isinstance(cents, Decimal) or isinstance(cents, (int, float)):
+            if isinstance(cents, (Decimal, int, float)):
                 cents_int = int(cents)
             else:
                 cents_int = int(float(cents)) if cents is not None else 0
@@ -1045,7 +1039,7 @@ def _minutes_to_hm(minutes: int) -> str:
     try:
         m = int(minutes)
     except Exception:
-        raise ValueError(f"invalid minutes value: {minutes}")
+        raise ValueError(f"invalid minutes value: {minutes}") from None
     if m < 0 or m >= 24 * 60:
         raise ValueError(f"minutes out of range: {m}")
     h = m // 60
@@ -1112,11 +1106,8 @@ def format_slot_label(
     if slot is None:
         return ""
     try:
-        # Resolve timezone preference
-        if tz is None:
-            lt = get_local_tz()
-        else:
-            lt = tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
+        # Resolve timezone preference using a compact conditional
+        lt = get_local_tz() if tz is None else tz if isinstance(tz, ZoneInfo) else ZoneInfo(str(tz))
         # If slot is a datetime with tzinfo, convert; if it's time-only, just format
         if hasattr(slot, "tzinfo") and slot.tzinfo is not None:
             try:
@@ -1314,7 +1305,8 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     try:
         from bot.app.services.client_services import format_client_booking_row as _client_fmt
     except Exception:
-        _client_fmt = lambda f: f.get("service_name", "")
+        def _client_fmt(f: dict[str, Any]) -> str:
+            return f.get("service_name", "")
 
     try:
         from bot.app.services.master_services import format_master_booking_row as _master_fmt
@@ -1437,7 +1429,8 @@ def format_booking_details_text(
     """
     try:
         _lang = lang or default_language()
-        __ = lambda k: tr(k, lang=_lang)
+        def __(k: str) -> str:
+            return tr(k, lang=_lang)
 
         # Extract fields from either object or dict
         def _get(attr: str, default: Any = None) -> Any:
@@ -1496,12 +1489,10 @@ def format_booking_details_text(
             lines.append(f"{__("date_label")}: <b>{date_str} {time_str}</b>")
         else:
             lines.append(f"{__("date_label")}: <b>{date_str}</b>")
-        try:
+        with suppress(Exception):
             lines.append(
                 f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}"
             )
-        except Exception:
-            pass
         status_str = str(status_raw).lower() if status_raw is not None else ""
         amount_label = (
             __("amount_paid_label") if (paid_at or status_str == "paid") else __("amount_label")
@@ -1621,10 +1612,8 @@ from aiogram.types import Message, CallbackQuery
 
 # Provide type-only imports for optional third-party libs to satisfy Pylance
 if TYPE_CHECKING:
-    try:
+    with suppress(Exception):
         pass  # type: ignore
-    except Exception:
-        pass
 # (Repository classes are intentionally not duplicated here.)
 
 

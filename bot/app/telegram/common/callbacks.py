@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, get_origin, get_args, cast
+from typing import Any, get_args, cast
 from aiogram.filters.callback_data import CallbackData
 
 __all__ = [

@@ -569,7 +569,6 @@ async def admin_exec_del_admin(
     callback: CallbackQuery, callback_data: _HasAdminId, state: FSMContext, locale: str
 ) -> None:
     """Revoke admin rights for selected DB user id."""
-    lang = locale
     admin_id = int(callback_data.admin_id)
     # Prevent self-revocation
     current_tid = callback.from_user.id if callback.from_user else None
@@ -594,7 +593,6 @@ async def admin_exec_del_admin(
 async def admin_analytics_menu(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Show analytics submenu (quick reports / stats / biz)."""
     lang = locale
-    services: list[tuple[str, str]] = []
     from bot.app.telegram.admin.admin_keyboards import analytics_kb
 
     text = t("admin_analytics_title", lang)
@@ -616,7 +614,6 @@ async def admin_analytics_menu(callback: CallbackQuery, state: FSMContext, local
 async def admin_manage_crud(callback: CallbackQuery, state: FSMContext, locale: str) -> None:
     """Show CRUD management submenu (masters/services/linking/prices)."""
     lang = locale
-    masters: list[Any] = []
     from bot.app.telegram.admin.admin_keyboards import management_crud_kb
 
     text = t("admin_menu_manage_crud", lang)
@@ -975,21 +972,20 @@ async def _process_admin_lookup_action(
                 return
 
             # Persist master filter and default mode/page in state so pagination works
-            try:
+            updated = False
+            with suppress(Exception):
                 await state.update_data(
                     bookings_mode="upcoming",
                     bookings_page=1,
                     bookings_master_id=int(resolved_mid),
                     preferred_role="admin",
                 )
-            except Exception:
-                # best-effort: at minimum set mode and page
-                try:
+                updated = True
+            if not updated:
+                with suppress(Exception):
                     await state.update_data(
                         bookings_mode="upcoming", bookings_page=1, preferred_role="admin"
                     )
-                except Exception:
-                    pass
 
             # Build and render the dashboard (delegates filtering to ServiceRepo)
             text, kb = await _build_admin_bookings_view(
@@ -1007,7 +1003,7 @@ async def _process_admin_lookup_action(
             try:
                 ok = await safe_edit(msg_obj, text=text, reply_markup=kb)
                 if not ok and msg_obj is not None and hasattr(msg_obj, "answer"):
-                    new_msg = await msg_obj.answer(text, reply_markup=kb)
+                    await msg_obj.answer(text, reply_markup=kb)
                     try:
                         bot_instance = getattr(msg_obj, "bot", None)
                         if bot_instance is not None:
@@ -1470,11 +1466,8 @@ async def admin_price_input(message: Message, state: FSMContext, locale: str) ->
         # As a fallback, still notify success
         await message.answer(t("price_updated", lang))
 
-    try:
+    with suppress(Exception):
         await nav_replace(state, text, kb, lang=lang)
-    except Exception:
-        # nav state updates are best-effort; don't block the handler on failure
-        pass
 
     await state.clear()
 
@@ -1511,24 +1504,19 @@ async def admin_set_global_currency(
             blocked_msg = tr("currency_change_blocked_provider", lang=lang)
             if blocked_msg == "currency_change_blocked_provider":
                 blocked_msg = tr("currency_change_blocked_provider", lang=default_language())
-            try:
+            with suppress(Exception):
                 await callback.answer(blocked_msg, show_alert=True)
-            except Exception:
-                try:
-                    if (m := _shared_msg(callback)) and getattr(m, "chat", None):
-                        await m.answer(blocked_msg)
-                except Exception:
-                    pass
+            with suppress(Exception):
+                if (m := _shared_msg(callback)) and getattr(m, "chat", None):
+                    await m.answer(blocked_msg)
             return
     except Exception:
         # On error while checking policy, be conservative and block the change.
-        try:
-            blocked_msg = tr("currency_change_blocked_provider", lang=lang)
-            if blocked_msg == "currency_change_blocked_provider":
-                blocked_msg = tr("currency_change_blocked_provider", lang=default_language())
+        blocked_msg = tr("currency_change_blocked_provider", lang=lang)
+        if blocked_msg == "currency_change_blocked_provider":
+            blocked_msg = tr("currency_change_blocked_provider", lang=default_language())
+        with suppress(Exception):
             await callback.answer(blocked_msg, show_alert=True)
-        except Exception:
-            pass
         return
     saved = False
     try:
@@ -1576,18 +1564,13 @@ async def admin_set_global_currency(
                     f"Вы изменили валюту. Убедитесь, что ваш платежный токен поддерживает {code}."
                 )
             # Allow translation strings to include a {currency} or {code} placeholder
-            try:
+            with suppress(Exception):
                 warn = warn.format(currency=code, code=code)
-            except Exception:
-                pass
-            try:
+            with suppress(Exception):
                 await callback.answer(warn, show_alert=True)
-            except Exception:
-                try:
-                    if (m := _shared_msg(callback)) and getattr(m, "chat", None):
-                        await m.answer(warn)
-                except Exception:
-                    pass
+            with suppress(Exception):
+                if (m := _shared_msg(callback)) and getattr(m, "chat", None):
+                    await m.answer(warn)
     except Exception:
         pass
 
@@ -1739,10 +1722,8 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
 
         # Refresh runtime settings from DB to avoid stale in-process cache
-        try:
+        with suppress(Exception):
             await load_settings_from_db()
-        except Exception:
-            pass
 
         telegram_provider_token = await get_telegram_provider_token() or ""
         try:
@@ -1757,19 +1738,17 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
         reminder_min = await SettingsRepo.get_reminder_lead_minutes()
         same_day_min = await SettingsRepo.get_same_day_lead_minutes()
         expire_sec = await SettingsRepo.get_expire_check_seconds()
-        try:
+        discount_pct = 0
+        with suppress(Exception):
             discount_pct = await SettingsRepo.get_online_payment_discount_percent()
-        except Exception:
-            discount_pct = 0
         import os
 
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
 
-        try:
+        mini_now = await is_telegram_miniapp_enabled()
+        with suppress(Exception):
             mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
-        except Exception:
-            mini_now = await is_telegram_miniapp_enabled()
 
         kb = business_settings_kb(
             lang,
@@ -1788,18 +1767,14 @@ async def _refresh_business_menu(message: Message, lang: str) -> None:
         title = t("settings_category_business", lang)
         if not title or title == "settings_category_business":
             title = tr("settings_category_business", lang=default_language())
-        try:
+        with suppress(Exception):
             hint = t("online_discount_hint", lang)
             if hint and hint != "online_discount_hint":
                 title = f"{title} — {hint}"
-        except Exception:
-            pass
         await message.answer(title, reply_markup=kb)
     except Exception:
-        try:
+        with suppress(Exception):
             await message.answer(t("error", lang))
-        except Exception:
-            pass
 
 
 @admin_router.callback_query(AdminEditSettingCB.filter())
@@ -1881,10 +1856,8 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         from bot.app.services.admin_services import SettingsRepo, load_settings_from_db
 
         # Refresh runtime settings from DB to avoid stale in-process cache
-        try:
+        with suppress(Exception):
             await load_settings_from_db()
-        except Exception:
-            pass
         telegram_provider_token = await get_telegram_provider_token() or ""
         # Read persisted flags directly from SettingsRepo to ensure latest value
         try:
@@ -1900,20 +1873,18 @@ async def admin_settings_business(callback: CallbackQuery, state: FSMContext, lo
         same_day_min = await SettingsRepo.get_same_day_lead_minutes()
         expire_sec = await SettingsRepo.get_expire_check_seconds()
         # Discount percent for online payments
-        try:
+        discount_pct = 0
+        with suppress(Exception):
             discount_pct = await SettingsRepo.get_online_payment_discount_percent()
-        except Exception:
-            discount_pct = 0
         import os
 
         # Timezone is fixed from environment to avoid runtime drift between admins
         timezone_val = os.getenv("TIMEZONE") or os.getenv("TZ") or "UTC"
         from bot.app.telegram.admin.admin_keyboards import business_settings_kb
 
-        try:
+        mini_now = await is_telegram_miniapp_enabled()
+        with suppress(Exception):
             mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
-        except Exception:
-            mini_now = await is_telegram_miniapp_enabled()
 
         kb = business_settings_kb(
             lang,
@@ -2101,13 +2072,11 @@ async def admin_enter_currency_input(message: Message, state: FSMContext, locale
                 return
         except Exception:
             # Conservative default: block change on error
-            try:
+            with suppress(Exception):
                 await message.answer(
                     tr("currency_change_blocked_provider", lang=lang)
                     or "Cannot change currency at this time."
                 )
-            except Exception:
-                pass
             await state.clear()
             return
 
@@ -2123,14 +2092,10 @@ async def admin_enter_currency_input(message: Message, state: FSMContext, locale
                 warn = tr("currency_provider_warning", lang=lang)
                 if warn == "currency_provider_warning":
                     warn = f"You've changed the currency. Ensure your payment provider token supports {code}."
-                try:
+                with suppress(Exception):
                     warn = warn.format(currency=code, code=code)
-                except Exception:
-                    pass
-                try:
+                with suppress(Exception):
                     await message.answer(warn)
-                except Exception:
-                    pass
         except Exception:
             pass
     else:
