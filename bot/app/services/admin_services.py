@@ -4,6 +4,7 @@ import io
 import logging
 import re
 import time
+from contextlib import suppress, ExitStack
 from datetime import UTC, datetime, timedelta
 import json
 from zoneinfo import ZoneInfo
@@ -338,11 +339,8 @@ class ServiceRepo:
             base_where: list[Any] = []  # Админ видит всё
             # Optional filter for master-specific view (passed from admin UI)
             if master_id is not None:
-                try:
+                with suppress(Exception):
                     base_where.append(Booking.master_id == int(master_id))
-                except Exception:
-                    # Ignore invalid master_id and do not filter
-                    pass
 
             # Логика подсчета вкладок — учитываем optional `base_where` (например, master filter)
             try:
@@ -758,10 +756,8 @@ class ServiceRepo:
                 await session.delete(svc)
                 await session.commit()
             # Invalidate cache after successful commit
-            try:
+            with suppress(Exception):
                 invalidate_services_cache()
-            except Exception:
-                pass
             return True, unlinked_count
         except Exception as e:
             logger.exception(
@@ -838,10 +834,8 @@ class ServiceRepo:
                     if svc:
                         if isinstance(getattr(svc, "price_cents", None), int):
                             pc_raw = getattr(svc, "price_cents", 0)
-                            try:
+                            with suppress(Exception):
                                 total_price += int(pc_raw)
-                            except Exception:
-                                pass
                         try:
                             dur = int(getattr(svc, "duration_minutes", 0) or 0)
                         except Exception:
@@ -879,16 +873,23 @@ async def generate_bookings_csv(
         # Prepare temp file for streaming writes
         now_local = reference or local_now()
         file_name = f"bookings_{mode}_{now_local:%Y_%m}.csv"
-        if in_memory:
-            tmp = tempfile.SpooledTemporaryFile(max_size=2_000_000, mode="w+b")
-            text_wrapper = io.TextIOWrapper(tmp, encoding="utf-8", newline="")
-            writer = csv.writer(text_wrapper)
-        else:
-            tmp = tempfile.NamedTemporaryFile(
-                "w", newline="", suffix=".csv", delete=False, encoding="utf-8"
-            )
-            writer = csv.writer(tmp)
-        try:
+        with ExitStack() as stack:
+            if in_memory:
+                tmp = stack.enter_context(
+                    tempfile.SpooledTemporaryFile(max_size=2_000_000, mode="w+b")
+                )
+                text_wrapper = stack.enter_context(
+                    io.TextIOWrapper(tmp, encoding="utf-8", newline="")
+                )
+                writer = csv.writer(text_wrapper)
+            else:
+                tmp = stack.enter_context(
+                    tempfile.NamedTemporaryFile(
+                        "w", newline="", suffix=".csv", delete=False, encoding="utf-8"
+                    )
+                )
+                writer = csv.writer(tmp)
+
             writer.writerow(["ID", "Date", "Client", "Master", "Service", "Amount", "Status"])
 
             page = 1
@@ -922,34 +923,33 @@ async def generate_bookings_csv(
                     except Exception:
                         continue  # skip malformed row
                 page += 1
-        finally:
             if in_memory:
-                try:
+                with suppress(Exception):
                     text_wrapper.flush()
-                except Exception:
-                    pass
             else:
-                tmp.flush()
-                tmp.close()
-        if in_memory:
-            tmp.seek(0)
-            raw_bytes = tmp.read()
-            if isinstance(raw_bytes, str):
-                raw_bytes = raw_bytes.encode("utf-8")
-            if compress:
-                import gzip
+                with suppress(Exception):
+                    tmp.flush()
 
-                raw_bytes = gzip.compress(raw_bytes)
-                file_name = file_name + ".gz"
-                suffix = ".csv.gz"
-            else:
-                suffix = ".csv"
-            final_file = tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False)
-            final_file.write(raw_bytes)
-            final_file.flush()
-            final_file.close()
-            return final_file.name, file_name
-        return tmp.name, file_name
+            if in_memory:
+                tmp.seek(0)
+                raw_bytes = tmp.read()
+                if isinstance(raw_bytes, str):
+                    raw_bytes = raw_bytes.encode("utf-8")
+                if compress:
+                    import gzip
+
+                    raw_bytes = gzip.compress(raw_bytes)
+                    file_name = file_name + ".gz"
+                    suffix = ".csv.gz"
+                else:
+                    suffix = ".csv"
+                with tempfile.NamedTemporaryFile("wb", suffix=suffix, delete=False) as final_file:
+                    final_file.write(raw_bytes)
+                    final_file.flush()
+                    final_path = final_file.name
+                return final_path, file_name
+
+            return tmp.name, file_name
     except Exception as e:
         logger.exception("generate_bookings_csv failed: %s", e)
         raise
@@ -1135,9 +1135,12 @@ class SettingsRepo:
             return default
         global _settings_cache, _settings_last_checked
         try:
-            if _settings_cache is not None and _settings_last_checked is not None:
-                if (utc_now() - _settings_last_checked) < timedelta(seconds=5):
-                    return _parse_setting_value(_settings_cache.get(str(key), default))
+            if (
+                _settings_cache is not None
+                and _settings_last_checked is not None
+                and (utc_now() - _settings_last_checked) < timedelta(seconds=5)
+            ):
+                return _parse_setting_value(_settings_cache.get(str(key), default))
         except Exception:
             pass
         try:
@@ -1226,9 +1229,7 @@ class SettingsRepo:
                     }
                 except Exception:
                     payments_enabled = False
-            if bool(payments_enabled):
-                return False
-            return True
+            return not bool(payments_enabled)
         except Exception:
             # Be conservative on error: disallow changes to avoid accidental
             # mismatch with payment provider configuration.
@@ -1411,10 +1412,7 @@ class SettingsRepo:
             closed_label = tr("closed_label", lang=lang) or "Closed"
             for g in groups:
                 a, b, rng = g
-                if a == b:
-                    day_part = f"{day_labels[a]}"
-                else:
-                    day_part = f"{day_labels[a]}–{day_labels[b]}"
+                day_part = f"{day_labels[a]}" if a == b else f"{day_labels[a]}–{day_labels[b]}"
                 if rng is None:
                     parts.append(f"{day_part} {closed_label}")
                 else:
@@ -1447,10 +1445,8 @@ class SettingsRepo:
                     now_ts = utc_now()
                     if s:
                         s.value = str(value)
-                        try:
+                        with suppress(Exception):
                             s.updated_at = now_ts
-                        except Exception:
-                            pass
                     else:
                         session.add(Setting(key=str(key), value=str(value), updated_at=now_ts))
 
@@ -1560,7 +1556,7 @@ class AdminRepo:
 
                 res = await session.execute(
                     select(User.id, User.telegram_id, User.name)
-                    .where(User.is_admin == True)
+                    .where(User.is_admin)
                     .order_by(User.id)
                 )
                 rows = res.all()
@@ -1617,10 +1613,8 @@ class AdminRepo:
                 user = await session.get(User, admin_id)
                 if not user:
                     return False
-                try:
+                with suppress(Exception):
                     user.is_admin = False
-                except Exception:
-                    pass
                 session.add(user)
                 await session.commit()
             return True
@@ -2333,13 +2327,13 @@ async def get_admin_dashboard_summary(kind: str = "today", lang: str | None = No
     """
     try:
         data = await get_admin_dashboard_data(kind=kind)
-        l = (
+        lang_resolved = (
             lang
             or data.get("language")
             or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
         )
         # Delegate presentation to an internal helper that renders text from structured data
-        return await _format_admin_dashboard_text(data, kind=kind, lang=l)
+        return await _format_admin_dashboard_text(data, kind=kind, lang=lang_resolved)
     except Exception:
         return t("admin_panel_title", lang or default_language())
 
@@ -2353,17 +2347,19 @@ async def _format_admin_dashboard_text(
     remains responsible only for producing structured metrics.
     """
     try:
-        l = (
+        lang_resolved = (
             lang
             or data.get("language")
             or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
         )
         date_label = format_date(local_now(), "%d %B")
-        header_raw = tr("admin_dashboard_header", lang=l)
+        header_raw = tr("admin_dashboard_header", lang=lang_resolved)
         header = header_raw.format(date=date_label) if "{date}" in header_raw else header_raw
 
         total_count = int(data.get("stats", {}).get("bookings", 0))
-        total_line = tr("admin_dashboard_total_bookings", lang=l).format(count=total_count)
+        total_line = tr("admin_dashboard_total_bookings", lang=lang_resolved).format(
+            count=total_count
+        )
         total_line += data.get("trends", {}).get("bookings") or ""
 
         # Compute split revenue for the requested period (in-cash vs expected)
@@ -2379,21 +2375,29 @@ async def _format_admin_dashboard_text(
             prev_expected = prev_rev_split.get("expected", 0)
             in_cash_txt = format_money_cents(in_cash)
             expected_txt = format_money_cents(expected)
-            in_cash_trend = _format_trend_text(in_cash, prev_in_cash, lang=l)
-            expected_trend = _format_trend_text(expected, prev_expected, lang=l)
+            in_cash_trend = _format_trend_text(
+                in_cash, prev_in_cash, lang=lang_resolved
+            )
+            expected_trend = _format_trend_text(
+                expected, prev_expected, lang=lang_resolved
+            )
             revenue_line = (
-                f"{tr('admin_dashboard_revenue_in_cash', lang=l)}: {in_cash_txt}{in_cash_trend}\n"
-                f"{tr('admin_dashboard_revenue_expected', lang=l)}: {expected_txt}{expected_trend}"
+                f"{tr('admin_dashboard_revenue_in_cash', lang=lang_resolved)}: {in_cash_txt}{in_cash_trend}\n"
+                f"{tr('admin_dashboard_revenue_expected', lang=lang_resolved)}: {expected_txt}{expected_trend}"
             )
         except Exception:
             revenue_amount = data.get("revenue_cents", 0) // 100
-            revenue_line = tr("admin_dashboard_revenue", lang=l).format(amount=revenue_amount)
+            revenue_line = tr("admin_dashboard_revenue", lang=lang_resolved).format(
+                amount=revenue_amount
+            )
             revenue_line += data.get("trends", {}).get("revenue") or ""
 
         new_clients_count = int(data.get("stats", {}).get("unique_users", 0))
-        new_clients_line = tr("admin_dashboard_new_clients", lang=l).format(count=new_clients_count)
+        new_clients_line = tr("admin_dashboard_new_clients", lang=lang_resolved).format(
+            count=new_clients_count
+        )
         new_clients_line += data.get("trends", {}).get("unique_users") or ""
-        master_load_header = tr("admin_dashboard_master_load", lang=l)
+        master_load_header = tr("admin_dashboard_master_load", lang=lang_resolved)
 
         masters_load_text_local = data.get("masters_text", "")
         text_root = "\n".join(
@@ -2408,7 +2412,7 @@ async def _format_admin_dashboard_text(
         )
         return text_root
     except Exception:
-        return t("admin_panel_title", l)
+        return t("admin_panel_title", lang_resolved)
 
 
 async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None) -> dict[str, Any]:
@@ -2417,7 +2421,7 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
     Returns a dict with keys: language, stats, revenue_cents, masters (list), masters_text.
     Handlers/views should take this data and render localized text/buttons.
     """
-    l = lang or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
+    lang_resolved = lang or await SettingsRepo.get_setting("language", DEFAULT_LANGUAGE)
     # Use explicit bounds for the requested kind so we can compute previous-period trends
     start, end = _range_bounds(kind)
     stats = await _stats_for_bounds(start, end)
@@ -2483,23 +2487,27 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
     # Prepare localized trend suffixes for key metrics
     try:
         bookings_trend = _format_trend_text(
-            stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=l
+            stats.get("bookings", 0), prev_stats.get("bookings", 0), lang=lang_resolved
         )
     except Exception:
         bookings_trend = ""
     try:
-        revenue_trend = _format_trend_text(revenue_cents, prev_revenue, lang=l)
+        revenue_trend = _format_trend_text(
+            revenue_cents, prev_revenue, lang=lang_resolved
+        )
     except Exception:
         revenue_trend = ""
     try:
         users_trend = _format_trend_text(
-            stats.get("unique_users", 0), prev_stats.get("unique_users", 0), lang=l
+            stats.get("unique_users", 0),
+            prev_stats.get("unique_users", 0),
+            lang=lang_resolved,
         )
     except Exception:
         users_trend = ""
 
     return {
-        "language": l,
+        "language": lang_resolved,
         "stats": stats,
         "revenue_cents": revenue_cents,
         "masters": masters_raw,
