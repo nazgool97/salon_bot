@@ -1191,9 +1191,7 @@ class SettingsRepo:
     @staticmethod
     async def get_slot_tick_minutes() -> int:
         """Return minute tick step for time pickers (defaults to 5)."""
-        return SettingsRepo._coerce_int(
-            await SettingsRepo.get_setting("slot_tick_minutes", 5), 5
-        )
+        return SettingsRepo._coerce_int(await SettingsRepo.get_setting("slot_tick_minutes", 5), 5)
 
     @staticmethod
     async def get_currency() -> str:
@@ -2384,12 +2382,8 @@ async def _format_admin_dashboard_text(
             prev_expected = prev_rev_split.get("expected", 0)
             in_cash_txt = format_money_cents(in_cash)
             expected_txt = format_money_cents(expected)
-            in_cash_trend = _format_trend_text(
-                in_cash, prev_in_cash, lang=lang_resolved
-            )
-            expected_trend = _format_trend_text(
-                expected, prev_expected, lang=lang_resolved
-            )
+            in_cash_trend = _format_trend_text(in_cash, prev_in_cash, lang=lang_resolved)
+            expected_trend = _format_trend_text(expected, prev_expected, lang=lang_resolved)
             revenue_line = (
                 f"{tr('admin_dashboard_revenue_in_cash', lang=lang_resolved)}: {in_cash_txt}{in_cash_trend}\n"
                 f"{tr('admin_dashboard_revenue_expected', lang=lang_resolved)}: {expected_txt}{expected_trend}"
@@ -2501,9 +2495,7 @@ async def get_admin_dashboard_data(kind: str = "today", lang: str | None = None)
     except Exception:
         bookings_trend = ""
     try:
-        revenue_trend = _format_trend_text(
-            revenue_cents, prev_revenue, lang=lang_resolved
-        )
+        revenue_trend = _format_trend_text(revenue_cents, prev_revenue, lang=lang_resolved)
     except Exception:
         revenue_trend = ""
     try:

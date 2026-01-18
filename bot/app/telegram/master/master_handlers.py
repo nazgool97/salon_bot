@@ -87,6 +87,7 @@ class CancelReasonData(Protocol):
     booking_id: int | str | None
     code: str | None
 
+
 logger = logging.getLogger(__name__)
 master_router = Router(name="master")
 # Apply master role filter and locale middleware so handlers receive `locale: str` from middleware
@@ -927,7 +928,9 @@ async def schedule_remove_window(
                     text=tr("confirm"),
                     callback_data=pack_cb(MasterMenuCB, act="confirm_clear_all_exec"),
                 )
-                kb_builder.button(text=tr("cancel"), callback_data=pack_cb(MasterMenuCB, act="menu"))
+                kb_builder.button(
+                    text=tr("cancel"), callback_data=pack_cb(MasterMenuCB, act="menu")
+                )
                 kb_builder.adjust(2)
                 with contextlib.suppress(Exception):
                     await cb.answer()
@@ -1362,7 +1365,6 @@ async def _show_day_actions(
         sched = await master_services.MasterRepo.get_schedule(int(master_id))
     except Exception:
         sched = {}
-
 
     windows: list[Any] = []
     try:

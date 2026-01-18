@@ -54,7 +54,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from aiogram.exceptions import TelegramAPIError
 
 
-
 # Structural Protocols for typed callback_data without relying on runtime CallbackData classes
 class _HasAdminId(Protocol):
     admin_id: int

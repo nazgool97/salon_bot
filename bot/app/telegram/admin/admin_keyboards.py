@@ -849,6 +849,7 @@ def admin_expire_menu_kb(
     # options in seconds: 1m,5m,15m,30m,1h,2h,6h,1d
     options = [60, 5 * 60, 15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60, 6 * 60 * 60, 24 * 60 * 60]
     from bot.app.telegram.common.callbacks import AdminSetExpireCB
+
     # Current value should be provided by the caller (handler). UI must not access DB here.
 
     for s in options:

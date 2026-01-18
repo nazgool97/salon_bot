@@ -1021,23 +1021,27 @@ def build_bookings_dashboard_kb(
         master_done_mode = "done"
         kb.button(
             text=mark(upcoming_label, "upcoming"),
-            callback_data=pack_cb(RoleCB, mode="upcoming")
-            if str(role).lower() != "client"
-            else pack_cb(RoleCB, mode="upcoming", page=1),
+            callback_data=(
+                pack_cb(RoleCB, mode="upcoming")
+                if str(role).lower() != "client"
+                else pack_cb(RoleCB, mode="upcoming", page=1)
+            ),
         )
         kb.button(
             text=mark(
                 done_label, client_done_mode if str(role).lower() == "client" else master_done_mode
             ),
-            callback_data=pack_cb(
-                RoleCB,
-                mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
-            )
-            if str(role).lower() != "client"
-            else pack_cb(
-                RoleCB,
-                mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
-                page=1,
+            callback_data=(
+                pack_cb(
+                    RoleCB,
+                    mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
+                )
+                if str(role).lower() != "client"
+                else pack_cb(
+                    RoleCB,
+                    mode=(client_done_mode if str(role).lower() == "client" else master_done_mode),
+                    page=1,
+                )
             ),
         )
 
@@ -1126,6 +1130,7 @@ async def get_payment_keyboard(
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Генерирует клавиатуру выбора оплаты и текст заголовка."""
     lang = await _resolve_lang(user_id)
+
     def _t(key: str, default: str) -> str:
         return _localize(key, lang, default)
 

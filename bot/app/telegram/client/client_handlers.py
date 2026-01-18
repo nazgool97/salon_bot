@@ -128,6 +128,7 @@ from bot.app.services.shared_services import (
 )
 import bot.app.services.master_services as master_services
 from bot.app.services.master_services import MasterRepo
+
 # Master FSM moved to master router (kept minimal here)
 
 logger = logging.getLogger(__name__)
@@ -1937,9 +1938,7 @@ async def svc_toggle(
 
 
 @client_router.callback_query(ClientMenuCB.filter(F.act == "svc_done"))
-async def svc_done(
-    cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str
-) -> None:
+async def svc_done(cb: CallbackQuery, callback_data: Any, state: FSMContext, locale: str) -> None:
     """Finalize service selection: show masters that support all selected services."""
     data = await state.get_data()
     selected = list(set(data.get("multi_selected") or []))
@@ -2155,8 +2154,10 @@ async def pay_cash_prepare(
             slot_label = t("slot_duration_label", lang)
             # Only append duration if canonical details text doesn't already include it
             if (
-                (not slot_label) or (slot_label not in details)
-            ) and duration_minutes and int(duration_minutes) > 0:
+                ((not slot_label) or (slot_label not in details))
+                and duration_minutes
+                and int(duration_minutes) > 0
+            ):
                 extra_lines.append(
                     f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}"
                 )
@@ -3321,9 +3322,7 @@ async def handle_successful_payment(message: Message, locale: str) -> None:
                 else "booking_not_found"
             )
             with suppress(Exception):
-                await message.answer(
-                    t(err_key, locale) or "Слот недоступен, выберите другое время"
-                )
+                await message.answer(t(err_key, locale) or "Слот недоступен, выберите другое время")
             return
 
         # Notify master and admins

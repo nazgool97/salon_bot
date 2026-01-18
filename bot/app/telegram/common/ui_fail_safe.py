@@ -313,7 +313,9 @@ class SafeUIMiddleware:
                 raise
 
 
-def safe_handler(require_from_user: bool = True, fallback_text: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def safe_handler(
+    require_from_user: bool = True, fallback_text: str | None = None
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to centralize handler-level UI safety and error handling.
 
     - Verifies `.from_user.id` presence when `require_from_user` is True; if

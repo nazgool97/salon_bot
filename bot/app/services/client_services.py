@@ -998,9 +998,7 @@ class BookingRepo:
             b.status = BookingStatus.PENDING_PAYMENT
             # Extend hold window to give the user time to finish payment/confirmation
             with suppress(Exception):
-                b.cash_hold_expires_at = now_utc + timedelta(
-                    minutes=max(1, int(hold_min or 0))
-                )
+                b.cash_hold_expires_at = now_utc + timedelta(minutes=max(1, int(hold_min or 0)))
             try:
                 hist = BookingStatusHistory(
                     booking_id=b.id, old_status=old, new_status=BookingStatus.PENDING_PAYMENT

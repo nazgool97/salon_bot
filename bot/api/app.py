@@ -571,9 +571,7 @@ async def create_session(payload: SessionRequest) -> SessionResponse:
 
 
 @app.get("/api/me", response_model=MeOut)
-async def get_me(
-    principal: Annotated[Principal, Depends(get_current_principal)]
-) -> MeOut:
+async def get_me(principal: Annotated[Principal, Depends(get_current_principal)]) -> MeOut:
     user = await UserRepo.get_by_id(principal.user_id)
     if not user:
         user = await UserRepo.get_or_create(
@@ -647,9 +645,7 @@ async def check_slot(
 
     # Interpret incoming `slot` using salon local timezone when naive.
     local_tz = get_local_tz() or UTC
-    slot_local = (
-        slot.replace(tzinfo=local_tz) if slot.tzinfo is None else slot.astimezone(local_tz)
-    )
+    slot_local = slot.replace(tzinfo=local_tz) if slot.tzinfo is None else slot.astimezone(local_tz)
 
     # Require explicit master selection and cast to int so the canonical
     # slot calculator receives the expected `int` type (fixes Pylance
@@ -978,9 +974,11 @@ async def master_profile(
     return MasterProfileOut(
         id=int(getattr(master_obj, "id", master_id) or master_id),
         name=str(getattr(master_obj, "name", "")),
-        telegram_id=int(getattr(master_obj, "telegram_id", 0) or 0)
-        if getattr(master_obj, "telegram_id", None) is not None
-        else None,
+        telegram_id=(
+            int(getattr(master_obj, "telegram_id", 0) or 0)
+            if getattr(master_obj, "telegram_id", None) is not None
+            else None
+        ),
         bio=data.get("about_text") or None,
         rating=float(rating_val) if rating_val is not None else None,
         ratings_count=int(ratings_count_val) if ratings_count_val is not None else None,
@@ -1506,7 +1504,6 @@ async def health() -> dict[str, str]:
 def get_app() -> FastAPI:
     """Exported factory for uvicorn or tests."""
     return app
-
 
 
 WEB_DIR = os.getenv("TWA_WEB_DIR", "/app/web")

@@ -30,10 +30,12 @@ else:
     try:
         from aiogram.exceptions import TelegramAPIError as TelegramAPIErrorType
     except Exception:
+
         class TelegramAPIErrorType(Exception):
             """Fallback exception type when aiogram is unavailable."""
 
             pass
+
 
 TelegramAPIError: type[BaseException] = TelegramAPIErrorType
 from datetime import UTC, datetime, timedelta, time as dt_time
@@ -1068,8 +1070,6 @@ def get_local_tz() -> ZoneInfo:
     # modules consistently produce timezone-aware datetimes.
 
 
-
-
 def utc_now() -> datetime:
     """Return current time as an aware UTC datetime."""
     try:
@@ -1132,7 +1132,6 @@ def format_slot_label(
     except Exception:
         logger.exception("format_slot_label failed for slot=%s", slot)
         return str(slot)
-
 
 
 def ensure_utc(dt: datetime | None) -> datetime | None:
@@ -1320,6 +1319,7 @@ def format_booking_list_item(row: Any, role: str = "client", lang: str = "uk") -
     try:
         from bot.app.services.client_services import format_client_booking_row as _client_fmt
     except Exception:
+
         def _client_fmt(f: dict[str, Any]) -> str:
             return str(f.get("service_name", ""))
 
@@ -1454,6 +1454,7 @@ def format_booking_details_text(
     """
     try:
         _lang = lang or default_language()
+
         def __(k: str) -> str:
             return tr(k, lang=_lang)
 

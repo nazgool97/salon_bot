@@ -445,8 +445,7 @@ async def get_master_dashboard_summary(master_id: int, *, lang: str | None = Non
                 or "Today"
             )
             done_lbl = (
-                tr("dashboard_done_label", lang=lang_value).replace("{count}", "").strip()
-                or "Done"
+                tr("dashboard_done_label", lang=lang_value).replace("{count}", "").strip() or "Done"
             )
             cancelled_lbl = (
                 tr("dashboard_cancelled_label", lang=lang_value).replace("{count}", "").strip()
@@ -1060,9 +1059,11 @@ class MasterRepo:
                     "starts_at": getattr(booking_obj, "starts_at", None),
                     "ends_at": getattr(booking_obj, "ends_at", None),
                     "duration_minutes": None,
-                    "client_id": getattr(client, "id", None)
-                    if client
-                    else getattr(booking_obj, "user_id", None),
+                    "client_id": (
+                        getattr(client, "id", None)
+                        if client
+                        else getattr(booking_obj, "user_id", None)
+                    ),
                     "client_name": getattr(client, "name", None) if client else None,
                     "client_telegram_id": getattr(client, "telegram_id", None) if client else None,
                     "master_id": getattr(booking_obj, "master_id", None),
@@ -1281,15 +1282,21 @@ class MasterRepo:
                 try:
                     for b in all_bookings:
                         if getattr(b, "status", None) in (
-                            (__import__(
+                            (
+                                __import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus).PAID,
-                            (__import__(
+                                ).BookingStatus
+                            ).PAID,
+                            (
+                                __import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus).CONFIRMED,
-                            (__import__(
+                                ).BookingStatus
+                            ).CONFIRMED,
+                            (
+                                __import__(
                                     "bot.app.domain.models", fromlist=["BookingStatus"]
-                                ).BookingStatus).DONE,
+                                ).BookingStatus
+                            ).DONE,
                         ):
                             total_spent_cents += int(
                                 getattr(b, "final_price_cents", None)
@@ -1309,15 +1316,19 @@ class MasterRepo:
 
                     cur_code = _default_currency()
                 history = {
-                    "name": getattr(user, "name", None)
-                    if user
-                    else texts.get("unknown_client", "unknown"),
+                    "name": (
+                        getattr(user, "name", None)
+                        if user
+                        else texts.get("unknown_client", "unknown")
+                    ),
                     "visits": len(all_bookings),
                     "total_spent_cents": total_spent_cents,
                     "total_spent": format_money_cents(total_spent_cents, cur_code),
-                    "last_visit": format_date(all_bookings[0].starts_at, "%d.%m.%Y")
-                    if all_bookings
-                    else texts.get("no_visits", "Нет"),
+                    "last_visit": (
+                        format_date(all_bookings[0].starts_at, "%d.%m.%Y")
+                        if all_bookings
+                        else texts.get("no_visits", "Нет")
+                    ),
                     "note": note or texts.get("no_notes", ""),
                 }
                 logger.info(
@@ -2126,7 +2137,9 @@ class MasterRepo:
                 from bot.app.domain.models import Master
                 from sqlalchemy import select
 
-                res = await session.scalar(select(Master).where(Master.telegram_id == master_telegram_id))
+                res = await session.scalar(
+                    select(Master).where(Master.telegram_id == master_telegram_id)
+                )
                 return cast(object | None, res)
         except Exception as e:
             logger.exception("MasterRepo.get_master failed for %s: %s", master_telegram_id, e)
@@ -2235,9 +2248,7 @@ async def build_client_history_view(booking_id: int) -> str | None:
         return None
 
 
-def format_client_history(
-    hist: Mapping[str, Any], user_id: int, lang: str | None = None
-) -> str:
+def format_client_history(hist: Mapping[str, Any], user_id: int, lang: str | None = None) -> str:
     """Format client history mapping into a short text block for master UI.
 
     This formatter prefers a provided `lang` but will fall back to the
