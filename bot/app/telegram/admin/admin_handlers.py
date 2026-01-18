@@ -3,6 +3,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Protocol
+from contextlib import suppress
 from collections.abc import Callable
 from bot.app.telegram.common.callbacks import (
     pack_cb,
@@ -2169,7 +2170,7 @@ async def admin_show_bookings(callback: CallbackQuery, state: FSMContext, locale
             if not ok:
                 msg_obj = getattr(callback, "message", None)
                 if msg_obj is not None and hasattr(msg_obj, "answer"):
-                    new_msg = await msg_obj.answer(text, reply_markup=kb)
+                    await msg_obj.answer(text, reply_markup=kb)
                     try:
                         bot_instance = getattr(msg_obj, "bot", None)
                         if bot_instance is not None:
@@ -2728,7 +2729,6 @@ async def exec_cancel_all_master(
         # Fetch all booking ids for this master (regardless of status)
         rows = await admin_services.AdminRepo.get_booking_ids_for_master(mid)  # type: ignore[attr-defined]
         all_bids = [int(r[0]) for r in rows]
-        status_map = {int(r[0]): r[1] for r in rows}
 
         # Cancel bookings and notify via centralized master service
         bot = getattr(callback, "bot", None)
@@ -3869,11 +3869,8 @@ async def admin_toggle_telegram_miniapp_handler(
         try:
             from bot.app.services.admin_services import load_settings_from_db, SettingsRepo
 
-            try:
+            with suppress(Exception):
                 await load_settings_from_db()
-            except Exception:
-                # best-effort reload; ignore failures
-                pass
             try:
                 mini_now = bool(await SettingsRepo.get_setting("telegram_miniapp_enabled", False))
             except Exception:
@@ -3900,7 +3897,6 @@ async def admin_toggle_telegram_miniapp_handler(
         except Exception:
             expire_sec = 30
 
-        hours_summary = await SettingsRepo.get_setting("working_hours_summary", None)
         try:
             reminder_min = await SettingsRepo.get_reminder_lead_minutes()
         except Exception:

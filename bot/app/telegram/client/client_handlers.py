@@ -1,5 +1,6 @@
 from __future__ import annotations
 import contextlib
+from contextlib import suppress
 import logging
 import re
 from typing import Any
@@ -191,11 +192,7 @@ def require_ids(
             cb = cb or kwargs.get("cb") or kwargs.get("callback")
 
             # try to find callback_data
-            callback_data = None
-            if len(args) >= 2:
-                callback_data = args[1]
-            else:
-                callback_data = kwargs.get("callback_data")
+            callback_data = args[1] if len(args) >= 2 else kwargs.get("callback_data")
 
             # extract user id
             user_id = None
@@ -453,8 +450,6 @@ async def start_booking(cb: CallbackQuery, callback_data, state: FSMContext, loc
         durations_map = {}
         master_durations = {}
 
-    # Fallback to global slot duration for services missing explicit profile duration
-    default_dur = await _slot_duration_default()
     lang = locale
     unit = t("minutes_short", lang)
     decorated: dict[str, str] = {}
@@ -517,31 +512,22 @@ async def cancel_reservation_and_root(
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
 
-    # If бронь уже терминальная/истекла — просто удаляем и возвращаемся в меню
-    status_attr = getattr(b, "status", None)
-    try:
-        status_val = status_attr.value
-    except Exception:
-        status_val = status_attr
     await BookingRepo.delete_booking(booking_id)
 
     # Always show main menu
     try:
         from bot.app.telegram.common.navigation import show_main_client_menu
 
-        await show_main_client_menu(cb, state)
+        with suppress(Exception):
+            await show_main_client_menu(cb, state)
     except Exception:
-        try:
+        with suppress(Exception):
             from bot.app.telegram.common.navigation import show_main_client_menu
 
             await show_main_client_menu(cb, state)
-        except Exception:
-            pass
 
-    try:
+    with suppress(Exception):
         await cb.answer()
-    except Exception:
-        pass
     logger.info("Меню услуг отправлено для пользователя %s", user_tg_id)
 
 
@@ -682,10 +668,8 @@ async def show_services_for_master(
             await cb.answer(t("no_services_for_master", locale), show_alert=True)
         return
     # Remember forced master and show service selection limited to this master
-    try:
+    with suppress(Exception):
         await state.update_data(forced_master_id=int(resolved_master))
-    except Exception:
-        pass
     from bot.app.telegram.client.client_keyboards import get_service_menu
 
     # Decorate with duration label similar to initial booking flow
@@ -782,10 +766,8 @@ async def select_master(
         )
         duration = int(totals.get("total_minutes") or slot_default)
         # Persist accurate duration for multi-service flow
-        try:
+        with suppress(Exception):
             await state.update_data(multi_duration_min=duration)
-        except Exception:
-            pass
     except Exception:
         duration = slot_default
 
@@ -903,10 +885,7 @@ async def navigate_calendar(
                 await cb.answer(t("error_retry", locale))
             return
         sid = str(getattr(callback_data, "service_id", ""))
-        if "+" in sid:
-            service_ids = [s for s in sid.split("+") if s]
-        else:
-            service_ids = [sid] if sid else []
+        service_ids = [s for s in sid.split("+") if s] if "+" in sid else [sid] if sid else []
         if service_ids:
             try:
                 from bot.app.services.client_services import (
@@ -1027,10 +1006,7 @@ async def select_date(
 
         sid = str(getattr(callback_data, "service_id", ""))
         # Build list of service ids for the aggregator
-        if "+" in sid:
-            service_ids = [s for s in sid.split("+") if s]
-        else:
-            service_ids = [sid] if sid else []
+        service_ids = [s for s in sid.split("+") if s] if "+" in sid else [sid] if sid else []
         if service_ids:
             try:
                 totals = await get_services_duration_and_price(
@@ -1075,7 +1051,7 @@ async def select_date(
         exclude_booking_id=booking_id_value if is_reschedule else None,
     )
     # Debug: log returned slots for diagnosis
-    try:
+    with suppress(Exception):
         logger.info(
             "select_date: fetched %d slots for %s (master=%s)",
             len(slots),
@@ -1091,19 +1067,14 @@ async def select_date(
             except Exception:
                 sample = [str(s) for s in slots[:8]]
             logger.info("select_date: slot samples=%s", sample)
-    except Exception:
-        pass
     # Cache compact slot list in FSM state for this date to support stepwise pickers
-    try:
+    with suppress(Exception):
         compact = [s.strftime("%H%M") for s in slots]
         data = await state.get_data()
         existing = (data or {}).get("slots_for_date") if isinstance(data, dict) else None
         m = dict(existing or {})
         m[selected_date] = compact
         await state.update_data(slots_for_date=m)
-    except Exception:
-        # Ignore caching errors — handlers will recompute if needed
-        pass
     lang = locale
     if not slots:
         if cb.message:
@@ -1171,10 +1142,8 @@ async def select_date(
     if cur_state and "reschedule_select_date" in str(cur_state):
         await state.set_state(BookingStates.reschedule_select_time)
     else:
-        try:
+        with suppress(Exception):
             await state.update_data(selected_date=selected_date)
-        except Exception:
-            pass
         await state.set_state(BookingStates.choosing_minute)
     logger.info("Compact time picker shown for user %s on %s", user_id, selected_date)
 
@@ -1220,10 +1189,7 @@ async def hours_view_handler(
 
             # Compute duration for service(s)
             sid = service_id or ""
-            if "+" in sid:
-                service_ids = [s for s in sid.split("+") if s]
-            else:
-                service_ids = [sid] if sid else []
+            service_ids = [s for s in sid.split("+") if s] if "+" in sid else [sid] if sid else []
             slot_default = await _slot_duration_default()
             if service_ids:
                 try:
@@ -1367,10 +1333,7 @@ async def hour_chosen_handler(
             )
 
             sid = service_id or ""
-            if "+" in sid:
-                service_ids = [s for s in sid.split("+") if s]
-            else:
-                service_ids = [sid] if sid else []
+            service_ids = [s for s in sid.split("+") if s] if "+" in sid else [sid] if sid else []
             slot_default = await _slot_duration_default()
             if service_ids:
                 try:
@@ -1464,10 +1427,7 @@ async def hour_chosen_handler(
                         slot_datetimes.append(datetime.combine(base_dt, s).replace(tzinfo=local_tz))
                     except Exception:
                         continue
-            if slot_datetimes:
-                latest_slot = max(slot_datetimes)
-            else:
-                latest_slot = None
+            latest_slot = max(slot_datetimes) if slot_datetimes else None
         except Exception:
             latest_slot = None
 
@@ -1687,26 +1647,20 @@ async def compact_time_adjust_handler(
                 hour = min(int(hour) + 1, 23)
             elif op == "hour_dec":
                 hour = max(int(hour) - 1, 0)
-            elif op == "min_inc":
-                if int(minute) + tick < 60:
-                    minute = int(minute) + tick
-                # else: ignore (do not wrap or change hour)
-            elif op == "min_dec":
-                if int(minute) - tick >= 0:
-                    minute = int(minute) - tick
-                # else: ignore
+            elif op == "min_inc" and int(minute) + tick < 60:
+                minute = int(minute) + tick
+            elif op == "min_dec" and int(minute) - tick >= 0:
+                minute = int(minute) - tick
     except Exception:
         # On any error fallback to simple step behavior
         if op == "hour_inc":
             hour = min(int(hour) + 1, 23)
         elif op == "hour_dec":
             hour = max(int(hour) - 1, 0)
-        elif op == "min_inc":
-            if int(minute) + tick < 60:
-                minute = int(minute) + tick
-        elif op == "min_dec":
-            if int(minute) - tick >= 0:
-                minute = int(minute) - tick
+        elif op == "min_inc" and int(minute) + tick < 60:
+            minute = int(minute) + tick
+        elif op == "min_dec" and int(minute) - tick >= 0:
+            minute = int(minute) - tick
     # noop or other -> no change
 
     # Rebuild keyboard and edit message
@@ -1759,11 +1713,9 @@ async def cancel_time_handler(
     cb: CallbackQuery, callback_data, state: FSMContext, locale: str
 ) -> None:
     """Cancel time picking flow: clear relevant FSM data and navigate back."""
-    try:
+    with suppress(Exception):
         # Clear any temporary time-picking data
         await state.update_data(selected_date=None)
-    except Exception:
-        pass
     try:
         text, markup, popped = await nav_back(state)
         if popped and cb.message:
@@ -1774,10 +1726,8 @@ async def cancel_time_handler(
         else:
             await show_main_menu(cb, state)
     except Exception:
-        try:
+        with suppress(Exception):
             await show_main_menu(cb, state)
-        except Exception:
-            pass
     await cb.answer()
 
 
@@ -2103,10 +2053,8 @@ async def master_multi(
         total_min = int(data.get("multi_duration_min") or DEFAULT_SERVICE_FALLBACK_DURATION)
 
     # Persist master and duration, then show master profile with booking button
-    try:
+    with suppress(Exception):
         await state.update_data(master_id=master_id)
-    except Exception:
-        pass
     service_id = "+".join(selected)
     await show_master_profile(cb, master_id, service_id, state, locale)
     await cb.answer()
@@ -2193,7 +2141,6 @@ async def pay_cash_prepare(
     header = details
     try:
         duration_minutes = None
-        start_time_str = None
         try:
             starts = getattr(details_obj, "starts_at", None)
             ends = getattr(details_obj, "ends_at", None)
@@ -2206,33 +2153,16 @@ async def pay_cash_prepare(
                 duration_minutes = getattr(details_obj, "duration_minutes", None)
         except Exception:
             duration_minutes = None
-        try:
-            if getattr(details_obj, "starts_at", None):
-                from bot.app.services.shared_services import format_date
-
-                try:
-                    start_time_str = format_date(
-                        getattr(details_obj, "starts_at", None), fmt="%H:%M"
-                    )
-                except Exception:
-                    try:
-                        start_time_str = details_obj.starts_at.strftime("%H:%M")
-                    except Exception:
-                        start_time_str = None
-        except Exception:
-            start_time_str = None
-
         extra_lines = []
-        try:
+        with suppress(Exception):
             slot_label = t("slot_duration_label", lang)
             # Only append duration if canonical details text doesn't already include it
-            if (not slot_label) or (slot_label not in details):
-                if duration_minutes and int(duration_minutes) > 0:
-                    extra_lines.append(
-                        f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}"
-                    )
-        except Exception:
-            pass
+            if (
+                (not slot_label) or (slot_label not in details)
+            ) and duration_minutes and int(duration_minutes) > 0:
+                extra_lines.append(
+                    f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}"
+                )
         if extra_lines:
             # Blank line after title, then details, then Time/Dur block
             header = (
@@ -2289,7 +2219,7 @@ async def handle_rating(cb: CallbackQuery, callback_data, state: FSMContext, loc
         await cb.answer(t("rating_save_failed", lang), show_alert=True)
 
     # Hide the rating keyboard after handling the vote (regardless of outcome)
-    try:
+    with suppress(Exception):
         if cb.message:
             txt = getattr(cb.message, "html_text", None) or cb.message.text or ""
             label = t("rating_label", lang) or "Оцінка"
@@ -2300,8 +2230,6 @@ async def handle_rating(cb: CallbackQuery, callback_data, state: FSMContext, loc
             else:
                 txt = f"{txt}\n\n{rating_line}" if txt else rating_line
             await safe_edit(cb.message, text=txt, reply_markup=None, parse_mode="HTML")
-    except Exception:
-        pass
 
 
 @client_router.callback_query(NavCB.filter(F.act == "skip_rating"))
@@ -2309,7 +2237,7 @@ async def handle_skip_rating(
     cb: CallbackQuery, callback_data, state: FSMContext, locale: str
 ) -> None:
     """Allow the client to dismiss the rating keyboard without sending extra text."""
-    try:
+    with suppress(Exception):
         await cb.answer()
         if cb.message:
             txt = getattr(cb.message, "html_text", None) or cb.message.text or ""
@@ -2318,8 +2246,6 @@ async def handle_skip_rating(
             lines = [line for line in txt.splitlines() if line.strip() != (prompt or "")]
             cleaned = "\n".join(lines).rstrip()
             await safe_edit(cb.message, text=cleaned, reply_markup=None, parse_mode="HTML")
-    except Exception:
-        pass
 
 
 @client_router.callback_query(PayCB.filter(F.action == "conf_cash"))
@@ -2345,7 +2271,6 @@ async def pay_cash(
     if not b:
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
-    master_id = int(getattr(b, "master_id", 0) or 0)
     ok, reason = await BookingRepo.confirm_cash(booking_id)
     if not ok:
         err = (
@@ -2364,16 +2289,12 @@ async def pay_cash(
         # Fallback: show a simple confirmation and main menu keyboard
         if cb.message:
             lang = locale
-            try:
+            with suppress(TelegramAPIError, RuntimeError):
                 await safe_edit(
                     cb.message, t("cash_confirmed_message", lang), reply_markup=home_kb()
                 )
-            except (TelegramAPIError, RuntimeError):
-                pass
-        try:
+        with suppress(TelegramAPIError, RuntimeError):
             await cb.answer()
-        except (TelegramAPIError, RuntimeError):
-            pass
     logger.info("Бронь %s подтверждена как оплата наличными", booking_id)
 
     # Unified notifications via shared helper
@@ -2403,7 +2324,6 @@ async def my_bookings(
     user = await UserRepo.get_or_create(
         user_id, name=cb.from_user.full_name if cb.from_user else str(user_id)
     )
-    now = utc_now()
 
     # Определяем новый фильтр и страницу из callback_data
     mode_val = getattr(callback_data, "mode", None)
@@ -2415,20 +2335,15 @@ async def my_bookings(
     except (TypeError, ValueError):
         page = 1
     # Debug: log incoming callback payload to help diagnose tab presses
-    try:
+    with suppress(AttributeError, TypeError, UnicodeEncodeError):
         logger.debug(
             "my_bookings callback received: mode=%s page_raw=%r resolved_page=%s",
             mode_val,
             page_raw,
             page,
         )
-    except (AttributeError, TypeError, UnicodeEncodeError):
-        pass
     if page < 1:
         page = 1  # Защита от отрицательных/нулевых страниц
-
-    # Always replace the current screen to avoid jerky history and ensure Back is predictable
-    effective_replace = True
 
     # Сохраняем новый фильтр, страницу и текущий экран in state
     await state.update_data(
@@ -2436,10 +2351,8 @@ async def my_bookings(
     )
     # Ensure no preferred_role remains from admin/master flows so role_root
     # will return to client root when pressed from client bookings screens.
-    try:
+    with suppress(RuntimeError, AttributeError):
         await state.update_data(preferred_role=None)
-    except (RuntimeError, AttributeError):
-        pass
 
     filter_mode = new_filter
 
@@ -2455,12 +2368,6 @@ async def my_bookings(
     )
     upcoming_count = int(meta.get("upcoming_count", 0) or 0)
     completed_count = int(meta.get("completed_count", 0) or 0)
-    total_count = completed_count if filter_mode == "completed" else upcoming_count
-
-    try:
-        from bot.app.translations import t
-    except ImportError:
-        t = None  # type: ignore
     lang = locale or ""
     kb = None
 
@@ -2635,12 +2542,6 @@ async def cancel_reservation_and_go_back(
         await cb.answer(t("booking_not_found", lang), show_alert=True)
         return
 
-    # Если бронь уже не активна/истекла — удаляем тихо и выходим в меню/назад
-    status_attr = getattr(b, "status", None)
-    try:
-        status_val = status_attr.value
-    except Exception:
-        status_val = status_attr
     await BookingRepo.delete_booking(booking_id)
 
     # Try to navigate back to previous screen; if none, show main menu
@@ -2784,7 +2685,6 @@ async def contacts(cb: CallbackQuery, callback_data, state: FSMContext, locale: 
         try:
             # build a small keyboard with a map link + back button
             from aiogram.utils.keyboard import InlineKeyboardBuilder
-            from aiogram.types import InlineKeyboardButton
 
             kb_builder = InlineKeyboardBuilder()
             kb_builder.button(text="📍 На карте", url=maps_url)
@@ -2942,7 +2842,6 @@ async def client_reschedule_time(
     # Resolve local timezone and interpret the selected local datetime
     local_tz = get_local_tz() or ZoneInfo("UTC")
     local_dt = datetime.fromisoformat(f"{date_str}T{hh}:{mm}").replace(tzinfo=local_tz)
-    new_dt_utc = local_dt.astimezone(UTC)
     # Confirm screen + apply lock check right before confirm
     lock_m = await _int_setting(SettingsRepo.get_client_reschedule_lock_minutes, 180)
     # Use utc_now() for consistent UTC 'now' across the app
@@ -2985,8 +2884,9 @@ async def client_reschedule_confirm(
     time_compact = callback_data.time
     hh, mm = time_compact[:2], time_compact[2:]
     local_tz = get_local_tz() or ZoneInfo("UTC")
-    local_dt = datetime.fromisoformat(f"{date_str}T{hh}:{mm}").replace(tzinfo=local_tz)
-    new_dt_utc = local_dt.astimezone(UTC)
+    new_dt_utc = (
+        datetime.fromisoformat(f"{date_str}T{hh}:{mm}").replace(tzinfo=local_tz).astimezone(UTC)
+    )
 
     # Ownership check and update via repository
     user = await UserRepo.get_or_create(
@@ -3045,10 +2945,8 @@ async def pay_online(cb: CallbackQuery, callback_data, locale: str) -> None:
     interval = _get_booking_interval(booking, fallback_slot)
     slot_alive = interval is not None and is_booking_slot_blocked(booking, now_utc, hold_minutes)
     if not slot_alive:
-        try:
+        with suppress(Exception):
             await BookingRepo.update_status(booking_id, BookingStatus.EXPIRED)
-        except Exception:
-            pass
         await cb.answer(
             t("slot_unavailable", locale) or "Слот недоступен, выберите другое время",
             show_alert=True,
@@ -3289,7 +3187,7 @@ async def pay_online_prepare(
     if duration_minutes is None:
         duration_minutes = getattr(bd, "duration_minutes", None)
 
-    try:
+    with suppress(Exception):
         slot_label = t("slot_duration_label", lang)
         if (
             duration_minutes
@@ -3298,8 +3196,6 @@ async def pay_online_prepare(
             and slot_label not in header_body
         ):
             extra_lines.append(f"{slot_label}: {int(duration_minutes)} {t('minutes_short', lang)}")
-    except Exception:
-        pass
 
     # Final header (NO "Підтвердити?")
     header = f"<b>{t('pay_online_confirm_title', lang)}</b>\n\n{header_body}"
@@ -3319,7 +3215,6 @@ async def pay_back_methods(
     cb: CallbackQuery, callback_data, locale: str, lang: str, booking_details=None
 ) -> None:
     """Return to the payment method selection for a booking."""
-    booking_id = int(callback_data.booking_id)
     bd = booking_details
     if bd is None:
         await cb.answer(t("booking_not_found", lang), show_alert=True)
@@ -3372,10 +3267,8 @@ async def pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
                 }:
                     error_message = t("booking_not_found", lang) or "Бронь недоступна"
                 elif not is_booking_slot_blocked(booking, now_utc, hold_minutes):
-                    try:
+                    with suppress(Exception):
                         await BookingRepo.update_status(booking_id, BookingStatus.EXPIRED)
-                    except Exception:
-                        pass
                     error_message = (
                         t("slot_unavailable", lang) or "Слот недоступен, выберите другое время"
                     )
@@ -3383,12 +3276,10 @@ async def pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
         await pre_checkout_query.answer(ok=not bool(error_message), error_message=error_message)
     except Exception:
         logger.exception("pre_checkout_query: failed to answer pre-checkout query")
-        try:
+        with suppress(Exception):
             await pre_checkout_query.answer(
                 ok=False, error_message="Оплата недоступна, обновите счет"
             )
-        except Exception:
-            pass
 
 
 @client_router.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
@@ -3423,10 +3314,10 @@ async def handle_successful_payment(message: Message, locale: str) -> None:
                 if reason in {"slot_unavailable", "booking_not_active"}
                 else "booking_not_found"
             )
-            try:
-                await message.answer(t(err_key, locale) or "Слот недоступен, выберите другое время")
-            except Exception:
-                pass
+            with suppress(Exception):
+                await message.answer(
+                    t(err_key, locale) or "Слот недоступен, выберите другое время"
+                )
             return
 
         # Notify master and admins

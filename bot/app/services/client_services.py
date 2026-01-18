@@ -3598,16 +3598,12 @@ async def process_invoice_link(user_id: int, booking_id: int) -> BookingResult:
         invoice_url = str(link) if link is not None else None
     except Exception:
         logger.exception("create_invoice_link failed for booking=%s", booking_id)
-        try:
+        with suppress(Exception):
             await bot.session.close()
-        except Exception:
-            pass
         return {"ok": False, "error": "invoice_failed", "booking_id": None}
 
-    try:
+    with suppress(Exception):
         await bot.session.close()
-    except Exception:
-        pass
 
     return {"ok": True, "booking_id": booking_id, "invoice_url": invoice_url}
 
