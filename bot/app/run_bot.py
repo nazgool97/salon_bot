@@ -5,6 +5,7 @@ import asyncio
 import logging
 import sys
 from contextlib import suppress
+from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -136,7 +137,9 @@ async def main() -> None:
         from aiogram.exceptions import TelegramAPIError
         from bot.app.telegram.common.errors import handle_db_error, handle_telegram_error
 
-        async def _extract_exception(args, kwargs):
+        async def _extract_exception(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> Exception | None:
             """Helper: find an exception object from various aiogram error handler signatures.
 
             aiogram versions/passages may call registered error handlers with different
@@ -144,8 +147,9 @@ async def main() -> None:
             with an .exception attribute). Make extraction robust.
             """
             # kwargs may contain 'exception'
-            if kwargs.get("exception"):
-                return kwargs.get("exception")
+            exc_kw = kwargs.get("exception")
+            if isinstance(exc_kw, Exception):
+                return exc_kw
 
             # args might be (update, exception)
             if len(args) >= 2 and isinstance(args[1], Exception):
@@ -155,7 +159,9 @@ async def main() -> None:
             if len(args) >= 1:
                 first = args[0]
                 if hasattr(first, "exception"):
-                    return first.exception
+                    exc_obj = getattr(first, "exception", None)
+                    if isinstance(exc_obj, Exception):
+                        return exc_obj
 
             # fallback: try to find any Exception instance in args
             for a in args:
@@ -164,20 +170,20 @@ async def main() -> None:
 
             return None
 
-        async def _on_db_error(*args, **kwargs):
+        async def _on_db_error(*args: Any, **kwargs: Any) -> None:
             exc = await _extract_exception(args, kwargs)
             if exc is None:
                 # Nothing to do
                 return
             await handle_db_error(exc)
 
-        async def _on_telegram_error(*args, **kwargs):
+        async def _on_telegram_error(*args: Any, **kwargs: Any) -> None:
             exc = await _extract_exception(args, kwargs)
             if exc is None:
                 return
             await handle_telegram_error(exc)
 
-        async def _on_unhandled(*args, **kwargs):
+        async def _on_unhandled(*args: Any, **kwargs: Any) -> None:
             exc = await _extract_exception(args, kwargs)
             logger.exception("Unhandled exception: %s", exc)
             if exc is not None:
@@ -249,7 +255,7 @@ if __name__ == "__main__":
             print("Forbidden: admin_id not allowed", file=sys.stderr)
             raise SystemExit(2)
 
-        async def _create(tg_id, name):
+        async def _create(tg_id: int, name: str) -> int:
             async with get_session() as session:
                 from sqlalchemy import select
 

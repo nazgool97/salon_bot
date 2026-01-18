@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -123,7 +123,7 @@ def masters_crud_kb(lang: str = "uk") -> InlineKeyboardMarkup:
 
 
 def admin_masters_list_kb(
-    masters: dict[int, str] | Mapping[int, str], lang: str = "uk"
+    masters: Mapping[int, str] | Iterable[tuple[int, str]], lang: str = "uk"
 ) -> InlineKeyboardMarkup:
     """Keyboard showing list of masters for admin to pick a master object to manage.
 
@@ -139,9 +139,12 @@ def admin_masters_list_kb(
     )
 
     # Master buttons: one per row
-    iterable = None
+    iterable: list[tuple[int, str]] = []
     try:
-        iterable = list(masters.items()) if hasattr(masters, "items") else list(masters)
+        if isinstance(masters, Mapping):
+            iterable = list(masters.items())
+        else:
+            iterable = list(masters)
     except Exception:
         iterable = []
 

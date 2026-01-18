@@ -1622,6 +1622,7 @@ __all__ = [
     "translate_for_user",
     "default_language",
     "get_env_int",
+    "get_local_tz",
     "get_admin_ids",
     "get_master_ids",
     "format_booking_list_item",

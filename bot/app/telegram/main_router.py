@@ -54,7 +54,9 @@ def build_main_router() -> Router:
     # Register global navigation handler after feature routers so it doesn't
     # intercept typed callback_data handlers defined in feature routers.
     @router.callback_query(NavCB.filter(F.act.in_(["root", "back", "role_root", "noop"])))
-    async def _global_nav_handler(cb: CallbackQuery, callback_data, state: FSMContext) -> None:
+    async def _global_nav_handler(
+        cb: CallbackQuery, callback_data: object, state: FSMContext
+    ) -> None:
         try:
             act = getattr(callback_data, "act", None)
             if act == "root":

@@ -125,7 +125,9 @@ async def _load_master_bookings(
         return [], default_meta
 
 
-async def show_master_menu(obj, state: FSMContext, locale: str | None = None) -> None:
+async def show_master_menu(
+    obj: Message | CallbackQuery, state: FSMContext, locale: str | None = None
+) -> None:
     """Build and show the master menu with dashboard summary."""
     # Reset navigation stack and mark preferred role for NavCB
     try:
@@ -154,7 +156,11 @@ async def show_master_menu(obj, state: FSMContext, locale: str | None = None) ->
 
 
 async def show_master_menu_ui(
-    obj, state: FSMContext, lang: str, text: str, kb: InlineKeyboardMarkup | None = None
+    obj: Message | CallbackQuery,
+    state: FSMContext,
+    lang: str,
+    text: str,
+    kb: InlineKeyboardMarkup | None = None,
 ) -> None:
     """UI-only renderer for the master menu. Does not fetch or compute data.
 
@@ -182,7 +188,9 @@ async def show_master_menu_ui(
             logger.exception("show_master_menu_ui: failed to nav_replace state without lang")
 
 
-async def _cancel_and_notify_bookings(bot, booking_ids: list[int] | None, master_id: int) -> int:
+async def _cancel_and_notify_bookings(
+    bot: Bot, booking_ids: list[int] | None, master_id: int
+) -> int:
     """Cancel bookings by id, notify clients and admins. Returns number cancelled.
 
     Best-effort: continues on failures and logs exceptions.
@@ -245,10 +253,11 @@ async def master_edit_note_fallback(msg: Message, state: FSMContext, locale: str
 
         if nav_text or nav_markup:
             try:
-                kwargs = {"reply_markup": nav_markup}
-                if parse_mode:
-                    kwargs["parse_mode"] = parse_mode
-                await msg.answer(nav_text or "", **kwargs)
+                await msg.answer(
+                    text=nav_text or "",
+                    reply_markup=nav_markup,
+                    parse_mode=parse_mode,
+                )
                 return
             except Exception:
                 logger.exception("master_edit_note_fallback: nav_current restore failed")
@@ -879,19 +888,19 @@ async def schedule_remove_window(
                 count = len(ids or [])
                 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-                kb = InlineKeyboardBuilder()
-                kb.button(
+                kb_builder = InlineKeyboardBuilder()
+                kb_builder.button(
                     text=tr("confirm"),
                     callback_data=pack_cb(MasterMenuCB, act="confirm_clear_all_exec"),
                 )
-                kb.button(text=tr("cancel"), callback_data=pack_cb(MasterMenuCB, act="menu"))
-                kb.adjust(2)
+                kb_builder.button(text=tr("cancel"), callback_data=pack_cb(MasterMenuCB, act="menu"))
+                kb_builder.adjust(2)
                 with contextlib.suppress(Exception):
                     await cb.answer()
                 await safe_edit(
                     cb.message,
                     text=tr("master_clear_all_confirm_with_conflicts", count=count),
-                    reply_markup=kb.as_markup(),
+                    reply_markup=kb_builder.as_markup(),
                 )
                 return
             with contextlib.suppress(Exception):
@@ -1000,15 +1009,15 @@ async def _check_and_confirm_day_clear(
             count = len(ids)
             from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-            kb = InlineKeyboardBuilder()
-            kb.button(
+            kb_builder = InlineKeyboardBuilder()
+            kb_builder.button(
                 text=tr("confirm"),
                 callback_data=pack_cb(MasterScheduleCB, action="confirm_clear_day", day=day),
             )
-            kb.button(
+            kb_builder.button(
                 text=tr("cancel"), callback_data=pack_cb(MasterScheduleCB, action="cancel", day=day)
             )
-            kb.adjust(2)
+            kb_builder.adjust(2)
             try:
                 await cb.answer()
             except Exception as e:
@@ -1017,7 +1026,7 @@ async def _check_and_confirm_day_clear(
             await safe_edit(
                 cb.message,
                 text=tr("master_clear_confirm_with_conflicts", count=count),
-                reply_markup=kb.as_markup(),
+                reply_markup=kb_builder.as_markup(),
             )
             return
 
@@ -2187,14 +2196,16 @@ async def booking_mark_noshow(
 async def booking_confirm_mark_done(
     cb: CallbackQuery, callback_data, state: FSMContext, locale: str
 ) -> None:
-    return await booking_mark_done(cb, callback_data, state, locale)
+    await booking_mark_done(cb, callback_data, state, locale)
+    return None
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "confirm_mark_noshow"))
 async def booking_confirm_mark_noshow(
     cb: CallbackQuery, callback_data, state: FSMContext, locale: str
 ) -> None:
-    return await booking_mark_noshow(cb, callback_data, state, locale)
+    await booking_mark_noshow(cb, callback_data, state, locale)
+    return None
 
 
 @master_router.callback_query(BookingActionCB.filter(F.act == "show_full_note"))

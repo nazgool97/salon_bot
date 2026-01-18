@@ -15,7 +15,7 @@ import urllib.parse
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
-from typing import Any, Annotated
+from typing import Any, Annotated, Awaitable, Callable, ParamSpec, TypeVar
 from enum import Enum
 
 import jwt
@@ -28,8 +28,6 @@ from fastapi.responses import FileResponse
 
 # Centralized business logic helpers (booking, pricing, etc.)
 from bot.app.services import client_services
-
-
 
 from bot.app.core.constants import BOT_TOKEN
 from bot.app.services.shared_services import (
@@ -67,6 +65,9 @@ from bot.app.core.notifications import send_booking_notification
 from bot.app.services.admin_services import SettingsRepo
 
 logger = logging.getLogger(__name__)
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 # JWT settings
 JWT_SECRET = os.getenv("TWA_JWT_SECRET") or BOT_TOKEN
@@ -146,7 +147,9 @@ class BookingResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def booking_error_handler(default_error: str):
+def booking_error_handler(
+    default_error: str,
+) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[BookingResponse | T]]]:
     """Decorator to de-duplicate try/except in booking endpoints.
 
     - Passes through FastAPI `HTTPException` untouched.
@@ -154,9 +157,9 @@ def booking_error_handler(default_error: str):
     - Logs unexpected exceptions and returns a unified error code.
     """
 
-    def decorator(func):
+    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[BookingResponse | T]]:
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> BookingResponse | T:
             try:
                 return await func(*args, **kwargs)
             except HTTPException:
@@ -403,7 +406,7 @@ def _decode_token(token: str) -> Principal:
     )
 
 
-async def _safe_service_repo_call(method_name: str, *args, **kwargs):
+async def _safe_service_repo_call(method_name: str, *args: Any, **kwargs: Any) -> Any | None:
     """Call a ServiceRepo method by name safely for type-checker friendliness.
 
     Returns None on any error or if method is missing.
@@ -597,7 +600,7 @@ async def get_slots(
     master_id: int,
     date: str,  # YYYY-MM-DD
     service_ids: str = Query(...),  # Приходит как "1,2,3"
-):
+) -> SlotsResponse:
     try:
         dt_obj = datetime.strptime(date, "%Y-%m-%d")
         ids_list = [sid.strip() for sid in service_ids.split(",") if sid.strip()]
@@ -631,7 +634,7 @@ async def check_slot(
     service_ids: Annotated[list[str], Query(..., alias="service_ids[]")],
     principal: Annotated[Principal, Depends(get_current_principal)],
     master_id: Annotated[int | None, Query()] = None,
-) -> dict:
+) -> dict[str, Any | None]:
     """Return whether the given slot is currently available for booking.
 
     Uses the canonical `get_available_time_slots_for_services` implementation
@@ -676,7 +679,7 @@ async def check_slot(
     )
 
     # When unavailable, include a conflict code computed by the canonical repo
-    conflict = None
+    conflict: Any | None = None
     if not is_available:
         new_start = slot_key.astimezone(UTC)
         new_end = new_start + timedelta(minutes=total_minutes)
@@ -760,7 +763,7 @@ async def list_services(
     principal: Annotated[Principal, Depends(get_current_principal)]
 ) -> list[ServiceOut]:
     try:
-        async with get_session() as session:  # type: ignore  # re-use existing helper
+        async with get_session() as session:
             from sqlalchemy import select
             from bot.app.domain.models import Service
 
@@ -798,7 +801,7 @@ async def list_masters(
 async def service_ranges(
     service_ids: Annotated[list[str], Query(..., alias="service_ids[]")],
     principal: Annotated[Principal, Depends(get_current_principal)],
-) -> dict:
+) -> dict[str, dict[str, int | None]]:
     """Return duration and price ranges for provided service ids.
 
     Response format: { service_id: { min_duration: int|null, max_duration: int|null, min_price_cents: int|null, max_price_cents: int|null } }
@@ -843,7 +846,7 @@ async def service_ranges(
             res = await session.execute(stmt)
             rows = res.all()
 
-            out: dict = {}
+            out: dict[str, dict[str, int | None]] = {}
             found = {r[0]: r for r in rows}
 
             # Fill results for those with master entries
@@ -1112,15 +1115,12 @@ async def list_bookings(
         # Compute formatted date/time for frontend convenience
         try:
             try:
-                lt = get_local_tz()
+                lt: ZoneInfo | None = get_local_tz()
             except Exception:
                 lt = None
             # Ensure lt is a ZoneInfo instance or fallback to UTC ZoneInfo
             if lt is None or not isinstance(lt, ZoneInfo):
-                try:
-                    lt = ZoneInfo("UTC")
-                except Exception:
-                    lt = "UTC"
+                lt = ZoneInfo("UTC")
             starts_obj = starts_at
             ends_obj = getattr(b, "ends_at", None)
             if starts_obj is not None and getattr(starts_obj, "tzinfo", None) is None:
@@ -1416,7 +1416,7 @@ async def create_booking(
 @app.post("/api/finalize", response_model=BookingResponse)
 @booking_error_handler("finalize_failed")
 async def finalize_booking(
-    payload: dict,
+    payload: dict[str, Any],
     principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> BookingResponse:
     """Finalize an existing draft booking created with a hold.
@@ -1507,20 +1507,13 @@ def get_app() -> FastAPI:
     return app
 
 
-# ---------------------------------------------------------------------------
-# Serve WebApp (production build)
-# ---------------------------------------------------------------------------
-# Путь, куда Docker скопировал файлы (см. Dockerfile)
+
 WEB_DIR = os.getenv("TWA_WEB_DIR", "/app/web")
 
 if os.path.isdir(WEB_DIR):
-    # 1. Раздаем статику (CSS, JS, картинки) по пути /assets
     app.mount("/assets", StaticFiles(directory=f"{WEB_DIR}/assets"), name="assets")
 
-    # 2. Любой другой запрос, который не попал в /api, возвращает index.html
-    # Это нужно для SPA (Single Page Application) роутинга
     @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # Если запрашивают файл, которого нет - отдаем index.html
-        # (React сам разберется, какую страницу показать)
+    async def serve_spa(full_path: str) -> FileResponse:
+
         return FileResponse(f"{WEB_DIR}/index.html")

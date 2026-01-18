@@ -40,3 +40,8 @@ except Exception:  # pragma: no cover
     i18n_service = None
 
 __all__ = ["user_service", "payment_service", "i18n_service"]
+
+# Re-export common helpers for callers using package-level imports.
+from bot.app.services.shared_services import format_booking_details_text, get_local_tz
+
+__all__ += ["format_booking_details_text", "get_local_tz"]

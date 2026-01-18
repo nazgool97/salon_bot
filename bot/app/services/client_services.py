@@ -3417,15 +3417,13 @@ async def process_booking_finalization(
                 async with get_session() as session:
                     b = await session.get(Booking, booking_id)
                     if b:
-                        setattr(b, "original_price_cents", base_price)
-                        setattr(b, "final_price_cents", final_price)
-                        setattr(
-                            b,
-                            "discount_amount_cents",
-                            discount_amount if discount_amount is not None else 0,
+                        b.original_price_cents = base_price
+                        b.final_price_cents = final_price
+                        b.discount_amount_cents = (  # type: ignore[attr-defined]
+                            discount_amount if discount_amount is not None else 0
                         )
                         if currency_val:
-                            setattr(b, "currency", currency_val)
+                            b.currency = currency_val  # type: ignore[attr-defined]
                         await session.commit()
                         await session.refresh(b)
                         booking = b
@@ -3647,4 +3645,6 @@ __all__ = [
     "process_booking_finalization",
     "process_invoice_link",
     "process_booking_details",
+    "get_local_tz",
+    "format_booking_details_text",
 ]

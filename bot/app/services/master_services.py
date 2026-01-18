@@ -1456,9 +1456,9 @@ class MasterRepo:
                 # Attach metrics to master instance for downstream formatter
                 with suppress(Exception):
                     if rating_avg is not None:
-                        setattr(master, "rating", float(rating_avg))
-                    setattr(master, "completed_orders", completed_orders)
-                    setattr(master, "ratings_count", int(ratings_count or 0))
+                        master.rating = float(rating_avg)  # type: ignore[attr-defined]
+                    master.completed_orders = completed_orders  # type: ignore[attr-defined]
+                    master.ratings_count = int(ratings_count or 0)  # type: ignore[attr-defined]
 
                 # profile bio -> durations and about (now stored on masters.bio)
                 try:

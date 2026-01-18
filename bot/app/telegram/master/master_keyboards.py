@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -72,7 +73,7 @@ def get_weekly_schedule_kb(include_edit: bool = True, lang: str = "uk") -> Inlin
 
 
 def get_schedule_day_preview_kb(
-    day: int, windows: list | None, lang: str = "uk"
+    day: int, windows: list[Sequence[str]] | None, lang: str = "uk"
 ) -> InlineKeyboardMarkup:
     """Return a keyboard that previews existing windows and allows removing a specific window.
 
