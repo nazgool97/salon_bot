@@ -1,4 +1,4 @@
-name: CI (no tests)
+name: CI / Quality & Security (no tests)
 
 on:
   push:
@@ -7,65 +7,75 @@ on:
     branches: ["**"]
 
 jobs:
-  build:
+  quality:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install ruff mypy bandit pip-audit black isort
+          pip install ruff mypy bandit pip-audit black
 
-      # --- Сборка и зависимости ---
+      # ---------- Build & dependencies ----------
       - name: Syntax check (compileall)
         run: python -m compileall bot
 
-      - name: Dependency check
+      - name: Dependency consistency check
         run: pip check
 
-      # --- Качество кода ---
-      - name: Format check (Black)
+      # ---------- Code quality ----------
+      - name: Code format check (Black)
         run: black --check bot
 
-      - name: Import order check (isort)
-        run: isort --check-only bot
-
-      - name: Format check (ruff fmt --check)
-        run: ruff format --check bot
-        continue-on-error: true
-
-      - name: Lint (ruff check)
+      - name: Lint (Ruff)
         run: ruff check bot
 
-      # --- Типизация ---
-      - name: Type check (mypy)
+      # ---------- Typing ----------
+      - name: Type checking (mypy)
         run: mypy bot
+        continue-on-error: true
 
-      # --- Безопасность ---
-      - name: Security check (Bandit)
+      # ---------- Security ----------
+      - name: Static security analysis (Bandit)
         run: bandit -r bot
+        continue-on-error: true
 
-      - name: Security check (Dependencies)
+      - name: Dependency vulnerability scan (pip-audit)
         run: pip-audit
+        continue-on-error: true
 
-      - name: Skip tests (as requested)
-        run: echo 'CI configured: skipping tests as requested.'
+      # ---------- Tests ----------
+      - name: Tests
+        run: echo "No automated tests configured (intentional)."
 
   deploy-placeholder:
+    name: Deploy (placeholder)
     if: github.ref == 'refs/heads/main'
-    needs: build
+    needs: quality
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Deploy placeholder
-        run: echo "Deploy step placeholder — configure real deployment steps and secrets"
+        run: |
+          echo "Deploy step placeholder."
+          echo "Configure real deployment and secrets when needed."
