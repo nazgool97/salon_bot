@@ -81,6 +81,13 @@ ACTIVE_STATUSES = frozenset(
     }
 )
 
+REMINDER_ELIGIBLE_STATUSES = frozenset(
+    {
+        BookingStatus.CONFIRMED,
+        BookingStatus.PAID,
+    }
+)
+
 REVENUE_STATUSES = frozenset(
     {
         BookingStatus.PAID,

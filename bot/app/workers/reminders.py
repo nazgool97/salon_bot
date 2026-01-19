@@ -59,7 +59,7 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
     total_sent = 0
 
     try:
-        from bot.app.domain.models import Booking as BookingModel, TERMINAL_STATUSES
+        from bot.app.domain.models import Booking as BookingModel, REMINDER_ELIGIBLE_STATUSES
 
         async def _process_config(kind: str, minutes: int, flag_attr: str) -> int:
             window_utc = now_utc + timedelta(minutes=minutes)
@@ -71,7 +71,7 @@ async def _remind_once(now_utc: datetime, bot: Bot) -> int:
                     .where(
                         BookingModel.starts_at >= now_utc,
                         BookingModel.starts_at < window_utc,
-                        BookingModel.status.notin_(tuple(TERMINAL_STATUSES)),
+                        BookingModel.status.in_(tuple(REMINDER_ELIGIBLE_STATUSES)),
                         flag_column.is_(False),
                     )
                     .order_by(BookingModel.starts_at)
