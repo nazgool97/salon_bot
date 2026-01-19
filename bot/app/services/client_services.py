@@ -386,6 +386,9 @@ class BookingDetails:
     currency: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    paid_at: datetime | None = None
+    payment_provider: str | None = None
+    payment_id: str | None = None
     date_str: str | None = None
     client_id: int | None = None
     duration_minutes: int | None = None
@@ -1609,6 +1612,11 @@ async def build_booking_details(
             if getattr(b, "discount_amount_cents", None) is not None
             else data.get("discount_amount_cents")
         )
+        data["paid_at"] = getattr(b, "paid_at", None) or data.get("paid_at")
+        data["payment_provider"] = getattr(b, "payment_provider", None) or data.get(
+            "payment_provider"
+        )
+        data["payment_id"] = getattr(b, "payment_id", None) or data.get("payment_id")
         try:
             if getattr(b, "user_id", None):
                 u = await UserRepo.get_by_id(int(b.user_id))
@@ -1654,6 +1662,9 @@ async def build_booking_details(
         currency=data.get("currency") or global_currency,
         starts_at=data.get("starts_at"),
         ends_at=data.get("ends_at"),
+        paid_at=data.get("paid_at"),
+        payment_provider=data.get("payment_provider"),
+        payment_id=data.get("payment_id"),
         duration_minutes=duration_val,
         date_str=data.get("date_str"),
         client_id=data.get("client_id"),

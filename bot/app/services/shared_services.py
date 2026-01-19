@@ -1520,9 +1520,15 @@ def format_booking_details_text(
                 f"{__("slot_duration_label")}: {int(duration_minutes)} {__("minutes_short")}"
             )
         status_str = str(status_raw).lower() if status_raw is not None else ""
-        amount_label = (
-            __("amount_paid_label") if (paid_at or status_str == "paid") else __("amount_label")
-        )
+        payment_provider = _get("payment_provider", None)
+        payment_id = _get("payment_id", None)
+        paid_flag = bool(paid_at)
+        if not paid_flag:
+            # Treat non-cash done/paid statuses with payment evidence as paid
+            non_cash = str(payment_provider or "").lower() not in {"", "cash"}
+            if status_str in {"paid", "done"} and non_cash and payment_id:
+                paid_flag = True
+        amount_label = __("amount_paid_label") if paid_flag else __("amount_label")
         lines.append(f"{amount_label}: {human_price}")
 
         if str(role).lower() == "master":
