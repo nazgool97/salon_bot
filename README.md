@@ -18,41 +18,130 @@ Enterprise-grade CRM bot for salons, barbershops, and studios built with Clean A
 ## Screenshots
 
 <details>
-  <summary><b><u>CLIENT BOOKING FLOW</u></b></summary>
+  <summary><b>CLIENT BOOKING FLOW</b></summary>
 
-  ![Main menu](screenshots/main_menu.jpg)  
-  ![Service selection](screenshots/service_selection.jpg)  
-  ![master_card](screenshots/master_card.jpg)  
-  ![Date selection](screenshots/date_selection.jpg)  
-  ![Time selection](screenshots/time_selection.jpg)  
-  ![Payment method](screenshots/payment_method.jpg)  
-  ![Online payment](screenshots/online_payment.jpg)  
-  ![Upcoming bookings](screenshots/upcoming_bookings.jpg)  
+  <details>
+    <summary>Main menu</summary>
+    <img src="screenshots/main_menu.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Service selection</summary>
+    <img src="screenshots/service_selection.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Master card</summary>
+    <img src="screenshots/master_card.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Date selection</summary>
+    <img src="screenshots/date_selection.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Time selection</summary>
+    <img src="screenshots/time_selection.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Payment method</summary>
+    <img src="screenshots/payment_method.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Online payment</summary>
+    <img src="screenshots/online_payment.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Upcoming bookings</summary>
+    <img src="screenshots/upcoming_bookings.jpg" width="360" />
+  </details>
+
 </details>
 
-<details>
-  <summary><b><u>TELEGRAM MINI APP — CLIENT BOOKING INTERFACE</u></b></summary>
 
-  ![Mini App Home](screenshots/webapp_home.jpg)
-  ![Mini App My upcoming isits](screenshots/webapp_upcoming_visits.jpg)
-  ![Mini App My history isits](screenshots/webapp_history_visits.jpg)
-  ![Mini App Choose a master](screenshots/webapp_choose_a_master.jpg)
-  ![Mini App Choose a day](screenshots/webapp_choose_a_day.jpg)
-  ![Mini App Choose a time](screenshots/webapp_choose_a_time.jpg)
-  ![Mini App Check details](screenshots/webapp_check_details.jpg)
-  ![Mini App Booked](screenshots/webapp_booked.jpg)
-  ![Mini App Book cart](screenshots/webapp_book_cart.jpg)
+<details>
+  <summary><b>TELEGRAM MINI APP — CLIENT INTERFACE</b></summary>
+
+  <details>
+    <summary>Home</summary>
+    <img src="screenshots/webapp_home.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Upcoming visits</summary>
+    <img src="screenshots/webapp_upcoming_visits.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Visit history</summary>
+    <img src="screenshots/webapp_history_visits.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Choose a master</summary>
+    <img src="screenshots/webapp_choose_a_master.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Choose a day</summary>
+    <img src="screenshots/webapp_choose_a_day.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Choose a time</summary>
+    <img src="screenshots/webapp_choose_a_time.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Check details</summary>
+    <img src="screenshots/webapp_check_details.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Booking confirmed</summary>
+    <img src="screenshots/webapp_booked.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Booking cart</summary>
+    <img src="screenshots/webapp_book_cart.jpg" width="360" />
+  </details>
+
 </details>
 
 
 <details>
-  <summary>MASTER & ADMIN PANELS</summary>
+  <summary><b>MASTER & ADMIN PANELS</b></summary>
 
-  ![Master schedule](screenshots/master_schedule.jpg)  
-  ![master_booking_detail](screenshots/master_booking_detail.jpg)  
-  ![Admin analytics](screenshots/admin_stats.jpg)  
-  ![Admin panel](screenshots/admin_panel.jpg)  
-  ![Admin settings](screenshots/admin_settings.jpg)  
+  <details>
+    <summary>Master schedule</summary>
+    <img src="screenshots/master_schedule.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Booking details (Master)</summary>
+    <img src="screenshots/master_booking_detail.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Admin analytics</summary>
+    <img src="screenshots/admin_stats.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Admin panel</summary>
+    <img src="screenshots/admin_panel.jpg" width="360" />
+  </details>
+
+  <details>
+    <summary>Admin settings</summary>
+    <img src="screenshots/admin_settings.jpg" width="360" />
+  </details>
+
 </details>
 
 ---
