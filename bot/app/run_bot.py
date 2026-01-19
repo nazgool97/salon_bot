@@ -21,7 +21,6 @@ from bot.app.workers.reminders import start_reminders_worker
 from bot.app.domain.models import Master
 from bot.app.services.shared_services import get_admin_ids
 
-
 # ==============================================================
 # LOGGING CONFIG (Variant B)
 # ==============================================================

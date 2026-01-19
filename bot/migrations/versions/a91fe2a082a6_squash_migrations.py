@@ -1,7 +1,7 @@
 """Squash migrations
 
 Revision ID: a91fe2a082a6
-Revises: 
+Revises:
 Create Date: 2026-01-19 03:22:16.035753
 
 """

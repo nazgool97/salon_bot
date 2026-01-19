@@ -1011,7 +1011,9 @@ def build_bookings_dashboard_kb(
                 pass
 
             bottom_row.append(
-                InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb)
+                InlineKeyboardButton(
+                    text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb
+                )
             )
             if bottom_row:
                 kb.row(*bottom_row)
@@ -1097,7 +1099,9 @@ def build_bookings_dashboard_kb(
                 back_cb = pack_cb(NavCB, act="root")
         except Exception:
             back_cb = pack_cb(NavCB, act="role_root")
-        kb.row(InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb))
+        kb.row(
+            InlineKeyboardButton(text=_localize("back", lang, "⬅️ Назад"), callback_data=back_cb)
+        )
         return kb.as_markup()
     except Exception as e:
         logger.exception("build_bookings_dashboard_kb failed: %s", e)

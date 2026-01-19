@@ -757,7 +757,7 @@ async def create_hold(
 
 @app.get("/api/services", response_model=list[ServiceOut])
 async def list_services(
-    principal: Annotated[Principal, Depends(get_current_principal)]
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> list[ServiceOut]:
     try:
         async with get_session() as session:
@@ -788,7 +788,7 @@ async def list_services(
 
 @app.get("/api/masters", response_model=list[MasterOut])
 async def list_masters(
-    principal: Annotated[Principal, Depends(get_current_principal)]
+    principal: Annotated[Principal, Depends(get_current_principal)],
 ) -> list[MasterOut]:
     masters: list[tuple[int, str]] = await MasterRepo.get_masters_page(page=1, page_size=200)
     return [MasterOut(id=m[0], name=m[1]) for m in masters]

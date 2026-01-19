@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import (
 
 from ..domain.models import Base
 
-
 # =====================================================
 # 🔧 ENV + Static configuration
 # =====================================================

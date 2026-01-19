@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
-
 TRANSLATIONS = {
     "en": {
         "about_title": "📝 About:",
