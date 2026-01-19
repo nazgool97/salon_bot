@@ -40,12 +40,16 @@ jobs:
       - name: Dependency consistency check
         run: pip check
 
-      # ---------- Code quality ----------
+      # ---------- Formatting ----------
       - name: Code format check (Black)
         run: black --check bot
 
-      - name: Lint (Ruff)
-        run: ruff check bot
+      # ---------- Ruff (STRICT MODE) ----------
+      - name: Ruff lint (strict)
+        run: |
+          ruff check bot \
+            --select E,F,B,UP,SIM,PLR,C4,ARG,PIE,PERF,I \
+            --target-version py312
 
       # ---------- Typing ----------
       - name: Type checking (mypy)
