@@ -121,6 +121,8 @@ class Master(Base):
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Optional JSON/text blob with profile info (about, durations, etc.)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Time when master record was created (for analytics/history). Nullable for backward compatibility.
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

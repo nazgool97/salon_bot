@@ -1475,21 +1475,27 @@ class MasterRepo:
                 try:
                     import json
 
-                    bio_text = await session.scalar(
-                        sa.text("SELECT bio FROM masters WHERE id = :mid").bindparams(
-                            mid=int(master_id)
-                        )
-                    )
-                    bio = json.loads(bio_text or "{}") if bio_text else {}
-                except Exception:
+                    bio_raw = getattr(master, "bio", None)
+                    if isinstance(bio_raw, (dict, list)):
+                        bio = bio_raw  # allow JSONB dict from DB
+                    elif bio_raw:
+                        bio = json.loads(str(bio_raw))
+                    else:
+                        bio = {}
+                except Exception as bio_err:
                     bio = {}
+                    logger.warning(
+                        "MasterRepo.get_master_profile_data: bio parse failed for %s: %s",
+                        master_id,
+                        bio_err,
+                    )
 
                 # Start from bio-provided durations (legacy), then override with MasterService table values
                 durations_map = bio.get("durations") or bio.get("durations_map") or {}
                 # Normalize to str->int where possible
                 with suppress(Exception):
                     durations_map = {str(k): int(v) for k, v in (durations_map or {}).items() if k}
-                # Fetch any explicit overrides from master_services table and merge (overrides take precedence)
+                # Fetch per-service overrides stored on MasterService.duration_minutes and merge
                 try:
                     ms_rows = await session.execute(
                         select(MasterService.service_id, MasterService.duration_minutes).where(
@@ -1501,32 +1507,21 @@ class MasterRepo:
                             if mdur is None:
                                 # explicit null means no override; skip
                                 continue
-                            durations_map[str(sid)] = int(mdur)
-                        except Exception:
-                            continue
-                except Exception:
-                    # Non-fatal: keep durations_map from bio
-                    pass
-                # Merge any per-service overrides stored on MasterService.duration_minutes
-                try:
-                    ms_rows = await session.execute(
-                        select(MasterService.service_id, MasterService.duration_minutes).where(
-                            MasterService.master_id == master_id
-                        )
-                    )
-                    for sid, dur in ms_rows.all():
-                        try:
-                            if dur is None:
-                                # allow bio map to control when override is not set
-                                continue
-                            dval = int(dur)
+                            dval = int(mdur)
                             if dval > 0:
                                 durations_map[str(sid)] = dval
                         except Exception:
                             continue
-                except Exception:
-                    # ignore DB errors here and keep bio durations_map only
-                    pass
+                except Exception as dur_err:
+                    # Roll back to clear failed transaction so later queries succeed
+                    with suppress(Exception):
+                        await session.rollback()
+                    logger.warning(
+                        "MasterRepo.get_master_profile_data: duration overrides fetch failed for %s: %s",
+                        master_id,
+                        dur_err,
+                    )
+                    # Keep durations_map sourced from bio when overrides fail
                 about_text = bio.get("about") or None
 
                 # recent reviews (rating, comment)
