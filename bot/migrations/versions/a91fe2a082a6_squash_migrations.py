@@ -1,8 +1,8 @@
-"""full current schema squash
+"""Squash migrations
 
-Revision ID: 9695f0514b8c
-Revises:
-Create Date: 2025-12-13 21:17:39.752469
+Revision ID: a91fe2a082a6
+Revises: 
+Create Date: 2026-01-19 03:22:16.035753
 
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = "9695f0514b8c"
+revision = "a91fe2a082a6"
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("username", sa.String(length=64), nullable=True),
         sa.Column("first_name", sa.String(length=80), nullable=True),
         sa.Column("last_name", sa.String(length=80), nullable=True),
+        sa.Column("bio", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.PrimaryKeyConstraint("id"),
