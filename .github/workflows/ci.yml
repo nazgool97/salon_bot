@@ -1,10 +1,12 @@
-name: CI / Quality & Security (no tests)
+name: CI / Quality, Security & Coverage
 
 on:
   push:
-    branches: ["**"]
+    branches: [main, develop]
   pull_request:
-    branches: ["**"]
+
+permissions:
+  contents: read
 
 jobs:
   quality:
@@ -31,30 +33,30 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install ruff mypy bandit pip-audit black
+          pip install black ruff mypy bandit pip-audit pytest pytest-cov
 
-      # ---------- Build & dependencies ----------
-      - name: Syntax check (compileall)
-        run: python -m compileall bot
+      # ---------- Build ----------
+      - name: Syntax check
+        run: python -m compileall .
 
       - name: Dependency consistency check
         run: pip check
 
       # ---------- Code quality ----------
       - name: Code format check (Black)
-        run: black --check bot
+        run: black --check .
 
       - name: Lint (Ruff)
-        run: ruff check bot
+        run: ruff check .
 
       # ---------- Typing ----------
       - name: Type checking (mypy)
-        run: mypy bot
+        run: mypy .
         continue-on-error: true
 
       # ---------- Security ----------
       - name: Static security analysis (Bandit)
-        run: bandit -r bot
+        run: bandit -r .
         continue-on-error: true
 
       - name: Dependency vulnerability scan (pip-audit)
@@ -62,8 +64,15 @@ jobs:
         continue-on-error: true
 
       # ---------- Tests ----------
-      - name: Tests
-        run: echo "No automated tests configured (intentional)."
+      - name: Run tests with coverage
+        run: |
+          pytest --cov=. --cov-report=term --cov-report=xml --maxfail=1 -q
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   deploy-placeholder:
     name: Deploy (placeholder)
@@ -78,4 +87,4 @@ jobs:
       - name: Deploy placeholder
         run: |
           echo "Deploy step placeholder."
-          echo "Configure real deployment and secrets when needed."
+          echo "Real deployment will be configured later."
