@@ -140,7 +140,7 @@ graph TD
     end
 
     subgraph Domain
-        Domain[Domain Models<br/>Entities & Value Objects]
+        DomainModels[Domain Models<br/>Entities & Value Objects]
     end
 
     subgraph Infrastructure
@@ -159,7 +159,7 @@ graph TD
     Bot --> Services
     API --> Services
 
-    Services --> Domain
+    Services --> DomainModels
     Services --> Engine
     Services --> Repo
 
