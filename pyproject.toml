@@ -66,7 +66,12 @@ branch = true
 source = ["bot/app/core", "bot/app/domain"]
 omit = [
     "bot/app/tests*/*",
-    "bot/app/__init__.py"
+    "bot/app/__init__.py",
+    "bot/app/run_bot.py",
+    "bot/app/translations.py",
+    "bot/app/services/*",
+    "bot/app/telegram/*",
+    "bot/api/*"
 ]
 
 [tool.coverage.report]
