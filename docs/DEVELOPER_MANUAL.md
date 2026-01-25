@@ -16,6 +16,24 @@ This is the detailed reference for engineers. It complements the high-level READ
 - Acquire `pg_advisory_xact_lock(master_id, time_bucket)` before booking write.
 - Holds for transaction lifetime; prevents double booking; auto-released on commit/rollback.
 
+## Transaction Model
+
+- Each application service executes in a single DB transaction. Services should open, use, and commit/rollback a single transaction boundary for each use-case to keep invariants simple and auditable.
+- Workers operate in independent transactions per job; retry and idempotency are expected at the job level.
+- No cross-service distributed transactions; instead, use compensation, events, or eventual consistency when coordination across bounded contexts is required.
+
+## Failure Modes & Guarantees
+
+- Payment succeeds but callback is delayed: a `payment_reconcile` worker periodically verifies provider state and reconciles the booking/payment state (idempotent reconciler).
+- Bot restarts mid-flow: FSM state and navigation stack are persisted or reconstructable from DB; the handler resumes based on stored FSM context or presents a deterministic restart path.
+- Worker crash during reminder send: workers use idempotency keys and at-least-once delivery with exponential backoff; retries are safe and deduplicated.
+
+## Out Of Scope
+
+- No real-time locking UI (clients are not expected to hold server-side locks visible to users).
+- No multi-currency conversion or FX plumbing — amounts are stored as amount+currency and conversions are out-of-scope for core booking flows.
+- No sharding or horizontal partitioning of the primary booking table yet; scale by vertical sizing, caching, and read replicas first.
+
 ## Gap Search (Sketch)
 - Inputs: working hours, breaks, existing bookings, requested services, durations, per-master speed.
 - Build occupied intervals; derive free windows; subtract total duration; apply lead-time and cutoff policies.

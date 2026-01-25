@@ -236,7 +236,7 @@ graph TD
 - Analytics and reporting exports.
 - Workers are idempotent and safe to run in multiple replicas.
 
-** Architectural Characteristics**
+**Architectural Characteristics**
 
 - Stateless handlers → easy horizontal scaling.
 - Single domain model shared across bot and WebApp.
@@ -244,7 +244,7 @@ graph TD
 - UTC-based scheduling to avoid DST issues.
 - Clear separation of concerns across layers.
 
-** Why This Architecture**
+**Why This Architecture**
 
 - Supports multiple interfaces (Chat + WebApp) without duplicating logic.
 - Prevents double bookings under concurrent load.
