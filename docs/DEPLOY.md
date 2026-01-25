@@ -5,7 +5,7 @@
 ```bash
 # 1) Clone
 git clone https://github.com/nazgool97/salon_bot.git
-cd repo
+cd salon_bot
 
 # 2) Configure
 cp .env.example .env
@@ -22,7 +22,6 @@ docker-compose up -d
 
 - `BOT_TOKEN`: Main Telegram bot token issued by BotFather. Required for the bot to start.
 - `DATABASE_URL=postgresql+asyncpg://app_user:change_me@db:5432/booking_app`: Connection string for the database (PostgreSQL + asyncpg).
-- `SAME_DAY_LEAD_MINUTES`: Minimum lead time (minutes) for same-day booking.
 - `TELEGRAM_PAYMENT_PROVIDER_TOKEN`: Telegram payment provider token (issued via BotFather).
 - `ADMIN_IDS`: List of Telegram IDs of admins who receive notifications.
 - `DEFAULT_LANGUAGE`: Default interface language (e.g., uk, en).
@@ -31,6 +30,8 @@ docker-compose up -d
 - `BUSINESS_TIMEZONE=Europe/Kyiv`: Business timezone (salon), used for client-facing times.
 - `SETTINGS_CACHE_TTL_SECONDS`: Settings cache time-to-live in seconds.
 - `PAGINATION_PAGE_SIZE`: Number of items per page for pagination.
+- `TWA_WEBAPP_URL`: Public HTTPS URL of the Telegram Mini App (WebApp) frontend. Must be accessible from Telegram clients.
+- `TWA_ALLOW_ALL_ORIGINS`: Enables wildcard CORS for the WebApp API. Set to true only for development; keep false in production.
 
 
 ## Migrations

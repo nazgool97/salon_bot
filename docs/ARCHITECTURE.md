@@ -23,20 +23,21 @@
 ```mermaid
 graph TD
     User((User)) -->|Update| H[Handlers / FSM]
-    H -->|Call| S[Services]
+    H -->|Call| S[Application Services]
     S -->|Validate| D[Domain Models]
     S -->|Persist| R[Repositories]
     R -->|SQL| DB[(PostgreSQL)]
-    
-    subgraph "Infrastructure"
+
+    subgraph Infrastructure
         DB
-        Redis[Redis / Memory]
+        Redis[Redis / In-memory cache]
     end
-    
-    subgraph "Core Logic"
+
+    subgraph Core Logic
         S
         D
     end
+```
 
 ## Booking Engine
 - Gap search across working hours, breaks, existing bookings to find valid starts.
