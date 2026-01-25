@@ -30,7 +30,6 @@ graph TD
 
     subgraph Infrastructure
         DB
-        Redis[Redis / In-memory cache]
     end
 
     subgraph Core Logic
@@ -87,4 +86,170 @@ Telegram Mini App acts as an alternative presentation layer:
 This allows the same business logic to serve:
 - Telegram chat interface
 - WebApp UI
+
+## C4 — System Context
+
+The system is a Telegram-based booking platform that allows clients to book services, admins to manage schedules, and the business to enforce booking, payment, and policy rules.
+
+```mermaid
+graph TD
+    Client[Client<br/>Telegram User]
+    Admin[Admin<br/>Telegram User]
+    Bot[Telegram Bot System]
+    WebApp[Telegram Mini App]
+    TG[Telegram Platform]
+    Payment[Telegram Payments]
+    DB[(PostgreSQL)]
+    Worker[Background Workers]
+
+    Client -->|Chat / WebApp| TG
+    Admin -->|Chat| TG
+    TG -->|Updates / Webhooks| Bot
+    WebApp -->|REST API| Bot
+
+    Bot -->|Payments API| Payment
+    Bot --> DB
+    Worker --> DB
+    Worker --> TG
+```
+
+Key points:
+
+- Telegram is the primary entry point (chat + Mini App).
+- Payments are handled via Telegram Payments.
+- PostgreSQL is the system of record.
+- Background workers handle async and time-based processes.
+
+## C4 — Container View
+
+The system is composed of multiple runtime containers with clear responsibilities.
+
+```mermaid
+graph TD
+    TG[Telegram Platform]
+
+    subgraph Presentation
+        Bot[Bot Runtime<br/>Handlers + FSM]
+        WebApp[Mini App UI]
+    end
+
+    subgraph Application
+        API[FastAPI Facade]
+        Services[Application Services]
+        Engine[Booking Engine]
+    end
+
+    subgraph Domain
+        Domain[Domain Models<br/>Entities & Value Objects]
+    end
+
+    subgraph Infrastructure
+        Repo[Repositories]
+        DB[(PostgreSQL)]
+        Cache[In-memory / Redis]
+        Payments[Telegram Payments]
+    end
+
+    subgraph Background
+        Workers[Workers<br/>Reminders / Cleanup / Reconciliation]
+    end
+
+    TG --> Bot
+    WebApp --> API
+    Bot --> Services
+    API --> Services
+
+    Services --> Domain
+    Services --> Engine
+    Services --> Repo
+
+    Repo --> DB
+    Services --> Payments
+    Workers --> Repo
+    Workers --> TG
+```
+
+## Container Responsibilities
+
+**Presentation Layer**
+
+**Telegram Bot (Handlers / FSM)**
+- Accepts incoming updates from Telegram.
+- Parses user input and manages FSM state.
+- Maintains navigation stack for Back actions.
+- Delegates all business decisions to application services.
+
+**Telegram Mini App**
+- Client-facing UI for booking and managing visits.
+- Communicates with backend via REST API.
+- Shares the same business logic as the bot.
+
+**Application Layer**
+
+**Application Services**
+- Orchestrate use cases (create booking, confirm payment, reschedule).
+- Enforce access rules and business policies.
+- Manage transactions and booking holds.
+- Emit events for background processing.
+
+**Booking Engine**
+- Calculates availability using working hours, breaks, existing bookings, composite services, and per-master speed modifiers.
+- Produces pricing snapshots at confirmation time.
+
+**FastAPI Facade**
+- Thin HTTP layer for WebApp and integrations.
+- Converts HTTP requests into application service calls.
+
+**Domain Layer**
+
+**Domain Models**
+- Entities: Booking, Service, Master, Customer, Payment, Policy
+- Value Objects: Money, Duration, TimeWindow
+- Encodes invariants: no double booking, correct duration and pricing, timezone-safe calculations.
+- The domain layer contains no framework, DB, or Telegram dependencies.
+
+**Infrastructure Layer**
+
+**Repositories**
+- PostgreSQL persistence.
+- Pagination, filtering, reporting.
+- Concurrency protection using pg_advisory_xact_lock.
+
+**PostgreSQL**
+- Primary source of truth.
+- Enforces integrity via constraints and indexes.
+
+**Cache / In-memory Storage**
+- Short-lived FSM state and settings cache.
+- Optional Redis for scaling.
+
+**Payments**
+- Telegram Payments integration.
+- External provider payloads stored with audit trail.
+
+**Background Processing**
+
+**Workers**
+- Reminder delivery.
+- Cleanup of expired booking holds.
+- Payment reconciliation.
+- Analytics and reporting exports.
+- Workers are idempotent and safe to run in multiple replicas.
+
+** Architectural Characteristics**
+
+- Stateless handlers → easy horizontal scaling.
+- Single domain model shared across bot and WebApp.
+- Strong consistency via DB locks and transactions.
+- UTC-based scheduling to avoid DST issues.
+- Clear separation of concerns across layers.
+
+** Why This Architecture**
+
+- Supports multiple interfaces (Chat + WebApp) without duplicating logic.
+- Prevents double bookings under concurrent load.
+- Allows independent scaling of handlers and workers.
+- Keeps business rules isolated and testable.
+- Ready for long-term evolution and new integrations.
+
 
