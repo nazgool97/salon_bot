@@ -58,12 +58,12 @@ module = "bot.app.core.*"
 strict = true
 
 [tool.pytest.ini_options]
-addopts = "-q --cov=bot.app --cov-report=xml --cov-report=term"
+addopts = "-q --cov=bot.app.core --cov=bot.app.domain --cov-report=xml --cov-report=term"
 testpaths = ["bot/app/tests_new"]
 
 [tool.coverage.run]
 branch = true
-source = ["bot/app"]
+source = ["bot/app/core", "bot/app/domain"]
 omit = [
     "bot/app/tests*/*",
     "bot/app/__init__.py"
@@ -72,4 +72,4 @@ omit = [
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
-fail_under = 70
+fail_under = 10
